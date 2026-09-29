@@ -1,0 +1,1164 @@
+//! The game's panels drawn with the `ui` library (an immediate-mode UI with docking). The panel
+//! content is the same `PanelBuilder` rows the classic tray shows, and every button routes
+//! through `activate_target`, so both presentations show and do the same things.
+//!
+//! The status bar is fixed chrome; the six panels (Selection, Production Queue, Debug, Inspect,
+//! Units, Settings) are windows the player can drag, resize, dock and put in boxes while Ctrl
+//! is held. Until one is moved, `ImGuiLayoutState.plan` places it in a collision-free zone.
+//! Positions are in logical pixels (the window's pixels over the DPI scale) with the origin at
+//! the top-left.
+
+use std.linalg.Vec2;
+use std.linalg.vec2;
+use std.linalg.Rect;
+use std.math.Float;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.fmt.show_u64;
+use std.rand.Rand;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.len as str_len;
+use std.str.byte_at;
+use std.str.sub;
+use std.str.Span;
+use std.str.to_owned;
+use std.str.push;
+use log.Log;
+use ui.Ui;
+use ui.frame_into;
+use ui.window;
+use ui.spec;
+use ui.Cond;
+use ui.rgba;
+use ui.text_colored;
+use ui.text as ui_text;
+use ui.button_sized;
+use ui.small_button;
+use ui.invisible_button;
+use ui.checkbox;
+use ui.slider_i32;
+use ui.combo;
+use ui.selectable;
+use ui.separator;
+use ui.progress_bar;
+use ui.tooltip;
+use ui.tooltip_text;
+use ui.disabled;
+use ui.push_color;
+use ui.push_var;
+use ui.push_font;
+use ui.wrap_at;
+use ui.same_line;
+use ui.same_line_spacing;
+use ui.same_line_at;
+use ui.dummy;
+use ui.next_item_width;
+use ui.avail;
+use ui.cursor;
+use ui.set_cursor;
+use ui.text_size;
+use ui.align_text_to_frame_padding;
+use ui.item_hovered;
+use ui.item_rect;
+use ui.window_pos;
+use ui.window_size;
+use ui.window_appearing;
+use ui.set_scroll_y;
+use ui.frame_height;
+use ui.child;
+use ui.dockspace;
+use ui.is_docked;
+use ui.id_scope_int;
+use ui.drag_kind;
+use ui.drag_source;
+use ui.drop_target;
+use ui.draw_rect;
+use ui.draw_rect_outline;
+use ui.draw_triangle;
+use ui.draw_text;
+use ui.dark_style;
+use ui.draw_data;
+use std.mem.swap;
+use ui.create_context;
+use ui.geom.Color as UiColor;
+use ui.context.Context;
+use ui.context.ALLOW_WHEN_DISABLED;
+use ui.context.NO_TITLE_BAR;
+use ui.context.NO_RESIZE;
+use ui.context.NO_MOVE;
+use ui.context.NO_DOCKING;
+use ui.context.NO_SAVED_SETTINGS;
+use ui.context.NO_SCROLLBAR;
+use ui.context.NO_SCROLL_WITH_MOUSE;
+use ui.context.WindowFlags;
+use ui.style.Style;
+use ui.style.StyleColor;
+use ui.style.StyleVar;
+use ui.atlas.FontAtlas;
+use ui.atlas.FontId;
+use ui.draw.DrawData;
+use ui.input.Input;
+use ui.input.MouseButton;
+use ui.input.idle_input;
+use renderer.pipelines.MeshVertex;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.text;
+use game.dock.overlaps;
+use game.draw.push_city_tower;
+use game.draw.push_unit_icon;
+use game.draw.UNIT_ICON_RADIUS;
+use game.font.TextSize;
+use game.imgui_layout.ImGuiLayoutState;
+use game.imgui_layout.PinnedKind;
+use game.imgui_layout.PinnedPanel;
+use game.imgui_layout.ViewScope;
+use game.imgui_layout.BoxScope;
+use game.imgui_layout.STATUS_HEIGHT;
+use game.imgui_layout.PANEL_MARGIN;
+use game.imgui_layout.PANEL_GAP;
+use game.imgui_layout.BAR_HEIGHT;
+use game.imgui_layout.SETTINGS_WIDTH;
+use game.imgui_layout.SLOT_COUNT;
+use game.imgui_layout.SLOT_TITLES;
+use game.imgui_layout.SELECTION;
+use game.imgui_layout.QUEUE;
+use game.imgui_layout.DEBUG;
+use game.imgui_layout.INSPECT;
+use game.imgui_layout.UNITS;
+use game.imgui_layout.SETTINGS;
+use game.imgui_layout.GAME_SPACE;
+use game.imgui_layout.panel_chrome;
+use game.imgui_layout.no_geometry;
+use game.imgui_layout.is_zero;
+use game.imgui_layout.context_kind;
+use game.mesh.Color;
+use game.orders.ClickMode;
+use game.settings.Control;
+use game.settings.Setting;
+use game.settings.MAX_BUTTONS;
+use game.ui.ButtonSpec;
+use game.ui.ButtonState;
+use game.ui.ChipIcon;
+use game.ui.PanelBuilder;
+use game.ui.QueueKind;
+use game.ui.Row;
+use game.ui.RowKind;
+use game.ui.RosterChip;
+use game.ui.RosterKey;
+use game.ui.Target;
+use game.ui.TILE_TOOLTIP_DELAY;
+use game.ui.end_turn_label;
+use game.ui.panel_builder;
+use game.ui.wrap;
+
+const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
+const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
+const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
+const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
+const DIM_TEXT: Color = [0.55, 0.55, 0.60, 1.0];
+const BORDER_COLOR: Color = [0.30, 0.32, 0.38, 1.0];
+const ARMED_BORDER_COLOR: Color = [1.00, 0.92, 0.55, 1.0];
+const BUTTON_BG: Color = [0.03, 0.035, 0.05, 0.95];
+const BUTTON_HOVER_BG: Color = [0.08, 0.09, 0.13, 0.95];
+const PANEL_BG: Color = [0.012, 0.014, 0.02, 0.94];
+const READABLE_LABEL: Color = [0.66, 0.70, 0.72, 1.0];
+const READABLE_DIM: Color = [0.72, 0.75, 0.76, 1.0];
+const QUEUED_BUTTON: Color = [0.34, 0.30, 0.17, 1.0];
+const ARMED_BUTTON: Color = [0.24, 0.32, 0.24, 1.0];
+const ROSTER_CHIP: f32 = 44.0;
+const ROSTER_CHIP_GAP: f32 = 6.0;
+const ROSTER_TOKEN_SHARE: f32 = 0.8;
+const CHIP_COUNT_INSET: f32 = 3.0;
+const TOOLTIP_WRAP: i32 = 50;
+/// The style's vertical item spacing and frame padding, as `measure_panel` counts them for the
+/// settings menu's rows.
+const SPACING_Y: f32 = 6.0;
+const FRAME_PADDING_Y: f32 = 6.0;
+
+/// The top status bar is a fixed strip: its second row of small buttons reaches a few pixels
+/// past `STATUS_HEIGHT` with the window padding, which must not turn into a scrollbar. The
+/// flags are NO_TITLE_BAR, NO_RESIZE, NO_MOVE, NO_DOCKING, NO_SAVED_SETTINGS, NO_SCROLLBAR and
+/// NO_SCROLL_WITH_MOUSE.
+pub fn status_flags() -> WindowFlags {
+    NO_TITLE_BAR.plus(NO_RESIZE).plus(NO_MOVE).plus(NO_DOCKING).plus(NO_SAVED_SETTINGS).plus(NO_SCROLLBAR).plus(NO_SCROLL_WITH_MOUSE)
+}
+
+fn lc(c: Color) -> UiColor { rgba(c[0], c[1], c[2], c[3]) }
+
+fn same_color(a: Color, b: Color) -> bool { a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3] }
+
+fn max_f(a: f32, b: f32) -> f32 { if a > b { a } else { b } }
+
+fn min_f(a: f32, b: f32) -> f32 { if a < b { a } else { b } }
+
+/// The library's fonts by text size: 15, 18 and 22 pixel glyph sets (`game.font.ui_atlas`).
+fn font_of(size: TextSize) -> FontId {
+    match size { TextSize.Small => FontId { index: 0 }, TextSize.Body => FontId { index: 1 }, TextSize.Title => FontId { index: 2 } }
+}
+
+/// The style the panels share: the game's colours, which are already linear.
+pub fn game_style() -> Style {
+    let mut s = dark_style();
+    let _o = s.set_var(StyleVar.WindowPadding(vec2(12.0, 10.0)));
+    let _o = s.set_var(StyleVar.FramePadding(vec2(10.0, 6.0)));
+    let _o = s.set_var(StyleVar.ItemSpacing(vec2(7.0, SPACING_Y)));
+    let _o = s.set_var(StyleVar.WindowBorderSize(1.0));
+    let _o = s.set_var(StyleVar.ButtonTextAlign(vec2(0.5, 0.5)));
+    let colors: [(StyleColor, Color); 20] = [
+        (StyleColor.Text, [0.91, 0.92, 0.91, 1.0]),
+        (StyleColor.TextDisabled, [0.46, 0.48, 0.50, 1.0]),
+        (StyleColor.WindowBg, [0.018, 0.022, 0.030, 0.96]),
+        (StyleColor.PopupBg, [0.025, 0.030, 0.041, 0.98]),
+        (StyleColor.Border, [0.29, 0.32, 0.38, 0.95]),
+        (StyleColor.TitleBg, [0.030, 0.036, 0.050, 1.0]),
+        (StyleColor.TitleBgActive, [0.055, 0.065, 0.086, 1.0]),
+        (StyleColor.TitleBgCollapsed, [0.030, 0.036, 0.050, 0.96]),
+        (StyleColor.FrameBg, [0.032, 0.039, 0.052, 1.0]),
+        (StyleColor.FrameBgHovered, [0.073, 0.084, 0.108, 1.0]),
+        (StyleColor.FrameBgActive, [0.12, 0.14, 0.18, 1.0]),
+        (StyleColor.Button, [0.045, 0.053, 0.070, 1.0]),
+        (StyleColor.ButtonHovered, [0.085, 0.10, 0.13, 1.0]),
+        (StyleColor.ButtonActive, [0.13, 0.15, 0.19, 1.0]),
+        (StyleColor.Header, [0.075, 0.090, 0.12, 1.0]),
+        (StyleColor.HeaderHovered, [0.12, 0.15, 0.19, 1.0]),
+        (StyleColor.ScrollbarBg, [0.024, 0.029, 0.039, 1.0]),
+        (StyleColor.ScrollbarGrab, [0.21, 0.24, 0.28, 1.0]),
+        (StyleColor.ScrollbarGrabHovered, [0.31, 0.35, 0.39, 1.0]),
+        (StyleColor.PlotHistogram, [0.80, 0.69, 0.35, 1.0]),
+    ];
+    for k in 0..20 {
+        let (slot, c) = colors[k];
+        let _o = s.set_color(slot, lc(c));
+    }
+    s
+}
+
+/// The library's context over the game's fonts and style, with the windows and dock trees
+/// `Context.save_settings` wrote in an earlier session.
+pub fn ui_context(atlas: FontAtlas, saved: Option[Str]) -> Context {
+    let mut ctx = create_context(atlas, game_style());
+    if let &Option.Some(t) = &saved { ctx.load_settings(&t); }
+    ctx
+}
+
+/// What the panels do, gathered while the frame is laid out and applied to the game after it.
+pub enum Action {
+    Button(Target),
+    /// A button in a pinned panel: it acts on that panel's own selection.
+    PinnedButton(PinnedPanel, Target),
+    Reorder(QueueKind, i32, i32),
+    PinnedReorder(PinnedPanel, QueueKind, i32, i32),
+    CreateBox,
+    ToggleLayoutLayer,
+    RemoveOuterBox(u32),
+    ResetView,
+}
+
+/// The UI's state between frames, besides the library's `Context`.
+pub struct UiState {
+    layout: ImGuiLayoutState,
+    /// The last frame's triangles, kept to be refilled in place; `take_ui_data` hands them to the renderer.
+    out: DrawData,
+    /// The device state the next frame starts from (`ui_win32.feed`).
+    input: Input,
+    prev_left: bool,
+    /// Whether the last frame's UI wants the mouse or the keyboard: the game leaves those
+    /// inputs alone.
+    wants_mouse: bool,
+    wants_keyboard: bool,
+    /// The last hover summary, kept while the Inspect panel sits in a box.
+    inspector: Option[PanelBuilder],
+}
+
+pub fn ui_state(layout: ImGuiLayoutState, display: Vec2) -> UiState {
+    UiState { layout, out: draw_data(), input: idle_input(display), prev_left: false, wants_mouse: false, wants_keyboard: false, inspector: Option.None }
+}
+
+/// The panels of one frame, built from the game before the frame starts.
+struct Panels {
+    tray: PanelBuilder,
+    queue: PanelBuilder,
+    debug: PanelBuilder,
+    hover: PanelBuilder,
+    units: Option[PanelBuilder],
+    settings: Option[PanelBuilder],
+    /// The map hex's tooltip, once the cursor has rested on it.
+    tile_tip: Option[PanelBuilder],
+    reset_selection_scroll: bool,
+    turn: u32,
+    resolving: bool,
+    end_label: Str,
+    notice: Str,
+}
+
+fn measure_text(panel: &PanelBuilder, row: Row) -> Str {
+    text(fn() can {Out} {
+        for i in row.from..row.to { let t = &panel.spans[i].text; Out.put(t); }
+    })
+}
+
+/// A panel's height in logical pixels as the rows will lay out at `width`.
+fn measure_panel(panel: &PanelBuilder, width: f32) -> f32 can {Ui} {
+    let inner = max_f(width - 45.0, 100.0);
+    let mut height: f32 = 26.0;
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        height = height + match row.kind {
+            RowKind.Text => {
+                let f = push_font(font_of(row.size));
+                let joined = measure_text(panel, row);
+                let m = text_size(&joined);
+                f.pop();
+                let lines = if row.to - row.from == 1 { max_f((m.x / inner).ceil(), 1.0) } else { 1.0 };
+                m.y * lines + 7.0
+            }
+            RowKind.Gap => row.value + 6.0,
+            RowKind.Bar => 18.0,
+            RowKind.Buttons | RowKind.CompactButtons => {
+                let n = row.to - row.from;
+                let columns = max_f(((inner + 7.0) / 135.0).floor(), 1.0) as i32;
+                let rows = (n + columns - 1) / columns;
+                rows as f32 * (button_height(row.kind == RowKind.CompactButtons) + 6.0)
+            }
+            RowKind.QueueItem => 37.0,
+            RowKind.Catalog => {
+                let n = row.to - row.from;
+                (if n < 1 { 1 } else if n > 4 { 4 } else { n }) as f32 * (button_height(true) + 6.0) + 18.0
+            }
+            RowKind.Roster => ROSTER_CHIP + 6.0,
+            RowKind.Heading => {
+                let f = push_font(font_of(TextSize.Small));
+                let h = text_size("A").y + 2.0 * SPACING_Y + 1.0;
+                f.pop();
+                h
+            }
+            RowKind.Setting => {
+                let f = push_font(font_of(TextSize.Body));
+                let h = text_size("A").y + 2.0 * FRAME_PADDING_Y + SPACING_Y;
+                f.pop();
+                h
+            }
+        };
+    }
+    height + 12.0
+}
+
+/// The width of the settings menu's label column: its longest setting name and a gap before
+/// the controls.
+fn setting_label_width(panel: &PanelBuilder) -> f32 can {Ui} {
+    let f = push_font(font_of(TextSize.Body));
+    let mut widest: f32 = 0.0;
+    for k in 0..panel.settings.len() {
+        let w = text_size(panel.settings[k].setting.name()).x;
+        if w > widest { widest = w; }
+    }
+    f.pop();
+    widest + 18.0
+}
+
+/// How wide the turn strip wants to be: its widest row of chips, plus the allowance for padding
+/// and border `measure_panel` takes off.
+fn roster_width(panel: &PanelBuilder) -> f32 {
+    let mut widest: f32 = 0.0;
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        match row.kind {
+            RowKind.Roster => { let n = (row.to - row.from) as f32; if n > widest { widest = n; } }
+            _ => {}
+        }
+    }
+    max_f(widest * ROSTER_CHIP + max_f(widest - 1.0, 0.0) * ROSTER_CHIP_GAP + 45.0, 210.0)
+}
+
+/// A row of buttons' height: one line of label and the frame padding above and below (at least
+/// 28), or two lines.
+fn button_height(compact: bool) -> f32 can {Ui} {
+    let line = Ui.line_height();
+    let padding = 2.0 * FRAME_PADDING_Y;
+    if compact { max_f(28.0, line + padding - 4.0) } else { max_f(48.0, 2.0 * line + padding) }
+}
+
+fn push_action(actions: &mut Vec[Action], scope: Option[PinnedPanel], target: Target) {
+    match scope {
+        Option.Some(pin) => actions.push(Action.PinnedButton(pin, target)),
+        Option.None => actions.push(Action.Button(target)),
+    }
+}
+
+/// One line of spans, side by side; dim label colours are brightened a little for reading on
+/// the panel background.
+fn text_line(panel: &PanelBuilder, row: Row) can {Ui} {
+    for i in row.from..row.to {
+        if i != row.from { same_line_spacing(0.0); }
+        let span = &panel.spans[i];
+        let c = span.color;
+        let readable = if same_color(c, LABEL_TEXT) { READABLE_LABEL } else if same_color(c, DIM_TEXT) { READABLE_DIM } else { c };
+        let t = &span.text;
+        text_colored(lc(readable), t);
+    }
+}
+
+/// The lines of a tooltip panel.
+fn tooltip_rows(panel: &PanelBuilder) can {Ui} {
+    let t = tooltip();
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        match row.kind {
+            RowKind.Text => text_line(panel, row),
+            RowKind.Gap => dummy(vec2(0.0, max_f(row.value, 0.0))),
+            _ => {}
+        }
+    }
+    t.end();
+}
+
+/// A tooltip for a button's target, when it has one.
+fn button_tooltip(game: &GameState, target: Target) can {Ui} {
+    let mut p = panel_builder(false);
+    if game.tooltip(target, &mut p) { tooltip_rows(&p); }
+}
+
+/// A setting's name and what it does.
+fn setting_tooltip(setting: Setting) can {Ui} {
+    let t = tooltip();
+    text_colored(lc(TEXT), setting.name());
+    let lines = wrap(setting.description(), TOOLTIP_WRAP);
+    for k in 0..lines.len() { let l = &lines[k]; text_colored(lc([0.72, 0.75, 0.76, 1.0]), l); }
+    t.end();
+}
+
+fn button_label(spec: &ButtonSpec, compact: bool) -> Str {
+    let label = &spec.label;
+    let hint = &spec.hint;
+    if compact {
+        if hint.is_empty() || str_eq(hint, "AUTO") || str_eq(hint, "CLICK") { to_owned(label) } else { text(fn() can {Out} { Out.put(label); Out.put("  "); Out.put(hint); }) }
+    } else if hint.is_empty() {
+        to_owned(label)
+    } else {
+        text(fn() can {Out} { Out.put(label); Out.put("\n"); Out.put(hint); })
+    }
+}
+
+/// A button, in `accent` when it has one.
+fn accent_button(label: &str, size: Vec2, accent: Option[Color]) -> bool can {Ui} {
+    match accent {
+        Option.Some(c) => {
+            let p = push_color(StyleColor.Button, lc(c));
+            let clicked = button_sized(label, size);
+            p.pop();
+            clicked
+        }
+        Option.None => button_sized(label, size),
+    }
+}
+
+/// One button spec as a widget of `size`: pressing it is an action, and hovering it (even
+/// disabled) explains it.
+fn spec_button(game: &GameState, spec: &ButtonSpec, label: &str, size: Vec2, scope: Option[PinnedPanel], actions: &mut Vec[Action]) can {Ui} {
+    let accent: Option[Color] = match spec.state {
+        ButtonState.Queued => Option.Some(QUEUED_BUTTON),
+        _ => if spec.armed { Option.Some(ARMED_BUTTON) } else { Option.None },
+    };
+    let off = match spec.state { ButtonState.Disabled => true, _ => false };
+    let d = disabled(off);
+    if accent_button(label, size, accent) { push_action(actions, scope, spec.target); }
+    if item_hovered(ALLOW_WHEN_DISABLED) { button_tooltip(game, spec.target); }
+    d.end();
+}
+
+/// A setting's row in the settings menu: its name in the label column, then the control
+/// `Setting.control` names across the rest of the width.
+fn render_setting(setting: Setting, value: i32, label_width: f32, scope: Option[PinnedPanel], actions: &mut Vec[Action]) can {Ui} {
+    let (low, high) = setting.range();
+    let left = cursor().x;
+    align_text_to_frame_padding();
+    text_colored(lc([0.82, 0.84, 0.86, 1.0]), setting.name());
+    if item_hovered(0) { setting_tooltip(setting); }
+    same_line_at(left + label_width);
+    let width = avail().x;
+    match setting.control() {
+        Control.Toggle => {
+            let mut on = value == 1;
+            let shown = setting.value_text(value);
+            let label = text(fn() can {Out} { Out.put(&shown); Out.put("##setting-"); Out.put(setting.name()); });
+            if checkbox(&label, &mut on) { push_action(actions, scope, Target.SetSetting(setting, if on { 1 } else { 0 })); }
+            if item_hovered(0) { setting_tooltip(setting); }
+        }
+        Control.Slider => {
+            let mut to = value;
+            next_item_width(width);
+            let label = text(fn() can {Out} { Out.put("##setting-"); Out.put(setting.name()); });
+            if slider_i32(&label, &mut to, low, high) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+            if item_hovered(0) { setting_tooltip(setting); }
+        }
+        Control.Choice => {
+            let count = high - low + 1;
+            if count > MAX_BUTTONS {
+                next_item_width(width);
+                let label = text(fn() can {Out} { Out.put("##setting-"); Out.put(setting.name()); });
+                let shown = setting.value_text(value);
+                let c = combo(&label, &shown);
+                if c.open() {
+                    for to in low..=high {
+                        let shown_to = setting.value_text(to);
+                        let row = text(fn() can {Out} { Out.put(&shown_to); Out.put("##setting-"); Out.put(setting.name()); Out.put("-"); show_i64(to as i64); });
+                        if selectable(&row, to == value) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+                    }
+                } else if item_hovered(0) {
+                    setting_tooltip(setting);
+                }
+                c.end();
+            } else {
+                let spacing = 7.0;
+                let each = ((width - spacing * (count - 1) as f32) / count as f32).floor();
+                for to in low..=high {
+                    if to != low { same_line(); }
+                    // The current choice is gold, like a queued build.
+                    let shown_to = setting.value_text(to);
+                    let label = text(fn() can {Out} { Out.put(&shown_to); Out.put("##setting-"); Out.put(setting.name()); Out.put("-"); show_i64(to as i64); });
+                    let accent: Option[Color] = if to == value { Option.Some([0.34, 0.30, 0.17, 1.0]) } else { Option.None };
+                    if accent_button(&label, vec2(each, 0.0), accent) && to != value { push_action(actions, scope, Target.SetSetting(setting, to)); }
+                    if item_hovered(0) { setting_tooltip(setting); }
+                }
+            }
+        }
+    }
+}
+
+/// The unit strip token as the draw list gets it: the same token as on the map, in a framed
+/// square (bright while selected, white while hovered).
+fn draw_roster_chip(r: Rect, chip: RosterChip, hovered: bool) can {Ui} {
+    let (bg, border) = if chip.selected { (BUTTON_HOVER_BG, ARMED_BORDER_COLOR) } else { (BUTTON_BG, BORDER_COLOR) };
+    let edge = if hovered { TEXT } else { border };
+    let thickness = if chip.selected { 3.0 } else { 2.0 };
+    draw_rect(r, lc(bg));
+    draw_rect_outline(r, lc(edge), thickness);
+    let mut vertices: Vec[MeshVertex] = Vec.new();
+    let radius = (r.max.x - r.min.x) * ROSTER_TOKEN_SHARE / 2.0;
+    match chip.icon {
+        ChipIcon.Unit(look) => push_unit_icon(vec2(0.0, 0.0), look, radius / UNIT_ICON_RADIUS, chip.color, &mut vertices),
+        // The tower is 0.84 wide at scale 1.
+        ChipIcon.City => push_city_tower(vec2(0.0, 0.0), 2.0 * radius / 0.84, chip.color, &mut vertices),
+    }
+    // The token is built Y-up around the origin; the library's Y points down.
+    let center = vec2((r.min.x + r.max.x) / 2.0, (r.min.y + r.max.y) / 2.0);
+    let mut k = 0;
+    while k + 2 < vertices.len() {
+        let a = vertices[k];
+        let b = vertices[k + 1];
+        let c = vertices[k + 2];
+        draw_triangle(
+            vec2(center.x + a.pos[0], center.y - a.pos[1]),
+            vec2(center.x + b.pos[0], center.y - b.pos[1]),
+            vec2(center.x + c.pos[0], center.y - c.pos[1]),
+            lc(a.color));
+        k = k + 3;
+    }
+    if chip.count > 1 {
+        let label = text(fn() can {Out} { show_i64(chip.count as i64); });
+        let size = text_size(&label);
+        let origin = vec2(r.max.x - size.x - CHIP_COUNT_INSET, r.max.y - size.y - CHIP_COUNT_INSET);
+        draw_rect(Rect { min: vec2(origin.x - 2.0, origin.y - 1.0), max: vec2(r.max.x - CHIP_COUNT_INSET + 2.0, r.max.y - CHIP_COUNT_INSET + 1.0) }, lc(PANEL_BG));
+        draw_text(origin, lc(TEXT), &label);
+    }
+}
+
+/// `label` without its leading `> ` marker and padding.
+fn queue_label(label: &Str) -> Str {
+    let n = str_len(label);
+    let mut i = 0;
+    while i < n {
+        match byte_at(label, i) {
+            Option.Some(b) => { if b == 62 || b == 32 { i = i + 1; } else { break; } }
+            Option.None => { break; }
+        }
+    }
+    to_owned(sub(label, Span { lo: i, hi: n }))
+}
+
+fn queue_drag_name(kind: QueueKind, scope: Option[PinnedPanel]) -> Str {
+    let base = match kind { QueueKind.City => "city-queue", QueueKind.Barracks => "barracks-queue", QueueKind.Workers => "worker-jobs" };
+    match scope {
+        Option.Some(pin) => { let t = pin.title(); text(fn() can {Out} { Out.put(base); Out.put("-"); Out.put(&t); }) }
+        Option.None => to_owned(base),
+    }
+}
+
+/// The rows of one panel, top to bottom.
+fn render_rows(game: &GameState, panel: &PanelBuilder, scope: Option[PinnedPanel], actions: &mut Vec[Action]) can {Ui} {
+    let label_width = setting_label_width(panel);
+    for r in 0..panel.rows.len() {
+        let row = panel.rows[r];
+        match row.kind {
+            RowKind.Heading => {
+                let f = push_font(font_of(TextSize.Small));
+                let t = &panel.spans[row.from].text;
+                text_colored(lc(GOLD_TEXT), t);
+                separator();
+                f.pop();
+            }
+            RowKind.Setting => {
+                let f = push_font(font_of(TextSize.Body));
+                let s = &panel.settings[row.from];
+                render_setting(s.setting, s.value, label_width, scope, actions);
+                f.pop();
+            }
+            RowKind.Text => {
+                let f = push_font(font_of(row.size));
+                if row.to - row.from == 1 {
+                    let w = wrap_at(0.0);
+                    text_line(panel, row);
+                    w.pop();
+                } else {
+                    text_line(panel, row);
+                }
+                f.pop();
+            }
+            RowKind.Gap => dummy(vec2(0.0, max_f(row.value, 0.0))),
+            RowKind.Roster => {
+                let m = Ui.mods();
+                let mode = if m.shift { 1 } else if m.ctrl { 2 } else { 0 };
+                for k in row.from..row.to {
+                    if k != row.from { same_line_spacing(ROSTER_CHIP_GAP); }
+                    let chip = panel.chips[k];
+                    let sc = id_scope_int((r * 64 + k) as i64);
+                    let clicked = invisible_button("##roster", vec2(ROSTER_CHIP, ROSTER_CHIP));
+                    let hovered = item_hovered(0);
+                    draw_roster_chip(item_rect(), chip, hovered);
+                    if clicked {
+                        let target = if mode == 1 { Target.RosterAdd(chip.key) } else if mode == 2 { Target.RosterRemove(chip.key) } else { Target.RosterSelect(chip.key) };
+                        push_action(actions, scope, target);
+                    }
+                    if hovered { let hint = game.roster_hint(chip.key); tooltip_text(&hint); }
+                    sc.end();
+                }
+            }
+            RowKind.Bar => {
+                // No "0%" overlay: it doesn't fit a 12 px bar, and the row above already says
+                // what the bar counts toward.
+                progress_bar(row.value, vec2(avail().x, BAR_HEIGHT), " ");
+            }
+            RowKind.Buttons | RowKind.CompactButtons => {
+                let n = row.to - row.from;
+                if n <= 0 { continue; }
+                let compact = row.kind == RowKind.CompactButtons;
+                let available = avail().x;
+                let spacing = 7.0;
+                let min_width = 128.0;
+                let mut columns = ((available + spacing) / (min_width + spacing)).floor() as i32;
+                if columns < 1 { columns = 1; }
+                if columns > n { columns = n; }
+                let width = max_f((available - spacing * (columns - 1) as f32) / columns as f32, min_width);
+                for k in 0..n {
+                    if k % columns != 0 { same_line(); }
+                    let spec = &panel.specs[row.from + k];
+                    let sc = id_scope_int((r * 64 + k) as i64);
+                    let label = button_label(spec, compact);
+                    spec_button(game, spec, &label, vec2(width, button_height(compact)), scope, actions);
+                    sc.end();
+                }
+            }
+            RowKind.Catalog => {
+                let n = row.to - row.from;
+                let height = (if n < 1 { 1 } else if n > 4 { 4 } else { n }) as f32 * (button_height(true) + 6.0) + 18.0;
+                let id = text(fn() can {Out} { Out.put("##building-catalog-"); show_i64(row.value as i64); });
+                let ch = child(&id, vec2(0.0, height), true);
+                let align = push_var(StyleVar.ButtonTextAlign(vec2(0.03, 0.5)));
+                for k in 0..n {
+                    let spec = &panel.specs[row.from + k];
+                    let sc = id_scope_int(k as i64);
+                    let sl = &spec.label;
+                    let sh = &spec.hint;
+                    let label = text(fn() can {Out} { Out.put(sl); Out.put("  "); Out.put(sh); });
+                    let width = max_f(avail().x, 80.0);
+                    spec_button(game, spec, &label, vec2(width, button_height(true)), scope, actions);
+                    sc.end();
+                }
+                align.pop();
+                ch.end();
+            }
+            RowKind.QueueItem => {
+                let item = &panel.queue_items[row.from];
+                let sc = id_scope_int((r * 64) as i64);
+                let width = max_f(avail().x - 39.0, 50.0);
+                let align = push_var(StyleVar.ButtonTextAlign(vec2(0.03, 0.5)));
+                let bg = push_color(StyleColor.Button, lc(if item.active { [0.26, 0.24, 0.15, 1.0] } else { [0.11, 0.14, 0.16, 1.0] }));
+                let shown = queue_label(&item.label);
+                let label = text(fn() can {Out} { Out.put("::  "); Out.put(&shown); Out.put("##queue"); });
+                if button_sized(&label, vec2(width, 30.0)) { push_action(actions, scope, Target.QueueItem(item.kind, item.index)); }
+                bg.pop();
+                align.pop();
+                if !item.locked && !game.is_resolving() {
+                    let name = queue_drag_name(item.kind, scope);
+                    let kind = drag_kind(&name);
+                    let src = drag_source(kind, item.index as i64);
+                    if src.active() { ui_text(&shown); }
+                    src.end();
+                    if let Option.Some(from) = drop_target(kind) {
+                        match scope {
+                            Option.Some(pin) => actions.push(Action.PinnedReorder(pin, item.kind, from as i32, item.index)),
+                            Option.None => actions.push(Action.Reorder(item.kind, from as i32, item.index)),
+                        }
+                    }
+                }
+                same_line();
+                let red = push_color(StyleColor.Button, lc([0.23, 0.13, 0.13, 1.0]));
+                if small_button("X##remove") { push_action(actions, scope, item.kind.remove_target(item.index)); }
+                red.pop();
+                sc.end();
+            }
+        }
+    }
+}
+
+// ---- windows and the frame ----------------------------------------------------------------
+
+impl GameState {
+    /// Which set of panel placements applies: the selection decides.
+    pub fn layout_view(&self) -> ViewScope {
+        if self.selected_city.is_some() || self.selected_barracks.is_some() || self.interior_view.is_some() {
+            ViewScope.City
+        } else if self.selected.is_some() || !self.group.is_empty() {
+            ViewScope.Troop
+        } else {
+            ViewScope.Default
+        }
+    }
+
+    /// The panel a pin of the current selection would be: the open city or Barracks, the
+    /// selected unit, or the selected group (by the hash of its members' ids).
+    pub fn selected_pin(&self) -> Option[PinnedPanel] {
+        if let Option.Some(i) = self.selected_city { return Option.Some(PinnedPanel { kind: PinnedKind.City, city_id: self.cities[i].id }); }
+        if let Option.Some(i) = self.selected_barracks { return Option.Some(PinnedPanel { kind: PinnedKind.Barracks, city_id: self.cities[i].id }); }
+        if let Option.Some(i) = self.selected { return Option.Some(PinnedPanel { kind: PinnedKind.Unit, city_id: self.units[i].id }); }
+        if !self.group.is_empty() { return Option.Some(PinnedPanel { kind: PinnedKind.Group, city_id: self.group_hash() }); }
+        Option.None
+    }
+
+    /// A hash of the selected group's unit ids, which does not depend on the order they were
+    /// picked in.
+    pub fn group_hash(&self) -> u32 {
+        let mut ids: Vec[u32] = Vec.new();
+        for k in 0..self.group.len() { ids.push(self.units[self.group[k]].id); }
+        // Insertion sort: groups are small.
+        for a in 1..ids.len() {
+            let mut b = a;
+            while b > 0 && ids[b - 1] > ids[b] {
+                let t = ids[b];
+                ids[b] = ids[b - 1];
+                ids[b - 1] = t;
+                b = b - 1;
+            }
+        }
+        let mut hash: u64 = 2166136261;
+        for k in 0..ids.len() { hash = ((hash ^ ids[k] as u64) * 16777619) & 4294967295; }
+        hash as u32
+    }
+
+    pub fn selected_queue_pin(&self) -> Option[PinnedPanel] {
+        if let Option.Some(i) = self.selected_city { return Option.Some(PinnedPanel { kind: PinnedKind.CityQueue, city_id: self.cities[i].id }); }
+        if let Option.Some(i) = self.selected_barracks { return Option.Some(PinnedPanel { kind: PinnedKind.BarracksQueue, city_id: self.cities[i].id }); }
+        Option.None
+    }
+
+    /// The index of the player's city a city pin stands for.
+    pub fn pinned_city_index(&self, pin: PinnedPanel) -> Option[i32] {
+        match pin.kind {
+            PinnedKind.Unit | PinnedKind.Group => { return Option.None; }
+            _ => {}
+        }
+        let city_kind = match pin.kind { PinnedKind.City | PinnedKind.CityQueue => true, _ => false };
+        for i in 0..self.cities.len() {
+            let c = &self.cities[i];
+            if c.id == pin.city_id && c.team == PLAYER_TEAM && (city_kind || c.barracks.is_some()) { return Option.Some(i); }
+        }
+        Option.None
+    }
+
+    pub fn pinned_unit_index(&self, pin: PinnedPanel) -> Option[i32] {
+        match pin.kind {
+            PinnedKind.Unit => {
+                for i in 0..self.units.len() {
+                    if self.units[i].id == pin.city_id && self.units[i].team == PLAYER_TEAM { return Option.Some(i); }
+                }
+                Option.None
+            }
+            _ => Option.None,
+        }
+    }
+
+    pub fn valid_pin(&self, pin: PinnedPanel) -> bool {
+        if self.pinned_city_index(pin).is_some() || self.pinned_unit_index(pin).is_some() { return true; }
+        match pin.kind { PinnedKind.Group => true, _ => false }
+    }
+
+    /// A button pressed in a pinned panel acts on that panel's own unit or city.
+    pub fn activate_pinned(&mut self, pin: PinnedPanel, target: Target) can {Log, Rand} {
+        if let Option.Some(unit) = self.pinned_unit_index(pin) {
+            self.selected = Option.Some(unit);
+            self.selected_city = Option.None;
+            self.selected_barracks = Option.None;
+            self.group.clear();
+            self.activate_target(target);
+            return;
+        }
+        let Option.Some(city) = self.pinned_city_index(pin) else { return; };
+        match pin.kind {
+            PinnedKind.City | PinnedKind.CityQueue => self.open_city(city),
+            PinnedKind.Barracks | PinnedKind.BarracksQueue => self.open_barracks(city),
+            _ => { return; }
+        }
+        self.activate_target(target);
+    }
+
+    /// A queue row dropped in a pinned panel moves within that panel's own city.
+    pub fn reorder_pinned(&mut self, pin: PinnedPanel, kind: QueueKind, source: i32, target: i32) {
+        let Option.Some(city) = self.pinned_city_index(pin) else { return; };
+        match pin.kind {
+            PinnedKind.City | PinnedKind.CityQueue => self.open_city(city),
+            PinnedKind.Barracks | PinnedKind.BarracksQueue => self.open_barracks(city),
+            _ => { return; }
+        }
+        self.reorder_queue(kind, source, target);
+    }
+
+    /// Opens a panel as the player would, for a screenshot of it: `city`, `barracks`, `unit`,
+    /// `group`, `workers` or `settings`. Whether there was something to open.
+    pub fn open_panel(&mut self, what: &str) -> bool can {Log, Rand} {
+        if str_eq(what, "settings") { self.settings_open = true; return true; }
+        if str_eq(what, "workers") { self.toggle_worker_mode(); return self.worker_mode; }
+        if str_eq(what, "city") { self.select_city(); return self.selected_city.is_some(); }
+        if str_eq(what, "barracks") {
+            for i in 0..self.cities.len() {
+                if self.cities[i].team == PLAYER_TEAM && self.cities[i].barracks.is_some() { self.open_barracks(i); return true; }
+            }
+            return false;
+        }
+        let mut mine: Vec[i32] = Vec.new();
+        for i in 0..self.units.len() { if self.is_player_controlled(i) { mine.push(i); } }
+        if str_eq(what, "unit") {
+            if mine.is_empty() { return false; }
+            self.set_selection(vec_of_one(mine[0]));
+            return true;
+        }
+        if str_eq(what, "group") {
+            if mine.len() < 2 { return false; }
+            let mut some: Vec[i32] = Vec.new();
+            for k in 0..(if mine.len() < 3 { mine.len() } else { 3 }) { some.push(mine[k]); }
+            self.set_selection(some);
+            return true;
+        }
+        false
+    }
+
+    /// What is selected, as a word and a number: `city-3`, `unit-7`, `group`, or nothing. A
+    /// change of it scrolls the Selection panel back to its top.
+    pub fn selection_context_text(&self) -> Str {
+        if let Option.Some(city) = self.interior_view { return text(fn() can {Out} { Out.put("interior-"); show_i64(city as i64); }); }
+        if let Option.Some(city) = self.selected_city { return text(fn() can {Out} { Out.put("city-"); show_i64(city as i64); }); }
+        if let Option.Some(city) = self.selected_barracks { return text(fn() can {Out} { Out.put("barracks-"); show_i64(city as i64); }); }
+        if let Option.Some(unit) = self.selected {
+            let id = self.units[unit].id;
+            return text(fn() can {Out} { Out.put("unit-"); show_u64(id as u64); });
+        }
+        if !self.group.is_empty() { return to_owned("group"); }
+        if self.worker_mode { return to_owned("workers"); }
+        to_owned("")
+    }
+}
+
+/// The content of every panel this frame, from the game and the layout's pins.
+fn build_panels(game: &GameState, layout: &mut ImGuiLayoutState, cursor: Option[Vec2], size: Vec2, wants_mouse: bool) -> Panels {
+    let selected_pin = game.selected_pin();
+    let selection_is_pinned = match selected_pin { Option.Some(p) => layout.is_pinned(p), Option.None => false };
+    let queue_pin = game.selected_queue_pin();
+    let queue_is_pinned = match queue_pin { Option.Some(p) => layout.is_pinned(p), Option.None => false };
+    let mut tray = panel_builder(false);
+    if selection_is_pinned {
+        // Its persistent window owns these controls while the structure is selected.
+    } else if let Option.Some(city) = game.interior_view {
+        game.interior_tray(city, &mut tray);
+    } else if let Option.Some(city) = game.selected_city {
+        game.city_tray_rows(city, &mut tray, false);
+    } else if let Option.Some(city) = game.selected_barracks {
+        game.barracks_tray_rows(city, &mut tray, false);
+    } else if let Option.Some(idx) = game.selected {
+        game.unit_info(idx, &mut tray);
+        tray.gap(10.0);
+        game.unit_buttons(idx, &mut tray);
+    } else if !game.group.is_empty() {
+        game.group_tray(&mut tray);
+    } else if game.worker_mode {
+        game.worker_menu(&mut tray);
+    }
+    let context = if selection_is_pinned { to_owned("") } else { game.selection_context_text() };
+    let reset_selection_scroll = layout.selection_changed(&context);
+    let mut queue = panel_builder(false);
+    if selection_is_pinned || queue_is_pinned {
+    } else if let Option.Some(city) = game.selected_city {
+        game.city_queue_panel(city, &mut queue);
+    } else if let Option.Some(city) = game.selected_barracks {
+        game.barracks_queue_panel(city, &mut queue);
+    }
+    let debug = game.debug_panel_content();
+    let mut hover = panel_builder(false);
+    let mut tile_tip: Option[PanelBuilder] = Option.None;
+    if let Option.Some(hex) = game.hovered_tile {
+        let mut structure = false;
+        for i in 0..game.cities.len() {
+            if !structure && game.cities[i].pos == hex { game.structure_hover_panel(i, false, &mut hover); structure = true; }
+        }
+        for i in 0..game.cities.len() {
+            if !structure && game.cities[i].barracks == Option.Some(hex) { game.structure_hover_panel(i, true, &mut hover); structure = true; }
+        }
+        if !structure {
+            if let Option.Some(c) = cursor {
+                if let Option.Some(idx) = game.unit_at_screen(c, size) {
+                    if Option.Some(idx) != game.selected || game.selected_city.is_some() { game.unit_info(idx, &mut hover); }
+                }
+            }
+        }
+        if game.hover_seconds >= TILE_TOOLTIP_DELAY && !wants_mouse {
+            let mut p = panel_builder(false);
+            game.tile_tooltip(hex, &mut p);
+            tile_tip = Option.Some(p);
+        }
+    }
+    let units = game.roster_panel();
+    let settings: Option[PanelBuilder] = if game.settings_open { Option.Some(game.settings_panel_content()) } else { Option.None };
+    let resolving = game.is_resolving();
+    let turn = if resolving { game.turn } else { game.turn + 1 };
+    let (u, c, w) = game.pending();
+    let end_label = if resolving { to_owned("RESOLVING") } else { end_turn_label(u, c, w) };
+    let notice = game.shown_notice();
+    Panels { tray, queue, debug, hover, units, settings, tile_tip, reset_selection_scroll, turn, resolving, end_label, notice }
+}
+
+fn vec_of_one(i: i32) -> Vec[i32] {
+    let mut v: Vec[i32] = Vec.new();
+    v.push(i);
+    v
+}
+
+fn has_rows(p: &PanelBuilder) -> bool { !p.rows.is_empty() }
+
+/// The panel in `slot`, drawn as a window at `position` (logical pixels) of `size`.
+fn render_slot(game: &GameState, layout: &mut ImGuiLayoutState, slot: i32, position: Vec2, size: Vec2, viewport: Vec2, panel: &PanelBuilder, arranging: bool, reset_scroll: bool, actions: &mut Vec[Action]) can {Ui} {
+    let title = SLOT_TITLES[slot];
+    let context_changed = slot == SELECTION && layout.selection_geometry_changed;
+    let restoring = context_changed || (slot == DEBUG && layout.debug_reposition);
+    let pos_cond = if restoring || layout.always_place(slot, viewport) { Cond.Always } else { Cond.Once };
+    let old = layout.windows[slot].size;
+    let fits = old.x <= viewport.x - 2.0 * PANEL_MARGIN && old.y <= viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN;
+    let size_cond = if restoring { Cond.Always } else if layout.windows[slot].manual && fits { Cond.Once } else { Cond.Always };
+    let flags = panel_chrome(arranging, layout.windows[slot].collapsed);
+    let mut sp = spec().flags(flags);
+    // While the library is moving a panel or showing docking targets it owns the geometry:
+    // applying the automatic position here would fight it.
+    let free = !layout.windows[slot].docked && !layout.defer_geometry;
+    if free { sp = sp.at(position, pos_cond).sized(size, size_cond); }
+    let restored_debug = slot == DEBUG && layout.debug_reposition && !layout.windows[slot].docked && !layout.defer_geometry;
+    // The settings menu opens over the other panels: keep their text from showing through.
+    let solid = if slot == SETTINGS { Option.Some(push_color(StyleColor.WindowBg, lc([0.018, 0.022, 0.030, 1.0]))) } else { Option.None };
+    let w = window(title, sp);
+    if reset_scroll || window_appearing() { set_scroll_y(0.0); }
+    if w.visible() { render_rows(game, panel, Option.None, actions); }
+    let padding = Ui.style().window_padding.y;
+    let title_height: Option[f32] = if arranging { Option.Some(frame_height()) } else { Option.None };
+    layout.record(slot, window_pos(), window_size(), is_docked(title), Ui.window_collapsed(), cursor().y, padding, title_height);
+    w.end();
+    if let Option.Some(p) = solid { p.pop(); }
+    if restored_debug { layout.debug_reposition = false; }
+    if context_changed && !layout.defer_geometry { layout.selection_geometry_changed = false; }
+}
+
+/// The status bar: the turn, the notice, the layout controls and End Turn.
+fn render_status(layout: &mut ImGuiLayoutState, panels: &Panels, viewport: Vec2, actions: &mut Vec[Action]) can {Ui} {
+    let w = window("Status", spec().flags(status_flags()).at(vec2(0.0, 0.0), Cond.Always).sized(vec2(viewport.x, STATUS_HEIGHT), Cond.Always));
+    // End Turn is as wide as its label needs; the layout controls and the notice give way to it.
+    let end_label = &panels.end_label;
+    let label = text(fn() can {Out} { Out.put(end_label); Out.put("  [SPACE]"); });
+    let end_width = min_f(text_size(&label).x + 50.0, viewport.x * 0.45);
+    let edit_label = if layout.editing_outer { "EDIT OUTER" } else { "EDIT VIEW" };
+    let with_reset = layout.active_view.index() != 0 && !layout.editing_outer;
+    let mut controls_width = text_size(edit_label).x + text_size("+ BOX").x + 2.0 * 20.0 + 7.0;
+    if with_reset { controls_width = controls_width + text_size("RESET [CTRL+SHIFT+R]").x + 20.0 + 7.0; }
+    let controls_x = max_f(viewport.x - end_width - controls_width - 12.0, 8.0);
+    let turn = panels.turn;
+    let turn_label = text(fn() can {Out} { Out.put("TURN "); show_u64(turn as u64); });
+    ui_text(&turn_label);
+    same_line();
+    let notice_x = 12.0 + text_size(&turn_label).x + 7.0;
+    let max_notice = max_f(controls_x - notice_x - 12.0, 0.0);
+    let notice = &panels.notice;
+    if text_size(notice).x <= max_notice {
+        text_colored(lc(NOTICE_TEXT), notice);
+    } else {
+        // Cut on a whole character; the notice is ASCII but for a few middle dots.
+        let mut shortened = to_owned(notice);
+        while !shortened.is_empty() && text_size(&shortened).x > max_notice { shortened = cut_last(&shortened); }
+        text_colored(lc(NOTICE_TEXT), &shortened);
+    }
+    set_cursor(vec2(controls_x, 7.0));
+    let view_label = layout.active_view.label();
+    let view_text = text(fn() can {Out} { Out.put("VIEW: "); Out.put(view_label); });
+    ui_text(&view_text);
+    set_cursor(vec2(controls_x, 27.0));
+    if small_button(edit_label) { actions.push(Action.ToggleLayoutLayer); }
+    same_line();
+    if small_button("+ BOX") { actions.push(Action.CreateBox); }
+    if with_reset {
+        same_line();
+        if small_button("RESET [CTRL+SHIFT+R]") { actions.push(Action.ResetView); }
+        if item_hovered(0) { tooltip_text("Restore this view's Debug placement from Default"); }
+    }
+    set_cursor(vec2(max_f(viewport.x - end_width, 8.0), 7.0));
+    let d = disabled(panels.resolving);
+    if button_sized(&label, vec2(end_width - 15.0, 29.0)) { actions.push(Action.Button(Target.EndTurn)); }
+    d.end();
+    w.end();
+}
+
+fn cut_last(s: &Str) -> Str {
+    let mut n = str_len(s);
+    // Back over a UTF-8 continuation byte to the start of the last character.
+    n = n - 1;
+    while n > 0 {
+        match byte_at(s, n) { Option.Some(b) => { if b >= 128 && b < 192 { n = n - 1; } else { break; } } Option.None => { break; } }
+    }
+    to_owned(sub(s, Span { lo: 0, hi: n }))
+}
+
+/// Every window of one frame: the dock space, the status bar and the six panels placed by
+/// `plan`.
+fn frame_body(game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, actions: &mut Vec[Action], viewport: Vec2, arranging: bool) can {Ui} {
+    // The body font is the default, as the panels' text is set in it unless a row says otherwise.
+    let base = push_font(font_of(TextSize.Body));
+    dockspace(GAME_SPACE, Rect { min: vec2(0.0, STATUS_HEIGHT), max: vec2(viewport.x, max_f(viewport.y, STATUS_HEIGHT + 1.0)) });
+    render_status(layout, panels, viewport, actions);
+
+    // Measure the actual row geometry in logical pixels. The dock reserves every visible panel
+    // before any window is presented.
+    let available = max_f(viewport.y - STATUS_HEIGHT - 2.0 * PANEL_MARGIN, 100.0);
+    let max_width = max_f(viewport.x - 2.0 * PANEL_MARGIN, 240.0);
+    let mut left_width = min_f(560.0, max_width);
+    let mut debug_width = min_f(330.0, max_width);
+    if viewport.x < 1100.0 {
+        debug_width = min_f(clamp_f(viewport.x * 0.43, 220.0, 330.0), max_width);
+        left_width = min_f(max_f(viewport.x - debug_width - 3.0 * PANEL_MARGIN - PANEL_GAP, 210.0), max_width);
+    }
+    let queue_height = min_f(measure_panel(&panels.queue, left_width), 225.0);
+    let mut tray_height = min_f(measure_panel(&panels.tray, left_width), available);
+    // On a narrow screen the queue cannot wrap into a second column, so reserve its space above
+    // the selection before docking either window.
+    if has_rows(&panels.tray) && has_rows(&panels.queue) && viewport.x < 2.0 * left_width + 3.0 * PANEL_MARGIN + PANEL_GAP {
+        tray_height = min_f(tray_height, max_f(available - queue_height - PANEL_GAP, 120.0));
+    }
+    let hover_width = min_f(345.0, max_width);
+    let mut measured: [Option[Vec2]; 6] = [Option.None; 6];
+    if has_rows(&panels.tray) { measured[SELECTION] = Option.Some(vec2(left_width, tray_height)); }
+    if has_rows(&panels.queue) { measured[QUEUE] = Option.Some(vec2(left_width, queue_height)); }
+    measured[DEBUG] = Option.Some(vec2(debug_width, min_f(measure_panel(&panels.debug, debug_width), available)));
+    if has_rows(&panels.hover) { measured[INSPECT] = Option.Some(vec2(hover_width, min_f(measure_panel(&panels.hover, hover_width), available))); }
+    if let &Option.Some(units) = &panels.units {
+        let width = min_f(roster_width(&units), max_width);
+        measured[UNITS] = Option.Some(vec2(width, min_f(measure_panel(&units, width), available)));
+    }
+    if let &Option.Some(settings) = &panels.settings {
+        // Wide enough for a label column and a control beside it.
+        let width = min_f(SETTINGS_WIDTH, max_width);
+        measured[SETTINGS] = Option.Some(vec2(width, min_f(measure_panel(&settings, width), available)));
+    }
+    let mut sizes: [Option[Vec2]; 6] = [Option.None; 6];
+    for slot in 0..SLOT_COUNT {
+        if let Option.Some(m) = measured[slot] { sizes[slot] = Option.Some(layout.size(slot, m, viewport)); }
+    }
+    let positions = layout.plan(viewport, &mut sizes);
+    for slot in 0..SLOT_COUNT {
+        let (Option.Some(position), Option.Some(size)) = (positions[slot], sizes[slot]) else { continue; };
+        let reset = slot == SELECTION && panels.reset_selection_scroll;
+        if slot == SELECTION {
+            render_slot(game, layout, slot, position, size, viewport, &panels.tray, arranging, reset, actions);
+        } else if slot == QUEUE {
+            render_slot(game, layout, slot, position, size, viewport, &panels.queue, arranging, false, actions);
+        } else if slot == DEBUG {
+            render_slot(game, layout, slot, position, size, viewport, &panels.debug, arranging, false, actions);
+        } else if slot == INSPECT {
+            render_slot(game, layout, slot, position, size, viewport, &panels.hover, arranging, false, actions);
+        } else if slot == UNITS {
+            if let &Option.Some(units) = &panels.units { render_slot(game, layout, slot, position, size, viewport, &units, arranging, false, actions); }
+        } else if let &Option.Some(settings) = &panels.settings {
+            render_slot(game, layout, slot, position, size, viewport, &settings, arranging, false, actions);
+        }
+    }
+    if let &Option.Some(tip) = &panels.tile_tip { tooltip_rows(&tip); }
+    base.pop();
+}
+
+/// The library's frame over the panels: the closure lives in this function, so the loans it
+/// takes end when it returns.
+fn draw_frame(ctx: &mut Context, inp: Input, out: &mut DrawData, game: &GameState, layout: &mut ImGuiLayoutState, panels: &Panels, actions: &mut Vec[Action], viewport: Vec2, arranging: bool) {
+    frame_into(ctx, inp, out, fn() can {Ui} { frame_body(game, layout, panels, actions, viewport, arranging); });
+}
+
+fn clamp_f(x: f32, lo: f32, hi: f32) -> f32 { if x < lo { lo } else if x > hi { hi } else { x } }
+
+/// The frame's triangles, leaving an empty buffer behind.
+pub fn take_ui_data(st: &mut UiState) -> DrawData {
+    let mut taken = draw_data();
+    swap(&mut st.out, &mut taken);
+    taken
+}
+
+/// Lays out and draws the panels for one frame into `out`'s buffers and applies what was
+/// pressed. `size` and `cursor` are in window pixels; the panels are in logical ones
+/// (`scale` window pixels to a logical pixel).
+pub fn run_ui(game: &mut GameState, ctx: &mut Context, st: &mut UiState, size: Vec2, scale: f32, dt: f32, cursor: Option[Vec2]) can {Log, Rand} {
+    let viewport = size.scale(1.0 / scale);
+    let mut inp = st.input;
+    inp.display = viewport;
+    inp.dt = dt;
+    let arranging = inp.mods.ctrl;
+    let left = inp.down[MouseButton.Left.slot()];
+    let clicked = left && !st.prev_left;
+    st.prev_left = left;
+    let mouse = match inp.mouse { Option.Some(m) => m, Option.None => vec2(0.0 - 1.0, 0.0 - 1.0) };
+    st.layout.begin_frame(arranging, left, clicked, mouse);
+    for slot in 0..SLOT_COUNT { st.layout.sync_window(slot, &*ctx, SLOT_TITLES[slot]); }
+    let view = game.layout_view();
+    st.layout.switch_layout_scope(ctx, view);
+    st.layout.apply_pending_view_reset(ctx);
+    let panels = build_panels(&*game, &mut st.layout, cursor, size, st.wants_mouse);
+    let mut actions: Vec[Action] = Vec.new();
+    draw_frame(ctx, inp, &mut st.out, &*game, &mut st.layout, &panels, &mut actions, viewport, arranging);
+    st.wants_mouse = ctx.wants_mouse();
+    st.wants_keyboard = ctx.wants_keyboard();
+    let pair_visible = has_rows(&panels.tray) && has_rows(&panels.queue);
+    st.layout.maintain_queue_dock(ctx, pair_visible);
+    let selection_text = game.selection_context_text();
+    let kind = context_kind(&selection_text);
+    if !st.layout.editing_outer {
+        st.layout.maintain_debug_scope(ctx, if kind.is_empty() { Option.None } else { Option.Some(kind) });
+    }
+    st.layout.track_captured_panels(&*ctx);
+    for k in 0..actions.len() { apply_action(game, ctx, st, viewport, actions[k]); }
+}
+
+fn apply_action(game: &mut GameState, ctx: &mut Context, st: &mut UiState, viewport: Vec2, action: Action) can {Log, Rand} {
+    match action {
+        Action.Button(target) => {
+            let clears = match target { Target.Scenario(_) | Target.LoadState => true, _ => false };
+            if clears { st.layout.clear_captured_panels(ctx); }
+            game.activate_target(target);
+        }
+        Action.PinnedButton(pin, target) => game.activate_pinned(pin, target),
+        Action.Reorder(kind, source, target) => game.reorder_queue(kind, source, target),
+        Action.PinnedReorder(pin, kind, source, target) => game.reorder_pinned(pin, kind, source, target),
+        Action.CreateBox => st.layout.create_box(viewport),
+        Action.ToggleLayoutLayer => { st.layout.editing_outer = !st.layout.editing_outer; }
+        Action.RemoveOuterBox(id) => st.layout.remove_outer_box(id, ctx),
+        Action.ResetView => { let _ok = st.layout.request_reset_active_view(); }
+    }
+}

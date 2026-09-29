@@ -101,6 +101,7 @@ impl GameState {
         next.settings = self.settings.copy();
         next.settings_open = self.settings_open;
         next.fog_of_war = self.fog_of_war;
+        next.imgui_ui = self.imgui_ui;
         *self = next;
     }
 
@@ -139,6 +140,7 @@ impl GameState {
         restored.settings = self.settings.copy();
         restored.settings_open = self.settings_open;
         restored.fog_of_war = self.fog_of_war;
+        restored.imgui_ui = self.imgui_ui;
         restored.notice = loaded;
         // The snapshot is kept: it moves into the restored game.
         swap(&mut restored.savestate, &mut self.savestate);
@@ -196,6 +198,8 @@ impl GameState {
             map_seed: self.map_seed,
             ruins: copy_vec(&self.ruins),
             fog_of_war: self.fog_of_war,
+            imgui_ui: self.imgui_ui,
+            ui_captured: false,
             memory: copy_map(&self.memory),
             cloud_time: self.cloud_time,
             queue_replace_armed: Option.None,
@@ -215,6 +219,7 @@ impl GameState {
             moving_manager: self.moving_manager,
             placing_building: self.placing_building,
             city_queue_scroll: self.city_queue_scroll,
+            roster_open: Option.None,
             barracks_queue_scroll: self.barracks_queue_scroll,
             structures: copy_map(&self.structures),
             barriers: copy_map(&self.barriers),

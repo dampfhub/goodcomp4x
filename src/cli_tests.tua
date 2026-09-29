@@ -39,6 +39,10 @@ fn the_screenshot_command_parses() {
     let sized = match options.size { Option.Some((w, h)) => w == 1280 && h == 720, Option.None => false };
     assert(sized);
     assert(!options.help);
+    let o = args(&["--open", "city"]);
+    let Result.Ok(opened) = parse(&o) else { assert(false); return; };
+    let open_city = match opened.open { Option.Some(p) => str_eq(&p, "city"), Option.None => false };
+    assert(open_city);
     let w = args(&["--seed", "42", "--scenario", "world"]);
     let Result.Ok(world) = parse(&w) else { assert(false); return; };
     assert(world.scenario == Scenario.World && world.seed == Option.Some(42));
@@ -51,6 +55,8 @@ fn bad_arguments_are_errors() {
     assert(refused(&["--size", "1280"]));
     assert(refused(&["--size", "0x720"]));
     assert(refused(&["--frobnicate"]));
+    assert(refused(&["--open", "basement"]));
+    assert(refused(&["--open"]));
     assert(refused(&["--scenario", "world", "--seed", "-1"]));
     // The default scenario has no seed.
     assert(refused(&["--seed", "42"]));

@@ -64,6 +64,8 @@ use game.scenario.SCENARIOS;
 use game.scenario.SCENARIO_COUNT;
 use game.scenario.Scenario;
 use game.unit.Unit;
+use game.unit.UnitType;
+use game.draw.UnitLook;
 
 /// Gap between panels and the window's edges.
 const MARGIN: f32 = 18.0;
@@ -156,6 +158,11 @@ pub enum Target {
     /// Debug panel: finish the open city's or Barracks' current build, and toggle the fog of war.
     CompleteProduction,
     ToggleFog,
+    /// A queue row clicked (not dragged), and the turn strip's chips: click, Shift-click, Ctrl-click.
+    QueueItem(QueueKind, i32),
+    RosterSelect(RosterKey),
+    RosterAdd(RosterKey),
+    RosterRemove(RosterKey),
     /// City tray: the open city's labor focus.
     Focus(LaborFocus),
     /// City tray: queue a worker, queue a building (or resume choosing its site), confirm a
@@ -194,6 +201,10 @@ impl Eq for Target {
             (Target.Unit(a), Target.Unit(b)) => a == b,
             (Target.Build(a), Target.Build(b)) => a == b,
             (Target.Scenario(a), Target.Scenario(b)) => a == b,
+            (Target.QueueItem(a, x), Target.QueueItem(b, y)) => a == b && x == y,
+            (Target.RosterSelect(a), Target.RosterSelect(b)) => a == b,
+            (Target.RosterAdd(a), Target.RosterAdd(b)) => a == b,
+            (Target.RosterRemove(a), Target.RosterRemove(b)) => a == b,
             (Target.ToggleYields, Target.ToggleYields) | (Target.EndTurn, Target.EndTurn) | (Target.SaveState, Target.SaveState)
                 | (Target.LoadState, Target.LoadState) | (Target.TogglePlayback, Target.TogglePlayback)
                 | (Target.CompleteProduction, Target.CompleteProduction) | (Target.ToggleFog, Target.ToggleFog) => true,
@@ -221,6 +232,58 @@ impl Eq for Target {
 
 /// An order for the selected unit.
 pub enum UnitAction { Move, Attack, Swap, Ability, Hold, Guard, Settle, ClearOrders, Disband }
+
+/// Which production list a queue row belongs to.
+pub enum QueueKind { City, Barracks, Workers }
+
+impl QueueKind {
+    /// What the row's X button does.
+    pub fn remove_target(self, index: i32) -> Target {
+        match self {
+            QueueKind.City => Target.QueueRemove(index),
+            QueueKind.Barracks => Target.BarracksQueueRemove(index),
+            QueueKind.Workers => Target.WorkerJobRemove(index),
+        }
+    }
+}
+
+/// What a chip in the turn strip stands for.
+pub enum RosterKey {
+    /// A city with nothing to build, by its id.
+    Production(u32),
+    /// A city with idle workers, by its id.
+    Workers(u32),
+    /// The units of one kind that need orders: a unit type, and whether they're settlers (which
+    /// use the melee body).
+    Group(UnitType, bool),
+    /// One unit, by its id, in an open group's row.
+    Unit(u32),
+}
+
+impl Eq for RosterKey {
+    fn eq(self, other: RosterKey) -> bool {
+        match (self, other) {
+            (RosterKey.Production(a), RosterKey.Production(b)) => a == b,
+            (RosterKey.Workers(a), RosterKey.Workers(b)) => a == b,
+            (RosterKey.Group(a, x), RosterKey.Group(b, y)) => a == b && x == y,
+            (RosterKey.Unit(a), RosterKey.Unit(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+/// A turn strip chip's picture.
+pub enum ChipIcon { City, Unit(UnitLook) }
+
+/// One token of the turn strip.
+pub struct RosterChip { key: RosterKey, icon: ChipIcon, color: Color, selected: bool, count: i32 }
+
+/// A production queue row: its list and place in it, its text, whether it is the front item
+/// (being built now) and whether it may not be moved.
+pub struct QueueItemSpec { kind: QueueKind, index: i32, label: Str, active: bool, locked: bool }
+
+/// A setting row in the settings menu: the setting at its current value.
+pub struct SettingRow { setting: Setting, value: i32 }
 
 pub enum ButtonState {
     Ready,
@@ -391,6 +454,7 @@ impl GameState {
     /// The wheel over a city's building catalog scrolls the catalog, a card per step,
     /// instead of zooming the map. Answers whether the wheel was the catalog's.
     pub fn scroll_buildings_at(&mut self, cursor: Vec2, screen_size: Vec2, steps: f32) -> bool {
+        if self.imgui_ui { return false; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
         for k in 0..layout.catalogs.len() {
@@ -406,6 +470,7 @@ impl GameState {
     }
 
     pub fn ui_covers(&self, cursor: Vec2, screen_size: Vec2) -> bool {
+        if self.imgui_ui { return self.ui_captured; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
         layout.button_at(point).is_some() || layout.covers(point)
@@ -415,6 +480,7 @@ impl GameState {
     /// also count as a click on the map). `cursor` is in window pixels with the origin at the
     /// top-left.
     pub fn click_ui(&mut self, cursor: Vec2, screen_size: Vec2) -> bool can {Log, Rand} {
+        if self.imgui_ui { return false; }
         let point = to_ui(cursor, screen_size);
         let layout = self.layout(screen_size);
         let Option.Some(i) = layout.button_at(point) else { return layout.covers(point); };
@@ -469,6 +535,10 @@ impl GameState {
             Target.Quit => self.request_quit(),
             Target.CompleteProduction => self.debug_complete_current_production(),
             Target.ToggleFog => self.toggle_fog(),
+            Target.QueueItem(kind, index) => self.queue_item_clicked(kind, index),
+            Target.RosterSelect(key) => self.roster_select(key),
+            Target.RosterAdd(key) => self.roster_add(key),
+            Target.RosterRemove(key) => self.roster_remove(key),
         }
     }
 
@@ -476,9 +546,9 @@ impl GameState {
     /// there, for city hover outlines and the tile tooltip. `cursor` is in window pixels with
     /// the origin at the top-left.
     pub fn update_hover(&mut self, cursor: Option[Vec2], screen_size: Vec2, dt: f32) {
-        let layout = self.layout(screen_size);
+        let layout = if self.imgui_ui { empty_layout() } else { self.layout(screen_size) };
         let hex = match cursor {
-            Option.Some(c) => if layout.covers(to_ui(c, screen_size)) { Option.None } else { self.hex_at_screen(c, screen_size) },
+            Option.Some(c) => if (self.imgui_ui && self.ui_captured) || layout.covers(to_ui(c, screen_size)) { Option.None } else { self.hex_at_screen(c, screen_size) },
             Option.None => Option.None,
         };
         if hex == self.hovered_tile {
@@ -602,7 +672,7 @@ impl GameState {
         panel.begin_buttons();
         for i in 4..SCENARIO_COUNT {
             let scenario = SCENARIOS[i];
-            panel.button(Target.Scenario(scenario), scenario.name(), scenario.key(), button_state(scenario == self.scenario, false), false);
+            panel.button(Target.Scenario(scenario), scenario.name(), if scenario == Scenario.Naval { "" } else { scenario.key() }, button_state(scenario == self.scenario, false), false);
         }
         panel.button(Target.SaveState, "SAVE", "F6", button_state(false, self.is_resolving()), false);
         panel.button(Target.LoadState, "LOAD", "F7", button_state(false, self.savestate.is_none()), false);
@@ -682,7 +752,7 @@ impl GameState {
 
     /// A unit's name, stats as they stand this turn, and anything notable about it. Stats
     /// boosted above their base value are green, reduced red.
-    fn unit_info(&self, idx: i32, panel: &mut PanelBuilder) {
+    pub fn unit_info(&self, idx: i32, panel: &mut PanelBuilder) {
         let unit = &self.units[idx];
         let base = unit.unit_type.stats();
         let stats = unit.stats();
@@ -749,7 +819,7 @@ impl GameState {
 
     /// The selected unit's order buttons: what it can do depends on whether it's a fighter, a
     /// settler or a worker.
-    fn unit_buttons(&self, idx: i32, panel: &mut PanelBuilder) {
+    pub fn unit_buttons(&self, idx: i32, panel: &mut PanelBuilder) {
         let unit = &self.units[idx];
         let can_move = unit.stats().move_range > 0;
         let locked = self.rival_of(idx).is_some();
@@ -784,11 +854,11 @@ impl GameState {
         panel.end_buttons(false);
     }
 
-    fn armed(&self, mode: ClickMode) -> bool { self.ui_click_mode == Option.Some(mode) }
+    pub fn armed(&self, mode: ClickMode) -> bool { self.ui_click_mode == Option.Some(mode) }
 
     /// A group of selected units: how many of each, how to order them, and buttons for what
     /// every member can do at once.
-    fn group_tray(&self, panel: &mut PanelBuilder) {
+    pub fn group_tray(&self, panel: &mut PanelBuilder) {
         // Each role and its count, in first-seen order.
         let mut kinds: Vec[str] = Vec.new();
         let mut counts: Vec[i32] = Vec.new();
@@ -832,7 +902,10 @@ impl GameState {
 
     /// The open city: population, stores and income, growth, its queue, and a card for each
     /// unit, the worker and each building it can build.
-    fn city_tray(&self, i: i32, panel: &mut PanelBuilder) {
+    pub fn city_tray(&self, i: i32, panel: &mut PanelBuilder) { self.city_tray_rows(i, panel, true); }
+
+    /// The open city's tray, with its queue rows or without (the queue panel shows those).
+    pub fn city_tray_rows(&self, i: i32, panel: &mut PanelBuilder, with_queue: bool) {
         let city = &self.cities[i];
         let (food, production) = self.income(i);
         let net_food = food - city.population * 8;
@@ -889,7 +962,7 @@ impl GameState {
         panel.text_owned(TextSize.Small, growth_label, DIM_TEXT);
         panel.bar(growth_percent as f32 / 100.0);
 
-        if city.queue.len() > 0 {
+        if with_queue && city.queue.len() > 0 {
             panel.gap(GAP);
             panel.text(TextSize.Small, "QUEUE", LABEL_TEXT);
             for q in 0..city.queue.len() {
@@ -975,7 +1048,7 @@ impl GameState {
 
     /// City `i`'s interior: the command post's health, the troops on the board, the selected
     /// one, and what to do next.
-    fn interior_tray(&self, i: i32, panel: &mut PanelBuilder) {
+    pub fn interior_tray(&self, i: i32, panel: &mut PanelBuilder) {
         let city = &self.cities[i];
         let interior = &city.interior;
         let (id, team, core_hp) = (city.id, city.team, interior.core_hp);
@@ -1059,7 +1132,7 @@ impl GameState {
     /// place on the map; it lists a city's workers (with Recall) and waiting jobs (X removes
     /// one), with a button per city when there are several; Sleep rests that city's idle
     /// workers this turn, and Done closes it.
-    fn worker_menu(&self, panel: &mut PanelBuilder) {
+    pub fn worker_menu(&self, panel: &mut PanelBuilder) {
         panel.text(TextSize.Title, "WORKERS", TEXT);
         let how = match self.placing_job {
             Option.Some(kind) => {
@@ -1108,7 +1181,10 @@ impl GameState {
 
     /// The open Barracks: its health, its work group's production, what it's training, its
     /// queue, and a card for each troop.
-    fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) {
+    pub fn barracks_tray(&self, i: i32, panel: &mut PanelBuilder) { self.barracks_tray_rows(i, panel, true); }
+
+    /// The open Barracks' tray, with its queue rows or without.
+    pub fn barracks_tray_rows(&self, i: i32, panel: &mut PanelBuilder, with_queue: bool) {
         let city = &self.cities[i];
         let Option.Some(tile) = city.barracks else { return; };
         let active = !city.worked.is_empty() && city.worked[0] == tile;
@@ -1130,7 +1206,7 @@ impl GameState {
             }), GOLD_TEXT);
             let fraction = stored as f32 / build.cost() as f32;
             panel.bar(if fraction < 0.0 { 0.0 } else if fraction > 1.0 { 1.0 } else { fraction });
-            for q in 0..city.barracks_queue.len() {
+            for q in 0..(if with_queue { city.barracks_queue.len() } else { 0 }) {
                 let queued = city.barracks_queue[q];
                 let label = text(fn() can {Out} { show_i64((q + 1) as i64); Out.put(". "); Out.put(queued.name()); });
                 panel.begin_buttons();
@@ -1159,7 +1235,7 @@ impl GameState {
     }
 
     /// Everything about a map hex: terrain, what it yields, and what's on it.
-    fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
+    pub fn tile_tooltip(&self, hex: Hex, panel: &mut PanelBuilder) {
         let tile = self.grid.tile(hex);
         let terrain = tile.terrain;
         let city = self.city_at(hex);
@@ -1288,7 +1364,7 @@ impl GameState {
 
     /// A tooltip's title (with the shortcut), description, and why the button is unavailable,
     /// if it is, into `panel`. Answers whether there is one.
-    fn tooltip(&self, target: Target, panel: &mut PanelBuilder) -> bool {
+    pub fn tooltip(&self, target: Target, panel: &mut PanelBuilder) -> bool {
         let mut title = to_owned("");
         let mut shortcut = to_owned("");
         let mut description = to_owned("");
@@ -1340,7 +1416,8 @@ impl GameState {
                 shortcut = to_owned("CLICK");
                 description = to_owned("FINALIZES THE SELECTED BUILDING SITE.");
             }
-            Target.QueueUp(_) | Target.QueueRemove(_) | Target.BarracksQueueRemove(_) => { return false; }
+            Target.QueueUp(_) | Target.QueueRemove(_) | Target.BarracksQueueRemove(_) | Target.QueueItem(_, _)
+                | Target.RosterSelect(_) | Target.RosterAdd(_) | Target.RosterRemove(_) => { return false; }
             Target.OpenInterior => {
                 title = to_owned("CITY INTERIOR");
                 shortcut = to_owned("V");
@@ -1553,7 +1630,7 @@ impl GameState {
 
     /// The unit drawn under `cursor` (window pixels, origin top-left). In a contested hex,
     /// whichever of the two is nearer the cursor.
-    fn unit_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option[i32] {
+    pub fn unit_at_screen(&self, cursor: Vec2, screen_size: Vec2) -> Option[i32] {
         let Option.Some(hex) = self.hex_at_screen(cursor, screen_size) else { return Option.None; };
         let point = self.camera.screen_to_world(cursor, screen_size);
         let mut best: Option[i32] = Option.None;
@@ -1586,6 +1663,14 @@ pub enum RowKind {
     /// City `value`'s building catalog: buttons `from..to` stacked one per line, at most
     /// `BUILDING_LIST_VISIBLE` of them in view from `offset`.
     Catalog,
+    /// A heading over the rows after it: span `from`.
+    Heading,
+    /// Setting row `from` of the builder's.
+    Setting,
+    /// Queue row `from` of the builder's.
+    QueueItem,
+    /// Chips `from..to` of the builder's, in one row.
+    Roster,
 }
 
 /// Building cards in view at once in the city tray's catalog; the wheel scrolls the rest.
@@ -1604,6 +1689,9 @@ pub struct PanelBuilder {
     rows: Vec[Row],
     spans: Vec[Span],
     specs: Vec[ButtonSpec],
+    settings: Vec[SettingRow],
+    queue_items: Vec[QueueItemSpec],
+    chips: Vec[RosterChip],
     /// Where the spans of the line in progress start.
     line_from: i32,
     /// Where the buttons of the row in progress start.
@@ -1613,7 +1701,7 @@ pub struct PanelBuilder {
 }
 
 pub fn panel_builder(faded: bool) -> PanelBuilder {
-    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), line_from: 0, buttons_from: 0, faded }
+    PanelBuilder { rows: Vec.new(), spans: Vec.new(), specs: Vec.new(), settings: Vec.new(), queue_items: Vec.new(), chips: Vec.new(), line_from: 0, buttons_from: 0, faded }
 }
 
 impl PanelBuilder {
@@ -1667,6 +1755,33 @@ impl PanelBuilder {
         self.rows.push(Row { kind, size: TextSize.Small, value: 0.0, from: self.buttons_from, to, offset: 0 });
     }
 
+    /// A heading over the rows that follow.
+    pub fn heading(&mut self, t: &str) {
+        let from = self.spans.len();
+        self.spans.push(Span { text: to_owned(t), color: GOLD_TEXT });
+        self.rows.push(Row { kind: RowKind.Heading, size: TextSize.Small, value: 0.0, from, to: from + 1, offset: 0 });
+    }
+
+    /// A player setting's label and control, showing `value`.
+    pub fn setting(&mut self, setting: Setting, value: i32) {
+        let from = self.settings.len();
+        self.settings.push(SettingRow { setting, value });
+        self.rows.push(Row { kind: RowKind.Setting, size: TextSize.Body, value: 0.0, from, to: from + 1, offset: 0 });
+    }
+
+    pub fn queue_item(&mut self, item: QueueItemSpec) {
+        let from = self.queue_items.len();
+        self.queue_items.push(item);
+        self.rows.push(Row { kind: RowKind.QueueItem, size: TextSize.Small, value: 0.0, from, to: from + 1, offset: 0 });
+    }
+
+    /// A row of unit tokens, each clickable.
+    pub fn roster(&mut self, chips: Vec[RosterChip]) {
+        let from = self.chips.len();
+        for k in 0..chips.len() { self.chips.push(chips[k]); }
+        self.rows.push(Row { kind: RowKind.Roster, size: TextSize.Small, value: 0.0, from, to: self.chips.len(), offset: 0 });
+    }
+
     /// Ends city `city`'s building catalog, scrolled to `offset`.
     pub fn end_catalog(&mut self, city: i32, offset: i32) {
         let to = self.specs.len();
@@ -1685,6 +1800,7 @@ impl PanelBuilder {
             RowKind.Bar => GROWTH_BAR_HEIGHT,
             RowKind.Buttons => BUTTON_HEIGHT,
             RowKind.CompactButtons => END_TURN_HEIGHT,
+            RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => 0.0,
         }
     }
 
@@ -1699,7 +1815,7 @@ impl PanelBuilder {
                 }
                 w
             }
-            RowKind.Gap | RowKind.Bar => 0.0,
+            RowKind.Gap | RowKind.Bar | RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => 0.0,
             RowKind.Buttons | RowKind.CompactButtons => {
                 let n = row.to - row.from;
                 let width = self.button_width(row);
@@ -1776,7 +1892,7 @@ impl PanelBuilder {
                     for i in row.from..row.to { spans.push(Span { text: copy_str(&self.spans[i].text), color: self.spans[i].color }); }
                     layout.text_row(vec2(left, middle), row.size, spans);
                 }
-                RowKind.Gap => {}
+                RowKind.Gap | RowKind.Heading | RowKind.Setting | RowKind.QueueItem | RowKind.Roster => {}
                 RowKind.Catalog => self.place_catalog(row, left, inner_width, top, height, layout),
                 RowKind.Bar => layout.shapes.push(Shape.Bar(vec2(left, top - height), vec2(left + inner_width, top), row.value)),
                 RowKind.Buttons | RowKind.CompactButtons => {

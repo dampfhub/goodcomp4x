@@ -24,6 +24,8 @@ Options:
                        map every run
   --screenshot <FILE>  render the scenario in a hidden window, write one frame
                        to FILE as a PNG, and exit
+  --open <PANEL>       open a panel first, for a screenshot of it: city, barracks,
+                       unit, group, workers or settings
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900)
   --validate           run under the Khronos validation layer; exit 83 if it
@@ -45,10 +47,12 @@ pub struct Options {
     /// Frames to draw before exiting, 0 for no limit.
     frames: i32,
     validate: bool,
+    /// A panel to open before the first frame (`GameState.open_panel`).
+    open: Option[Str],
 }
 
 pub fn default_options() -> Options {
-    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false }
+    Options { scenario: Scenario.Cities, seed: Option.None, screenshot: Option.None, size: Option.None, help: false, frames: 0, validate: false, open: Option.None }
 }
 
 /// A refusal's text: `message`, then the usage.
@@ -79,6 +83,11 @@ pub fn scenario_named(name: &str) -> Option[Scenario] {
         if eq_ignore_ascii_case(SCENARIOS[i].name(), name) { return Option.Some(SCENARIOS[i]); }
     }
     Option.None
+}
+
+/// Whether `--open` knows the panel `name`.
+fn is_panel(name: &str) -> bool {
+    str_eq(name, "city") || str_eq(name, "barracks") || str_eq(name, "unit") || str_eq(name, "group") || str_eq(name, "workers") || str_eq(name, "settings")
 }
 
 /// A whole number of at most `max`, all digits.
@@ -114,7 +123,7 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        let needs_value = str_eq(arg, "--scenario") || str_eq(arg, "--seed") || str_eq(arg, "--screenshot") || str_eq(arg, "--size");
+        let needs_value = str_eq(arg, "--scenario") || str_eq(arg, "--seed") || str_eq(arg, "--screenshot") || str_eq(arg, "--size") || str_eq(arg, "--open");
         if needs_value && i + 1 >= args.len() {
             return Result.Err(with_usage(text2(arg, " needs a value")));
         }
@@ -144,6 +153,11 @@ pub fn parse(args: &Vec[Str]) -> Result[Options, Str] {
                 Option.Some(s) => { options.size = Option.Some(s); }
                 Option.None => { return Result.Err(text3("--size wants WIDTHxHEIGHT, like 1280x720, not \"", size, "\"")); }
             }
+            i = i + 2;
+        } else if str_eq(arg, "--open") {
+            let panel = &args[i + 1];
+            if !is_panel(panel) { return Result.Err(text3("no panel called \"", panel, "\": try city, barracks, unit, group, workers or settings")); }
+            options.open = Option.Some(to_owned(panel));
             i = i + 2;
         } else if str_eq(arg, "-h") || str_eq(arg, "--help") {
             options.help = true;

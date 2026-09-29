@@ -54,6 +54,18 @@ use game.GameState;
 use renderer.Atlas;
 use game.font.atlas;
 use game.font.ui_atlas;
+use game.imgui.UiState;
+use game.imgui.ui_state;
+use game.imgui.ui_context;
+use game.imgui.run_ui;
+use game.imgui.take_ui_data;
+use renderer.FrameOut;
+use game.imgui_layout.layout_from_text;
+use game.imgui_layout.layout_state;
+use ui.context.Context;
+use ui.draw.draw_data;
+use ui_win32.feed;
+use ui_win32.next_frame;
 use ui.atlas.FontAtlas;
 use ui.draw.DrawData;
 use game.city.Building;
@@ -110,7 +122,12 @@ fn forget_gestures(input: &mut Controls) {
 }
 
 /// Applies one window event to the game, answering what the window should do about it.
-fn on_event(game: &mut GameState, input: &mut Controls, e: Event) -> WindowRequest can {Log, Clock, Rand} {
+fn on_event(game: &mut GameState, input: &mut Controls, ui: &mut UiState, scale: f32, e: Event) -> WindowRequest can {Log, Clock, Rand} {
+    ui.input = feed(ui.input, e, scale);
+    // The library UI gets the events first; what it took (a panel under the cursor, a widget
+    // with the focus) the game leaves alone.
+    let over_ui = game.imgui_ui && ui.wants_mouse;
+    let keys_taken = game.imgui_ui && ui.wants_keyboard;
     match e {
         Event.CloseRequested => { input.closed = true; }
         Event.Resized(w, h) => { input.size = vec2(w as f32, h as f32); }
@@ -139,6 +156,7 @@ fn on_event(game: &mut GameState, input: &mut Controls, e: Event) -> WindowReque
         }
         Event.MouseDown(b) => match b {
             Button.Left => {
+                if over_ui { return WindowRequest.Nothing; }
                 if let Option.Some(cursor) = input.cursor {
                     // With a job armed, the press (and any drag) places it on tiles or hex
                     // edges instead of clicking or panning.
@@ -151,14 +169,16 @@ fn on_event(game: &mut GameState, input: &mut Controls, e: Event) -> WindowReque
                     input.left_press = Option.Some(Press { origin: cursor, mode, may_click: !game.is_resolving() });
                     input.left_dragging = input.panning;
                     // A drag from the map (not from a panel) selects the units inside its box.
-                    let on_panel = game.ui_covers(cursor, input.size);
+                    let on_panel = over_ui || game.ui_covers(cursor, input.size);
                     input.box_start = if !on_panel && !input.panning { Option.Some(cursor) } else { Option.None };
                 }
             }
             Button.Right => {
+                if over_ui { return WindowRequest.Nothing; }
                 if let Option.Some(cursor) = input.cursor { game.handle_context_click(cursor, input.size, input.mods.control, input.mods.shift); }
             }
             Button.Middle => {
+                if over_ui { return WindowRequest.Nothing; }
                 input.panning = true;
                 if input.left_press.is_some() { input.left_dragging = true; }
             }
@@ -191,16 +211,18 @@ fn on_event(game: &mut GameState, input: &mut Controls, e: Event) -> WindowReque
         },
         Event.Wheel(steps) => {
             let over_catalog = match input.cursor { Option.Some(c) => game.scroll_buildings_at(c, input.size, steps), Option.None => false };
-            if !over_catalog { game.camera.zoom(steps); }
+            if !over_catalog && !over_ui { game.camera.zoom(steps); }
         }
         Event.KeyDown(key, repeat) => {
-            if !repeat {
+            if !repeat && !keys_taken {
                 match key {
                     // Escape closes the settings menu, a view or the selection first; with
                     // nothing to close it opens the settings menu, which has Quit.
                     Key.Escape => game.press_escape(),
                     // F5: borderless fullscreen on the window's monitor, or back.
                     Key.Function(5) => { return WindowRequest.ToggleFullscreen; }
+                    // F11: the classic panels, or back to the library UI.
+                    Key.Function(11) => { game.imgui_ui = !game.imgui_ui; }
                     _ => on_key(game, key),
                 }
             }
@@ -265,16 +287,16 @@ fn on_key(game: &mut GameState, key: Key) can {Log, Rand} {
 /// Plays one frame: advances the game by `dt` seconds and lays out the world and the UI as
 /// two batches. Answers whether to keep running: not once the window was closed, the
 /// screenshot written, or its time run out.
-fn on_frame(game: &mut GameState, input: &Controls, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> bool can {Log, Rand, Clock} {
-    if input.closed || game.quit_requested() { return false; }
+fn on_frame(game: &mut GameState, input: &Controls, ctx: &mut Context, ui: &mut UiState, shot: &mut Option[Screenshot], w: u32, h: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut can {Log, Rand, Clock} {
+    if input.closed || game.quit_requested() { return FrameOut { keep: false, ui: draw_data() }; }
     let shooting = shot.is_some();
     if let &mut Option.Some(s) = shot {
         let now = Clock.now_nanos();
-        if s.is_written() { return false; }
+        if s.is_written() { return FrameOut { keep: false, ui: draw_data() }; }
         if s.timed_out(now) {
             let drawn = s.frames_drawn();
             error(fn() can {Out} { Out.put("no screenshot after 20 s ("); show_i64(drawn as i64); Out.put(" frames drawn)"); });
-            return false;
+            return FrameOut { keep: false, ui: draw_data() };
         }
         s.after_frame(now);
     }
@@ -286,15 +308,24 @@ fn on_frame(game: &mut GameState, input: &Controls, shot: &mut Option[Screenshot
     let world = game.build_vertices();
     for i in 0..world.len() { vertices.push(world[i]); }
     batches.push(DrawBatch { view_proj: game.camera.view_proj(size).to_cols(), first: 0, count: world.len() as u32 });
-    let mut ui = game.build_ui(size, input.cursor);
+    let mut overlay = if game.imgui_ui { Vec.new() } else { game.build_ui(size, input.cursor) };
     if let Option.Some(start) = input.box_start {
         if let Option.Some(end) = input.cursor {
-            if start.distance(end) >= DRAG_THRESHOLD { selection_box(start, end, size, &mut ui); }
+            if start.distance(end) >= DRAG_THRESHOLD { selection_box(start, end, size, &mut overlay); }
         }
     }
-    for i in 0..ui.len() { vertices.push(ui[i]); }
-    batches.push(DrawBatch { view_proj: ui_projection(size).to_cols(), first: world.len() as u32, count: ui.len() as u32 });
-    true
+    for i in 0..overlay.len() { vertices.push(overlay[i]); }
+    batches.push(DrawBatch { view_proj: ui_projection(size).to_cols(), first: world.len() as u32, count: overlay.len() as u32 });
+    // The library UI lays out over the same frame, in logical pixels, and is drawn last.
+    if game.imgui_ui {
+        run_ui(game, ctx, ui, size, scale, dt, input.cursor);
+        game.ui_captured = ui.wants_mouse;
+    } else {
+        ui.wants_mouse = false;
+        ui.wants_keyboard = false;
+    }
+    ui.input = next_frame(ui.input);
+    FrameOut { keep: true, ui: take_ui_data(ui) }
 }
 
 /// The game in a window for `frames` frames (0 for until it is closed).
@@ -311,6 +342,9 @@ fn window_spec() -> WindowPlace {
 
 /// The file the player's settings are kept in between sessions (`persist.tua`).
 const SETTINGS_FILE: str = "settings.txt";
+/// Where the panels were put (`imgui_layout.tua`) and the library window and dock state.
+const LAYOUT_FILE: str = "layout.txt";
+const IMGUI_FILE: str = "imgui.txt";
 
 fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
     let mut rng = seed(Clock.now_nanos() as u64);
@@ -339,6 +373,12 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
         Option.Some(a) => a,
         Option.None => { error(fn() can {Out} { Out.put("the built-in font could not be rasterized"); }); return failed; }
     };
+    let mut built_ctx: Option[FontAtlas] = Option.None;
+    let failed_ctx = handle { built_ctx = Option.Some(ui_atlas()); 0 } with FontError { fail(code) => { abort code } };
+    let ctx_font = match built_ctx {
+        Option.Some(a) => a,
+        Option.None => { error(fn() can {Out} { Out.put("the UI font could not be rasterized"); }); return failed_ctx; }
+    };
     if !claim_app_id(APP_USER_MODEL_ID) { warn(fn() can {Out} { Out.put("couldn't set the taskbar application id"); }); }
     let icons = Icons { small: icon(WINDOW_ICON_SIZE), small_size: WINDOW_ICON_SIZE, big: icon(TASKBAR_ICON_SIZE), big_size: TASKBAR_ICON_SIZE };
     handle {
@@ -350,6 +390,14 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
         let remember = !hidden;
         let saved = if remember { read(SETTINGS_FILE) } else { Option.None };
         if let &Option.Some(t) = &saved { let view = &t; game.set_settings(settings_from_text(view)); }
+        game.imgui_ui = true;
+        if let &Option.Some(name) = &options.open { let _opened = game.open_panel(&name); }
+        let mut ctx = ui_context(ctx_font, if remember { read(IMGUI_FILE) } else { Option.None });
+        let saved_layout = if remember { read(LAYOUT_FILE) } else { Option.None };
+        let mut ui = match &saved_layout {
+            &Option.Some(t) => { let view = &t; ui_state(layout_from_text(view), vec2(spec.width as f32, spec.height as f32)) }
+            &Option.None => ui_state(layout_state(), vec2(spec.width as f32, spec.height as f32)),
+        };
         let mut input = Controls {
             cursor: Option.None,
             size: vec2(spec.width as f32, spec.height as f32),
@@ -363,8 +411,8 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
         };
         let rc = handle { run(TITLE, spec, &icons, &atlas, &ui_font, frames, validate) } with Scene {
             // A screenshot shows the scenario as it starts, whatever the mouse and keyboard do.
-            input(e, scale) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, e) } }
-            frame(w, h, dt, scale, vertices, batches, ui) => { resume on_frame(&mut game, &input, &mut shot, w, h, dt, vertices, batches) }
+            input(e, scale) => { resume if hidden { WindowRequest.Nothing } else { on_event(&mut game, &mut input, &mut ui, scale, e) } }
+            frame(w, h, dt, scale, vertices, batches) => { resume on_frame(&mut game, &input, &mut ctx, &mut ui, &mut shot, w, h, dt, scale, vertices, batches) }
             capture() => { resume match &shot { &Option.Some(s) => s.capture_this_frame(), &Option.None => false } }
             captured(w, h, rgba) => {
                 if let &mut Option.Some(s) = &mut shot { let _ok = s.captured(w, h, rgba); }
@@ -375,6 +423,9 @@ fn play(options: &Options) -> i32 can {Log, Clock, Fs, Env} {
             let now = game.settings_text();
             let unchanged = match &saved { &Option.Some(t) => str_eq(&t, &now), &Option.None => false };
             if !unchanged { write(SETTINGS_FILE, &now); }
+            // Where the player put the panels, and the library's dock trees.
+            write(LAYOUT_FILE, &ui.layout.to_text());
+            write(IMGUI_FILE, &ctx.save_settings());
         }
         let written = match &shot { &Option.Some(s) => s.is_written(), &Option.None => true };
         if rc == 0 && !written {

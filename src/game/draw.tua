@@ -139,7 +139,7 @@ const LABEL_COLOR: Color = [0.05, 0.05, 0.05, 1.0];
 const HEALTH_BAR_BG_COLOR: Color = [0.08, 0.08, 0.08, 1.0];
 
 /// Sizes below are for a unit drawn at full scale, alone in its hex.
-const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.36;
+pub const UNIT_ICON_RADIUS: f32 = HEX_SIZE * 0.36;
 /// Sides of the disc military units stand on.
 const TOKEN_SIDES: u32 = 32;
 /// Civilian hexagons, relative to the military disc.
@@ -1171,7 +1171,7 @@ impl GameState {
 /// The unit's token in its team color with a dark outline, so it reads on any terrain, and its
 /// pictogram on top. Military units stand on a disc; civilians on a hollow pointy-top hexagon
 /// (a pale center inside a team-colored rim), unlike both the disc and the flat-top map hexes.
-fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+pub fn push_unit_icon(center: Vec2, look: UnitLook, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
     let (sides, rotation, size) = if look.civilian { (6, pi() as f32 / 2.0, CIVILIAN_TOKEN_SIZE) } else { (TOKEN_SIDES, 0.0, 1.0) };
     let radius = UNIT_ICON_RADIUS * scale * size;
     let alpha = color[3];
@@ -1437,7 +1437,7 @@ fn push_city_marker(pos: Vec2, team: Team, population: i32, out: &mut Vec[MeshVe
 
 /// A city's crenellated tower in `color`, `scale` times its size on the map (0.84 wide, 0.8
 /// tall), each part edged in dark.
-fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
+pub fn push_city_tower(pos: Vec2, scale: f32, color: Color, out: &mut Vec[MeshVertex]) {
     let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
     let grow = vec2(ICON_OUTLINE_WIDTH * scale, ICON_OUTLINE_WIDTH * scale);
     // The body, then three merlons along the top.

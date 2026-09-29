@@ -21,6 +21,7 @@ use game.city.City;
 use game.city.Site;
 use game.city.Building;
 use game.city.Build;
+use game.ui.RosterKey;
 use game.city.BuildUnit;
 use game.workers.Structure;
 use game.workers.FieldWorker;
@@ -123,6 +124,8 @@ pub struct GameState {
     /// read it through `site_placement`.
     placing_building: Option[(i32, Building)],
     city_queue_scroll: i32,
+    /// The unit group whose members the turn strip shows in a second row.
+    roster_open: Option[RosterKey],
     barracks_queue_scroll: i32,
     hovered_city: Option[i32],
     /// Whether the open city shows each tile's yields (Y toggles it).
@@ -193,6 +196,10 @@ pub struct GameState {
     /// Debug setting (F10): hide what the player's side can't see (`fog.tua`). Kept across
     /// scenario switches and loads.
     fog_of_war: bool,
+    /// Whether the library UI (`imgui.tua`) is the presentation rather than the classic panels,
+    /// and whether it took the cursor last frame: the classic layout is then not hit-tested.
+    imgui_ui: bool,
+    ui_captured: bool,
     /// Every hex the player's side has seen, as it last saw it.
     memory: Map[Hex, Sighting],
     /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.tua`).
@@ -261,6 +268,7 @@ impl GameState {
             moving_manager: Option.None,
             placing_building: Option.None,
             city_queue_scroll: 0,
+            roster_open: Option.None,
             barracks_queue_scroll: 0,
             structures: Map.new(),
             barriers: Map.new(),
@@ -293,6 +301,8 @@ impl GameState {
             map_seed: Option.None,
             ruins: Vec.new(),
             fog_of_war: true,
+            imgui_ui: false,
+            ui_captured: false,
             memory: Map.new(),
             cloud_time: 0.0,
             queue_replace_armed: Option.None,

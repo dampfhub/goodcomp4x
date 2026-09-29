@@ -258,13 +258,16 @@ pub enum WindowRequest {
 /// order they arrived, with the window's physical pixels per logical pixel, and answers what
 /// the window should do about it. `frame` fills `vertices` and `batches` for a frame whose
 /// target is `width` by `height` pixels, `dt` seconds after the previous one; both arrive
-/// empty. `ui` holds the previous frame's UI draw data, to be replaced by this frame's: it is
-/// drawn in the same render pass after every batch. It answers whether to keep running.
+/// empty. It answers whether to keep running and the frame's UI draw data, drawn in the same
+/// render pass after every batch.
 /// `capture`, asked of a hidden window's frame after `frame`, answers whether to read that
 /// frame back; `captured` hands over its pixels, RGBA from the top-left, once it is drawn.
+/// What a frame answers: whether to keep running, and the UI's triangles.
+pub struct FrameOut { keep: bool, ui: DrawData }
+
 pub effect Scene {
     fn input(e: Event, scale: f32) -> WindowRequest;
-    fn frame(width: u32, height: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch], ui: &mut DrawData) -> bool;
+    fn frame(width: u32, height: u32, dt: f32, scale: f32, vertices: &mut Vec[MeshVertex], batches: &mut Vec[DrawBatch]) -> FrameOut;
     fn capture() -> bool;
     fn captured(width: u32, height: u32, rgba: &Vec[u8]);
 }
@@ -313,7 +316,9 @@ fn draw_one(q: &mut Queue, win: &mut Window, sc: &Swapchain, pass: &RenderPass[B
     run.vertices.clear();
     run.batches.clear();
     let scale = window_dpi(&*win) as f32 / 96.0;
-    if !Scene.frame(w, h, dt, scale, &mut run.vertices, &mut run.batches, &mut run.ui) { run.stop = STOP_DONE; return ring; }
+    let FrameOut { keep, ui } = Scene.frame(w, h, dt, scale, &mut run.vertices, &mut run.batches);
+    run.ui = ui;
+    if !keep { run.stop = STOP_DONE; return ring; }
     let capturing = run.hidden && readback_fits(rb, sc) && Scene.capture();
     let n = if (run.vertices.len() as u32) > MAX_VERTICES { MAX_VERTICES } else { run.vertices.len() as u32 };
     let acquired = acquire(pool, t, sc, ring);

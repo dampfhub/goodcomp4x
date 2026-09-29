@@ -1,0 +1,451 @@
+//! The panels the library UI shows beyond the command tray: the production queues (with
+//! drag-to-reorder), the turn strip of what still needs orders, the settings menu and the
+//! hover panel for a city or Barracks. Each is a `PanelBuilder`, like the tray, so the actions
+//! they name go through `activate_target`.
+
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.fmt.show_u64;
+use std.fmt.show_f64_fixed;
+use std.linalg.vec2;
+use std.str.Str;
+use std.str.eq as str_eq;
+use std.str.to_owned;
+use game.GameState;
+use game.PLAYER_TEAM;
+use game.city.BARRACKS_MAX_HP;
+use game.draw.UnitLook;
+use game.settings.Setting;
+use game.settings.SETTINGS;
+use game.text;
+use game.ui.ButtonState;
+use game.ui.ChipIcon;
+use game.ui.PanelBuilder;
+use game.ui.QueueItemSpec;
+use game.ui.QueueKind;
+use game.ui.RosterChip;
+use game.ui.RosterKey;
+use game.ui.Target;
+use game.ui.panel_builder;
+use game.unit_icons.UnitIcon;
+use game.unit.UnitType;
+use game.font.TextSize;
+use game.mesh.Color;
+
+const GAP: f32 = 10.0;
+const LABEL_TEXT: Color = [0.30, 0.32, 0.38, 1.0];
+const DIM_TEXT: Color = [0.55, 0.55, 0.60, 1.0];
+const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
+const TEXT: Color = [0.95, 0.95, 0.95, 1.0];
+/// Chips in one row of the turn strip.
+pub const ROSTER_PER_ROW: i32 = 12;
+
+/// A city amount in quarter units, without decimals when it's whole.
+fn show_quantity(quarters: i32) can {Out} {
+    if quarters % 4 == 0 { show_i64((quarters / 4) as i64); } else { show_f64_fixed(quarters as f64 / 4.0, 2); }
+}
+
+fn show_signed_quantity(quarters: i32) can {Out} {
+    if quarters >= 0 { Out.put("+"); }
+    show_quantity(quarters);
+}
+
+/// Turns needed to finish a queue item at the delivery-adjusted rate shown in its structure
+/// panel; a dash when nothing is delivered. Completion is resolved on the next economy tick.
+fn show_turns_at_rate(remaining: i32, per_turn: i32) can {Out} {
+    if per_turn <= 0 { Out.put("\u{2014}"); return; }
+    let left = if remaining < 1 { 1 } else { remaining };
+    show_i64(((left + per_turn - 1) / per_turn) as i64);
+    Out.put("T");
+}
+
+impl GameState {
+    // ---- production queues --------------------------------------------------------------
+
+    /// The Barracks' training queue of city `i`; nothing when it is empty.
+    pub fn barracks_queue_panel(&self, i: i32, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        if city.barracks_queue.is_empty() { return; }
+        let production = self.barracks_income(i);
+        panel.text(TextSize.Small, "BARRACKS QUEUE - DRAG TO REORDER", LABEL_TEXT);
+        for index in 0..city.barracks_queue.len() {
+            let build = city.barracks_queue[index];
+            let remaining = build.cost() - if index == 0 { city.barracks_production } else { 0 };
+            let label = text(fn() can {Out} {
+                Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(build.cost());
+                Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
+            });
+            panel.queue_item(QueueItemSpec { kind: QueueKind.Barracks, index, label, active: index == 0, locked: false });
+        }
+    }
+
+    /// The production queue of city `i`; nothing when it is empty.
+    pub fn city_queue_panel(&self, i: i32, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        if city.queue.is_empty() { return; }
+        let (_, production) = self.income(i);
+        panel.text(TextSize.Small, "CITY QUEUE - DRAG TO REORDER", LABEL_TEXT);
+        for index in 0..city.queue.len() {
+            let build = city.queue[index];
+            let cost = self.city_build_cost(i, build);
+            let remaining = cost - if index == 0 { city.production } else { 0 };
+            let label = text(fn() can {Out} {
+                Out.put(if index == 0 { "> " } else { "  " }); Out.put(build.name()); Out.put(" | "); show_quantity(cost);
+                Out.put(" PROD | "); show_turns_at_rate(remaining, production); Out.put(" LEFT");
+            });
+            panel.queue_item(QueueItemSpec { kind: QueueKind.City, index, label, active: index == 0, locked: index == 0 && city.pending_building.is_some() });
+        }
+    }
+
+    /// A click on queue row `index`, rather than a drag: the camera goes to a worker job's tile
+    /// (or edge). City and Barracks rows do nothing.
+    pub fn queue_item_clicked(&mut self, kind: QueueKind, index: i32) {
+        match kind {
+            QueueKind.Workers => {
+                let Option.Some(city) = self.worker_list_city() else { return; };
+                if index < 0 || index >= self.cities[city].worker_jobs.len() { return; }
+                let job = self.cities[city].worker_jobs[index];
+                let spot = match job.across { Option.Some(across) => job.hex.to_world().add(across.to_world()).scale(0.5), Option.None => job.hex.to_world() };
+                self.camera.focus_on(spot);
+                let title = self.job_title(job);
+                self.notice = text(fn() can {Out} { Out.put(&title); Out.put(" - WAITING FOR A WORKER"); });
+            }
+            _ => {}
+        }
+    }
+
+    /// Moves queue row `source` of `kind` to place `target`.
+    pub fn reorder_queue(&mut self, kind: QueueKind, source: i32, target: i32) {
+        if source == target { return; }
+        let city = match kind {
+            QueueKind.Workers => self.worker_list_city(),
+            _ => match self.selected_city { Option.Some(c) => Option.Some(c), Option.None => self.selected_barracks },
+        };
+        let Option.Some(city) = city else { return; };
+        match kind {
+            QueueKind.City => {
+                if self.cities[city].pending_building.is_some() && (source == 0 || target == 0) {
+                    self.set_notice("CONFIRM OR REMOVE THE READY BUILDING FIRST");
+                    return;
+                }
+                let n = self.cities[city].queue.len();
+                if source >= 0 && source < n && target >= 0 && target < n {
+                    let item = self.cities[city].queue.remove(source);
+                    self.cities[city].queue.insert(target, item);
+                    self.set_notice("CITY QUEUE REORDERED");
+                }
+            }
+            QueueKind.Barracks => {
+                let n = self.cities[city].barracks_queue.len();
+                if source >= 0 && source < n && target >= 0 && target < n {
+                    let item = self.cities[city].barracks_queue.remove(source);
+                    self.cities[city].barracks_queue.insert(target, item);
+                    self.set_notice("BARRACKS QUEUE REORDERED");
+                }
+            }
+            QueueKind.Workers => {
+                let n = self.cities[city].worker_jobs.len();
+                if source >= 0 && source < n && target >= 0 && target < n {
+                    let job = self.cities[city].worker_jobs.remove(source);
+                    self.cities[city].worker_jobs.insert(target, job);
+                    self.set_notice("WORKER JOBS REORDERED");
+                }
+            }
+        }
+    }
+
+    // ---- the turn strip -----------------------------------------------------------------
+
+    /// The player's units (settlers too) that still need orders, in unit order. None while a
+    /// turn plays out or a city interior is open.
+    pub fn roster_units(&self) -> Vec[i32] {
+        let mut out: Vec[i32] = Vec.new();
+        if self.is_resolving() || self.interior_view.is_some() { return out; }
+        for i in 0..self.units.len() {
+            if self.is_player_controlled(i) && self.needs_orders(i) { out.push(i); }
+        }
+        out
+    }
+
+    fn city_index(&self, id: u32) -> Option[i32] {
+        for i in 0..self.cities.len() { if self.cities[i].id == id { return Option.Some(i); } }
+        Option.None
+    }
+
+    /// Everything the turn strip lists, in its order: cities with nothing to build, cities with
+    /// idle workers, then the unit groups, settlers first, each group where its first unit
+    /// comes in unit order. Nothing while a turn plays out or a city interior is open. Each
+    /// task's units (a group's; none for a city) come with it.
+    pub fn roster_tasks(&self) -> (Vec[RosterKey], Vec[Vec[i32]]) {
+        let mut keys: Vec[RosterKey] = Vec.new();
+        let mut members: Vec[Vec[i32]] = Vec.new();
+        if self.is_resolving() || self.interior_view.is_some() { return (keys, members); }
+        for i in 0..self.cities.len() {
+            if self.city_needs_build(i) { keys.push(RosterKey.Production(self.cities[i].id)); members.push(Vec.new()); }
+        }
+        for i in 0..self.cities.len() {
+            if self.idle_workers(i) > 0 { keys.push(RosterKey.Workers(self.cities[i].id)); members.push(Vec.new()); }
+        }
+        let mut group_keys: Vec[RosterKey] = Vec.new();
+        let mut group_units: Vec[Vec[i32]] = Vec.new();
+        let units = self.roster_units();
+        for k in 0..units.len() {
+            let i = units[k];
+            let unit = &self.units[i];
+            let key = RosterKey.Group(unit.unit_type, self.settlers.contains(unit.id));
+            let mut found: i32 = 0 - 1;
+            for g in 0..group_keys.len() { if group_keys[g] == key { found = g; } }
+            if found >= 0 { group_units[found].push(i); } else { group_keys.push(key); let mut v: Vec[i32] = Vec.new(); v.push(i); group_units.push(v); }
+        }
+        // Settlers are civilian: they go ahead of the military groups.
+        for pass in 0..2 {
+            for g in 0..group_keys.len() {
+                let settlers = match group_keys[g] { RosterKey.Group(_, s) => s, _ => false };
+                if settlers == (pass == 0) { keys.push(group_keys[g]); members.push(copy_ints(&group_units[g])); }
+            }
+        }
+        (keys, members)
+    }
+
+    fn chip_for(&self, key: RosterKey, units: &Vec[i32], selection: &Vec[i32]) -> RosterChip {
+        let team_color = PLAYER_TEAM.color();
+        match key {
+            RosterKey.Production(id) => {
+                let open = match self.selected_city { Option.Some(i) => self.cities[i].id == id, Option.None => false };
+                RosterChip { key, icon: ChipIcon.City, color: team_color, selected: open, count: 1 }
+            }
+            RosterKey.Workers(id) => {
+                let menu = match self.worker_menu_city { Option.Some(i) => self.cities[i].id == id, Option.None => false };
+                let count = match self.city_index(id) { Option.Some(i) => self.idle_workers(i) as i32, Option.None => 1 };
+                RosterChip { key, icon: ChipIcon.Unit(UnitLook { icon: UnitIcon.Shovel, civilian: true }), color: team_color, selected: self.worker_mode && menu, count }
+            }
+            RosterKey.Group(_, _) | RosterKey.Unit(_) => {
+                let mut selected = false;
+                for k in 0..units.len() { if selection.contains(units[k]) { selected = true; } }
+                let look = self.unit_look(&self.units[units[0]]);
+                RosterChip { key, icon: ChipIcon.Unit(look), color: team_color, selected, count: units.len() }
+            }
+        }
+    }
+
+    /// The units of an open group, when it has several and one of them is selected: the strip's
+    /// second row.
+    fn open_roster_group(&self, keys: &Vec[RosterKey], members: &Vec[Vec[i32]]) -> Option[(RosterKey, Vec[i32])] {
+        let Option.Some(open) = self.roster_open else { return Option.None; };
+        let selection = self.selection();
+        for t in 0..keys.len() {
+            if keys[t] != open { continue; }
+            let units = &members[t];
+            let mut any = false;
+            for k in 0..units.len() { if selection.contains(units[k]) { any = true; } }
+            if units.len() > 1 && any { return Option.Some((open, copy_ints(units))); }
+        }
+        Option.None
+    }
+
+    /// The turn strip's content, or `None` when nothing needs seeing to.
+    pub fn roster_panel(&self) -> Option[PanelBuilder] {
+        let (keys, members) = self.roster_tasks();
+        if keys.is_empty() { return Option.None; }
+        let selection = self.selection();
+        let mut waiting: i32 = 0;
+        for t in 0..keys.len() { waiting = waiting + if members[t].len() > 1 { members[t].len() } else { 1 }; }
+        let mut panel = panel_builder(false);
+        panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("NEED ORDERS: "); show_i64(waiting as i64); }), LABEL_TEXT);
+        let mut chips: Vec[RosterChip] = Vec.new();
+        for t in 0..keys.len() { chips.push(self.chip_for(keys[t], &members[t], &selection)); }
+        push_chip_rows(&mut panel, chips);
+        if let Option.Some((key, units)) = self.open_roster_group(&keys, &members) {
+            let role = match key { RosterKey.Group(_, _) => self.unit_role(&self.units[units[0]]).name(), _ => "" };
+            panel.gap(6.0);
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put(role); Out.put(" x"); show_i64(units.len() as i64); }), LABEL_TEXT);
+            let mut singles: Vec[RosterChip] = Vec.new();
+            for k in 0..units.len() {
+                let i = units[k];
+                let mut one: Vec[i32] = Vec.new();
+                one.push(i);
+                singles.push(self.chip_for(RosterKey.Unit(self.units[i].id), &one, &selection));
+            }
+            push_chip_rows(&mut panel, singles);
+        }
+        Option.Some(panel)
+    }
+
+    /// The indices of the player's units a chip stands for, as they are now.
+    fn roster_key_units(&self, key: RosterKey) -> Vec[i32] {
+        let mut out: Vec[i32] = Vec.new();
+        match key {
+            RosterKey.Unit(id) => {
+                for i in 0..self.units.len() {
+                    if self.units[i].id == id && self.is_player_controlled(i) { out.push(i); }
+                }
+            }
+            RosterKey.Group(_, _) => {
+                let (keys, members) = self.roster_tasks();
+                for t in 0..keys.len() { if keys[t] == key { out = copy_ints(&members[t]); } }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// A click on a chip: opens its city, or selects its units (a group's all at once, opening
+    /// its row) and moves the camera to the first.
+    pub fn roster_select(&mut self, key: RosterKey) {
+        if self.is_resolving() { return; }
+        match key {
+            RosterKey.Production(id) => {
+                if let Option.Some(city) = self.city_index(id) { self.open_city(city); }
+                return;
+            }
+            RosterKey.Workers(id) => {
+                if let Option.Some(city) = self.city_index(id) { self.open_worker_menu(city); }
+                return;
+            }
+            _ => {}
+        }
+        let units = self.roster_key_units(key);
+        if units.is_empty() { return; }
+        let first = units[0];
+        self.leave_city_view();
+        if let RosterKey.Group(_, _) = key { self.roster_open = Option.Some(key); }
+        self.set_selection(units);
+        let at = self.units[first].pos.to_world();
+        self.camera.focus_on(at);
+    }
+
+    /// Shift-click on a chip: adds its units to the selection.
+    pub fn roster_add(&mut self, key: RosterKey) {
+        if self.is_resolving() { return; }
+        let units = self.roster_key_units(key);
+        for k in 0..units.len() { self.add_to_selection(units[k]); }
+    }
+
+    /// Ctrl-click on a chip: takes its units out of a selection of several, leaving at least
+    /// one selected.
+    pub fn roster_remove(&mut self, key: RosterKey) {
+        if self.is_resolving() { return; }
+        let units = self.roster_key_units(key);
+        for k in 0..units.len() {
+            if self.selection().len() > 1 { let _removed = self.remove_from_selection(units[k]); }
+        }
+    }
+
+    /// What hovering a chip says.
+    pub fn roster_hint(&self, key: RosterKey) -> Str {
+        match key {
+            RosterKey.Production(id) => text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" HAS NOTHING TO BUILD - CLICK: OPEN IT"); }),
+            RosterKey.Workers(id) => text(fn() can {Out} { Out.put("IDLE WORKERS IN CITY "); show_u64((id + 1) as u64); Out.put(" - CLICK: THE WORKER MENU, TO GIVE THEM JOBS OR LET THEM SLEEP"); }),
+            RosterKey.Group(_, _) => {
+                let units = self.roster_key_units(key);
+                let role = if units.is_empty() { "" } else { self.unit_role(&self.units[units[0]]).name() };
+                text(fn() can {Out} { Out.put(role); Out.put(" x"); show_i64(units.len() as i64); Out.put(" - CLICK: SELECT ALL \u{b7} SHIFT: ADD \u{b7} CTRL: REMOVE"); })
+            }
+            RosterKey.Unit(id) => {
+                let mut role = "";
+                for i in 0..self.units.len() { if self.units[i].id == id { role = self.unit_role(&self.units[i]).name(); } }
+                text(fn() can {Out} { Out.put(role); Out.put(" - CLICK: SELECT \u{b7} SHIFT: ADD \u{b7} CTRL: REMOVE"); })
+            }
+        }
+    }
+
+    // ---- the settings menu --------------------------------------------------------------
+
+    /// The settings menu's content: the settings under a heading per group, then Close and Quit.
+    pub fn settings_panel_content(&self) -> PanelBuilder {
+        let mut panel = panel_builder(false);
+        panel.text(TextSize.Title, "SETTINGS", TEXT);
+        let mut group = "";
+        for k in 0..5 {
+            let setting = SETTINGS[k];
+            let heading = setting.group();
+            if !str_eq(heading, group) {
+                group = heading;
+                panel.gap(GAP);
+                panel.heading(group);
+            }
+            panel.setting(setting, self.settings.get(setting));
+        }
+        panel.gap(GAP);
+        panel.begin_buttons();
+        panel.button(Target.CloseSettings, "CLOSE", "ESC", ButtonState.Ready, false);
+        panel.button(Target.Quit, "QUIT", "", ButtonState.Ready, false);
+        panel.end_buttons(true);
+        panel
+    }
+
+    // ---- the hover panel ----------------------------------------------------------------
+
+    /// A city (or its Barracks): population, stores and income, and what it's building.
+    pub fn structure_hover_panel(&self, i: i32, barracks: bool, panel: &mut PanelBuilder) {
+        let city = &self.cities[i];
+        let (id, team) = (city.id, city.team);
+        if barracks {
+            let Option.Some(tile) = city.barracks else { return; };
+            let active = !city.worked.is_empty() && city.worked[0] == tile;
+            let production = if active { self.barracks_income(i) } else { 0 };
+            let hp = city.barracks_hp;
+            panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); Out.put(" BARRACKS"); }), team.color());
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put("HP "); show_f64_fixed(hp as f64, 0); Out.put("/"); show_f64_fixed(BARRACKS_MAX_HP as f64, 0);
+                Out.put(" \u{b7} "); show_signed_quantity(production); Out.put(" PROD/T");
+            }), GOLD_TEXT);
+            let queue = if city.barracks_queue.is_empty() {
+                to_owned("EMPTY")
+            } else {
+                let build = city.barracks_queue[0];
+                let stored = city.barracks_production;
+                text(fn() can {Out} { Out.put(build.name()); Out.put(" \u{b7} "); show_turns_at_rate(build.cost() - stored, production); Out.put(" LEFT"); })
+            };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&queue); }), DIM_TEXT);
+            if !city.barracks_queue.is_empty() {
+                let f = city.barracks_production as f32 / city.barracks_queue[0].cost() as f32;
+                panel.bar(if f < 0.0 { 0.0 } else if f > 1.0 { 1.0 } else { f });
+            }
+        } else {
+            let (growth, _, _) = self.growth_status(i);
+            let (_, production) = self.income(i);
+            panel.text_owned(TextSize.Title, text(fn() can {Out} { Out.put("CITY "); show_u64((id + 1) as u64); }), team.color());
+            panel.text_owned(TextSize.Small, text(fn() can {Out} {
+                Out.put("POP "); show_i64(growth as i64); Out.put("% \u{b7} "); show_signed_quantity(production); Out.put(" PROD/T");
+            }), GOLD_TEXT);
+            panel.bar(growth as f32 / 100.0);
+            let queue = if city.queue.is_empty() {
+                to_owned("EMPTY")
+            } else {
+                let build = city.queue[0];
+                let left = self.city_build_cost(i, build) - city.production;
+                text(fn() can {Out} { Out.put(build.name()); Out.put(" \u{b7} "); show_turns_at_rate(left, production); Out.put(" LEFT"); })
+            };
+            panel.text_owned(TextSize.Small, text(fn() can {Out} { Out.put("QUEUE: "); Out.put(&queue); }), DIM_TEXT);
+            if !city.queue.is_empty() {
+                let f = city.production as f32 / self.city_build_cost(i, city.queue[0]) as f32;
+                panel.bar(if f < 0.0 { 0.0 } else if f > 1.0 { 1.0 } else { f });
+            }
+        }
+    }
+}
+
+fn copy_ints(v: &Vec[i32]) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    for k in 0..v.len() { out.push(v[k]); }
+    out
+}
+
+fn chip_row(chips: &Vec[RosterChip], from: i32, to: i32) -> Vec[RosterChip] {
+    let mut row: Vec[RosterChip] = Vec.new();
+    for k in from..to { row.push(chips[k]); }
+    row
+}
+
+/// Adds `chips` to `panel`, `ROSTER_PER_ROW` to a row.
+fn push_chip_rows(panel: &mut PanelBuilder, chips: Vec[RosterChip]) {
+    let n = chips.len();
+    let mut start = 0;
+    while start < n {
+        let end = if start + ROSTER_PER_ROW < n { start + ROSTER_PER_ROW } else { n };
+        if start > 0 { panel.gap(6.0); }
+        panel.roster(chip_row(&chips, start, end));
+        start = end;
+    }
+}
