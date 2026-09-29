@@ -149,7 +149,9 @@ can watch or change what's sent. What's in place:
   Settler below population 3), and founds only where the founding rules allow (open land, no
   ruins, 6 hexes from every city, those it founds that turn included), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city
-  or a building; workers out on the map can only be recalled, and workers held at home only
+  or a building, each tile once, in no more clusters than the population allows (four at most,
+  each a manager on land, beside no other, and up to six workers beside it); workers out on the
+  map can only be recalled, and workers held at home only
   released.
 - **No panics from input.** A randomized test throws thousands of hostile plans at the checks,
   and applies and resolves every one that passes, without a crash; others throw garbage, huge

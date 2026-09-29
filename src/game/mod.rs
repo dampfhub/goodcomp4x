@@ -102,8 +102,9 @@ pub struct GameState {
     interior_selected: Option<u32>,
     /// Preserve the exterior camera while the tactical city map is open.
     exterior_camera: Option<Camera>,
-    /// City whose manager has been picked up and awaits a destination click.
-    moving_manager: Option<usize>,
+    /// The city and cluster whose manager has been picked up and awaits a
+    /// destination click.
+    moving_manager: Option<(usize, usize)>,
     hovered_city: Option<usize>,
     /// Whether the open city shows each tile's yields (Y toggles it).
     show_yields: bool,
@@ -395,8 +396,8 @@ impl GameState {
         // Place both city centers on the shoreline, not two tiles inland.
         for (city, sign) in [(0, -1), (1, 1)] {
             game.cities[city].pos = Hex::new(sign * 2, 0);
-            game.cities[city].worked.clear();
-            game.cities[city].remembered_worked.clear();
+            game.cities[city].clusters.clear();
+            game.cities[city].remembered.clear();
         }
         game.units.clear();
         game.next_unit_id = 0;

@@ -278,7 +278,10 @@ impl GameState {
             look(worker.pos, WORKER_SIGHT);
         }
         for city in self.cities.iter().filter(|c| c.team == team) {
-            seen.extend(city.worked.iter().chain(&city.remembered_worked).copied());
+            seen.extend(
+                city.worked()
+                    .chain(super::city::cluster_tiles(&city.remembered)),
+            );
         }
         seen
     }
@@ -720,8 +723,8 @@ pub(super) mod tests {
         let city = &mut game.cities[0];
         city.pos = origin;
         city.population = 1;
-        city.worked = vec![worked];
-        city.remembered_worked = vec![worked];
+        city.clusters = crate::game::city::one_cluster(&[worked]);
+        city.remembered = city.clusters.clone();
         assert_eq!(game.routes(0).costs.get(&worked), Some(&6));
         (game, 0, worked)
     }
@@ -748,13 +751,13 @@ pub(super) mod tests {
         // The turn ends, and the cut-off citizen moves elsewhere; the enemy
         // stays in sight on the tile it took.
         game.resolve_economy();
-        assert!(!game.cities[city].worked.contains(&worked));
+        assert!(!game.cities[city].works(worked));
         let fog = game.fog();
         assert!(fog.sees(worked) && fog.shows(&game.units[0]));
 
         // Once the player assigns citizens elsewhere, which forgets that
         // tile, it's out of sight again.
-        game.cities[city].remembered_worked = game.cities[city].worked.clone();
+        game.cities[city].remembered = game.cities[city].clusters.clone();
         assert!(!game.fog().shows(&game.units[0]));
     }
 

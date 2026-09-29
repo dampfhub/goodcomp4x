@@ -965,7 +965,7 @@ mod tests {
         let mut g = GameState::city_scenario();
         g.cities[0].barracks = Some(Hex::new(-1, 0));
         g.open_barracks(0);
-        g.moving_manager = Some(0);
+        g.moving_manager = Some((0, 0));
         g.placing_job = Some(JobKind::Road);
         g.select_next_unit();
         assert_eq!(g.selected_barracks, None);

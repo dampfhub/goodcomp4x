@@ -566,7 +566,8 @@ impl GameState {
 
     /// Every side's citizens eat from its stockpile. A side that can't feed
     /// them all has its stockpile's food emptied, and its largest city
-    /// (the first, on ties) loses a citizen, never going below one.
+    /// (the first, on ties) loses a citizen (`remove_citizen`), never
+    /// going below one.
     pub(in crate::game) fn feed_citizens(&mut self) {
         for team in Team::ALL {
             let upkeep = self.upkeep(team);
@@ -583,8 +584,9 @@ impl GameState {
                 .filter(|(_, c)| c.team == team && c.population > 1)
                 .max_by_key(|&(i, c)| (c.population, std::cmp::Reverse(i)))
                 .map(|(i, _)| i);
-            if let Some(city) = largest {
-                self.cities[city].population -= 1;
+            if let Some(city) = largest
+                && self.remove_citizen(city)
+            {
                 log::info!("{team:?} city {} starves", self.cities[city].id + 1);
                 if team == self.local_team {
                     self.notice = format!(

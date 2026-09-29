@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use super::GameState;
 use super::camera::Camera;
 use super::city::{
-    Build, BuildUnit, Building, MAX_CITY_POPULATION, MIN_CITY_DISTANCE, Priorities, Queued,
-    SETTLER_MIN_POPULATION, Stock, grow_price, in_interior,
+    Build, BuildUnit, Building, Cluster, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE,
+    Priorities, Queued, SETTLER_MIN_POPULATION, Stock, WORKERS_PER_MANAGER, cluster_tiles,
+    grow_price, in_interior, managers_for,
 };
 use super::hex::Hex;
 use super::settings::Settings;
@@ -33,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 18;
+pub const PROTOCOL_VERSION: u32 = 19;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -149,8 +150,9 @@ pub struct CityPlan {
     /// Each item with whether it's paid for and its work (`Queued`).
     pub queue: Vec<Queued<Build>>,
     pub barracks_queue: Vec<Queued<BuildUnit>>,
-    pub worked: Vec<Hex>,
-    pub remembered_worked: Vec<Hex>,
+    /// Its citizens' clusters (`City::clusters`), and as last assigned.
+    pub clusters: Vec<Cluster>,
+    pub remembered: Vec<Cluster>,
     pub priorities: Priorities,
     pub worker_jobs: Vec<WorkerJob>,
     /// Of its workers at home, those held there (recalled, not yet
@@ -969,17 +971,31 @@ impl GameState {
                 .worker_jobs
                 .iter()
                 .all(|j| on_map(j.hex) && j.across.is_none_or(on_map));
+            // Up to its managers' clusters, each a manager and its workers,
+            // first: a bound on what the lists below can hold.
+            let clusters_fit = |clusters: &[Cluster]| {
+                clusters.len() <= MAX_MANAGERS
+                    && clusters
+                        .iter()
+                        .all(|c| c.workers.len() <= WORKERS_PER_MANAGER)
+            };
+            if !clusters_fit(&city.clusters) || !clusters_fit(&city.remembered) {
+                return bad(format!(
+                    "CITY AT ({}, {}): CLUSTERS PAST THE CAP",
+                    city.pos.q, city.pos.r
+                ));
+            }
+            let worked: Vec<Hex> = cluster_tiles(&city.clusters).collect();
+            let remembered: Vec<Hex> = cluster_tiles(&city.remembered).collect();
             if ![
                 city.queue.len(),
                 city.barracks_queue.len(),
-                city.worked.len(),
-                city.remembered_worked.len(),
                 city.worker_jobs.len(),
             ]
             .into_iter()
             .all(short)
-                || !hexes_on_map(&city.worked)
-                || !hexes_on_map(&city.remembered_worked)
+                || !hexes_on_map(&worked)
+                || !hexes_on_map(&remembered)
                 || !jobs_on_map
             {
                 return bad(format!("CITY AT ({}, {})", city.pos.q, city.pos.r));
@@ -1044,17 +1060,36 @@ impl GameState {
                 return bad(format!("{at}: A BARRACKS BUILD IT CAN'T MAKE"));
             }
             // Its citizens work tiles in its reach (or ones they already
-            // worked), never a city or a building, no more than it has.
+            // worked), never a city or a building, no more than it has, each
+            // tile once.
             let routes = start.routes_from(team, city.pos);
             let workable = |h: &Hex| {
-                (routes.costs.contains_key(h) || before.is_some_and(|c| c.worked.contains(h)))
+                (routes.costs.contains_key(h) || before.is_some_and(|c| c.works(*h)))
                     && !start.closed_to_citizens(*h)
             };
-            if city.worked.len() > population.min(MAX_CITY_POPULATION)
-                || city.remembered_worked.len() > MAX_CITY_POPULATION
-                || !city.worked.iter().all(workable)
+            let mut once = std::collections::HashSet::new();
+            if worked.len() > population.min(MAX_CITY_POPULATION)
+                || remembered.len() > MAX_CITY_POPULATION
+                || !worked.iter().all(workable)
+                || !worked.iter().all(|h| once.insert(*h))
             {
                 return bad(format!("{at}: TILES IT CAN'T WORK"));
+            }
+            // As many managers as its citizens allow, each on land and
+            // beside none of the others, its workers beside it.
+            let managers: Vec<Hex> = city.clusters.iter().map(|c| c.manager).collect();
+            let spaced = managers.iter().enumerate().all(|(i, a)| {
+                !start.grid.terrain(*a).is_water()
+                    && managers[..i].iter().all(|b| a.distance(*b) > 1)
+            });
+            if city.clusters.len() > managers_for(population)
+                || !spaced
+                || !city
+                    .clusters
+                    .iter()
+                    .all(|c| c.workers.iter().all(|w| w.distance(c.manager) == 1))
+            {
+                return bad(format!("{at}: CLUSTERS THAT BREAK THE RULES"));
             }
         }
         // Cavalry and Armored: no more queued than its deposits allow, or
@@ -1352,8 +1387,8 @@ impl GameState {
                     founded_by,
                     queue: c.queue.clone(),
                     barracks_queue: c.barracks_queue.clone(),
-                    worked: c.worked.clone(),
-                    remembered_worked: c.remembered_worked.clone(),
+                    clusters: c.clusters.clone(),
+                    remembered: c.remembered.clone(),
                     priorities: c.priorities,
                     worker_jobs: c.worker_jobs.clone(),
                     held_workers: c.held_workers,
@@ -1467,8 +1502,8 @@ impl GameState {
             }
             city.queue = city_plan.queue.clone();
             city.barracks_queue = city_plan.barracks_queue.clone();
-            city.worked = city_plan.worked.clone();
-            city.remembered_worked = city_plan.remembered_worked.clone();
+            city.clusters = city_plan.clusters.clone();
+            city.remembered = city_plan.remembered.clone();
             city.priorities = city_plan.priorities;
             city.worker_jobs = city_plan.worker_jobs.clone();
             city.held_workers = city_plan.held_workers;
@@ -1527,7 +1562,7 @@ impl GameState {
             for q in &c.barracks_queue {
                 (q.paid, q.progress).hash(&mut h);
             }
-            c.worked.hash(&mut h);
+            c.clusters.hash(&mut h);
             c.priorities.hash(&mut h);
             c.built.len().hash(&mut h);
             c.queue.len().hash(&mut h);
@@ -1732,7 +1767,7 @@ mod tests {
         let city_pos = guest.cities[city].pos;
         // A Barracks by its city (not on a tile a citizen works), on both
         // machines, as an earlier turn would leave it.
-        let worked = guest.cities[city].worked.clone();
+        let worked = guest.cities[city].worked().collect::<Vec<_>>();
         let barracks = city_pos
             .neighbors()
             .into_iter()
@@ -1842,7 +1877,7 @@ mod tests {
         guest.release_worker();
         // Clicks on its tiles don't move citizens (or its manager, picked
         // up from its tile).
-        let worked = guest.cities[city].worked.clone();
+        let worked = guest.cities[city].worked().collect::<Vec<_>>();
         for &hex in worked.iter().chain(&city_pos.neighbors()) {
             click(&mut guest, hex, ClickMode::Normal);
             guest.open_city(city);
@@ -2373,7 +2408,7 @@ mod tests {
             .pos
             .neighbors()
             .into_iter()
-            .find(|h| guest.grid.is_passable(*h) && !c.worked.contains(h))
+            .find(|h| guest.grid.is_passable(*h) && !c.works(*h))
             .unwrap();
         let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
         for c in [&mut guest.cities[city], &mut start.cities[city]] {
@@ -2445,8 +2480,8 @@ mod tests {
             founded_by: Some(settler),
             queue: Vec::new(),
             barracks_queue: Vec::new(),
-            worked: Vec::new(),
-            remembered_worked: Vec::new(),
+            clusters: Vec::new(),
+            remembered: Vec::new(),
             priorities: Priorities::default(),
             worker_jobs: Vec::new(),
             held_workers: 0,
@@ -2818,7 +2853,7 @@ mod tests {
             .all_hexes()
             .find(|&h| h.distance(plan.cities[0].pos) > 6)
             .unwrap();
-        plan.cities[0].worked.push(far);
+        plan.cities[0].clusters[0].workers.push(far);
         refused(&mut host, plan);
         // A queue far longer than play makes.
         let mut plan = good.clone();
@@ -2935,7 +2970,7 @@ mod tests {
                         progress: if rng.random_bool(0.1) { 4 } else { 0 },
                     })
                     .collect();
-                city.worked.reverse();
+                city.clusters.reverse();
                 city.worker_jobs = (0..rng.random_range(0..4))
                     .map(|_| {
                         let hex = near(city.pos, 4, &mut rng);
@@ -3449,7 +3484,85 @@ mod tests {
         let mut applied = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
         applied.apply_plan(&plan);
         assert_eq!(applied.cities[city].priorities, order);
-        assert_eq!(applied.cities[city].worked, guest.cities[city].worked);
+        assert_eq!(applied.cities[city].clusters, guest.cities[city].clusters);
+    }
+
+    #[test]
+    fn a_citys_clusters_pass_the_checks_only_within_the_rules() {
+        let (mut host, mut guest) = pair();
+        let city = guest
+            .cities
+            .iter()
+            .position(|c| c.team == GUEST_SEAT)
+            .unwrap();
+        // Grown to nine on both machines: two managers.
+        guest.cities[city].population = 9;
+        guest.auto_assign_city(city);
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].population = 9;
+        assert_eq!(guest.cities[city].clusters.len(), 2);
+        let good = guest.team_plan(GUEST_SEAT);
+        assert_eq!(host.check_plan(&good), Ok(()));
+        let c = good
+            .cities
+            .iter()
+            .position(|c| c.pos == guest.cities[city].pos)
+            .unwrap();
+        let clusters = good.cities[c].clusters.clone();
+        let refused = |host: &GameState, change: &dyn Fn(&mut Vec<Cluster>)| {
+            let mut plan = good.clone();
+            change(&mut plan.cities[c].clusters);
+            host.check_plan(&plan).expect_err("refused")
+        };
+        // Five clusters, and a manager with seven workers: past the cap.
+        let why = refused(&host, &|cl| {
+            cl.extend((0..3).map(|i| Cluster::new(Hex::new(i * 3, 9))))
+        });
+        assert!(why.contains("PAST THE CAP"), "{why}");
+        let why = refused(&host, &|cl| {
+            let m = cl[0].manager;
+            cl[0].workers = m.neighbors().into_iter().chain([m]).collect();
+        });
+        assert!(why.contains("PAST THE CAP"), "{why}");
+        // A third manager at nine citizens.
+        let why = refused(&host, &|cl| {
+            let spare = cl[1].workers.remove(0);
+            cl.push(Cluster::new(spare));
+        });
+        assert!(why.contains("CITY AT"), "{why}");
+        // A worker beside no manager of its own.
+        let stray = clusters[1]
+            .workers
+            .iter()
+            .copied()
+            .find(|w| w.distance(clusters[0].manager) > 1);
+        if let Some(stray) = stray {
+            let why = refused(&host, &|cl| {
+                cl[1].workers.retain(|&w| w != stray);
+                cl[0].workers.pop();
+                cl[0].workers.push(stray);
+            });
+            assert!(why.contains("BREAK THE RULES"), "{why}");
+        }
+        // Two managers side by side.
+        let why = refused(&host, &|cl| {
+            let beside = cl[0].workers.remove(0);
+            cl[1].manager = beside;
+        });
+        assert!(why.contains("CITY AT"), "{why}");
+        // A tile worked twice.
+        let why = refused(&host, &|cl| {
+            let twice = cl[0].workers[0];
+            cl[0].workers.pop();
+            cl[0].workers.push(twice);
+        });
+        assert!(why.contains("TILES IT CAN'T WORK"), "{why}");
+        // Nothing reached the game, and the sound plan applies as sent.
+        host.receive(GUEST_SEAT, Message::Plan(good.clone()))
+            .expect("sound");
+        let mut applied = host.lockstep.as_ref().unwrap().turn_start.clone().unwrap();
+        applied.apply_plan(&good);
+        assert_eq!(applied.cities[city].clusters, clusters);
     }
 
     #[test]

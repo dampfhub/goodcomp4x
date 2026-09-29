@@ -565,35 +565,49 @@ every turn end.
   beside the city, and one 4 hexes out along it 75%. Enemy units, contested hexes, enemy cities and mountains block
   routes, and an enemy on the city blocks them all. Routes are recalculated every time they're
   used.
-- **Manager and workers:** population is at most 7: the manager (the first worked tile, ringed in
-  gold and marked `M`, which must be land) plus up to six workers, each adjacent to the manager.
-  A worked tile belongs to only one city. To move the
-  manager, click it to pick it up (its workers leave the map with it), then click its
-  destination; workers keep their offsets where they can and are otherwise replaced by the best
-  nearby tiles. Clicking the manager again puts it and its workers back.
+- **Managers and workers:** population is at most 28, worked as up to four **clusters**, each a
+  manager (ringed in gold, on land) and up to six workers, each adjacent to its own manager. A
+  city has a manager for each 7 citizens or part of that (citizens 1, 8, 15 and 22 bring one),
+  so up to 4. Managers are marked `M`, or `M1` to `M4` once a city has several, and no manager
+  stands beside another of its city's managers. A worked tile belongs to only one city and one
+  cluster. A citizen with no tile it may work idles (a manager beside the city center, say, has
+  five open tiles, not six). To move a manager, click it to pick it up (its workers leave the
+  map with it; the other clusters stay), then click its destination: land in reach, not
+  another cluster's tile, beside none of the other managers. Its workers keep their offsets
+  where they can and are otherwise replaced by the best nearby tiles. Clicking the manager
+  again puts it and its workers back.
 - **Citizens:** click tiles to assign or release; A auto-assigns by the city's **priority
   order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
-  time, the manager first, each on the free tile worth the most: its delivered food, wood and
+  time, the first manager first, each on the open tile worth the most: its delivered food, wood and
   metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
   hex coordinates. The **food floor** holds whatever the order: until the food the city center
   and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts as first
-  and the other two keep their order. So the manager, placed while the city is unfed, always
-  goes by food first. Changing the order (drag its chips, or click one to put it first)
+  and the other two keep their order. So the first manager, placed while the city is unfed, always
+  goes by food first. A citizen becomes a worker, beside a manager whose cluster has room (the
+  first such cluster takes it); once no manager has room or an open tile beside it, and the
+  population allows another manager, it becomes a new manager on the best open land tile
+  beside none of the others. A click assigns the same way: a tile beside a manager with room
+  takes a worker; open land clear of the managers takes a new manager when one is allowed.
+  Changing the order (drag its chips, or click one to put it first)
   re-assigns. On growth or route disruption, reconciliation keeps valid manual assignments and
   fills an open slot the same way, by the order with the food floor, counting the food of the
   tiles kept; a manual tile cut off by an enemy is remembered and returns
-  when the route reopens, unless you changed it.
+  when the route reopens, unless you changed it. A manager cut off is stood in for by the first
+  of its workers that could manage, until its tile is back.
+- **Losing a citizen** (starving, or a Settler costing one): an idle citizen goes first; then
+  the last cluster's last worker, and a manager only once its cluster has no workers left.
+  A city never goes below one citizen.
 - **Stockpile** (`city/economy.rs`): each side has one store of food, wood and metal (top bar,
   with its change a turn), not one per city. Every city's delivered goods go into it at the
   turn's economy. A side starts with 10 food, 10 wood and 4 metal.
 - **Food and upkeep:** each citizen eats 2 food a turn from the stockpile, so one city's farms can
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
-  side's largest city (the first on ties) loses a citizen (never below 1).
+  side's largest city (the first on ties) loses a citizen (see Losing a citizen; never below 1).
 - **Growth** is bought: Grow (9, or the city tray's Grow card) queues one more citizen, paid in
   food when work on it starts: 10 + 10 × (population + the Grows already paid for in that city),
   so a Grow queued behind another costs a citizen more by the time its turn comes. It takes 2
   turns in the city queue like any build. Nothing grows by itself, and no Grow goes past the
-  cap of 7, counting every Grow queued.
+  cap of 28, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
   limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
   Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time). A build is paid in full from the stockpile when work on it
@@ -666,8 +680,8 @@ every turn end.
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
     (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's (when work
     on an item starts; one it can't pay for waits), training
-    twice as fast as a city center, wherever the city's manager is (with production speeding
-    builds, the manager beside the barracks adds its worked tiles' production, times their delivery
+    twice as fast as a city center, wherever the city's managers are (with production speeding
+    builds, each manager beside the barracks adds its cluster's production, times their delivery
     share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
     on a deposit: Horses or Iron under it, or on or beside a Stable or Forge next to it. Each
     deposit a side's Barracks draw on allows 3 of that troop, counting those alive and queued, so
@@ -818,7 +832,7 @@ every turn end.
   every city's delivery, less the citizens' food), the latest notice, and the End Turn button, whose label names what is
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN.
-- **Command tray** (bottom-left): with a city open, it shows population, what the city delivers
+- **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers
   and its citizens eat, the current build and its turns left, the priority chips (food, wood and
   metal icons, each with its rank), the Grow card
   (9), unit cards (1-3) and the Worker card (8), each with its price and turns (never dimmed for
@@ -843,8 +857,8 @@ every turn end.
   units' tokens, which selects the unit and closes the view (the rest of its hex still manages the
   tile); it closes on Tab, Space, Escape, or a click off the map. A barracks view closes the same
   way, and on a unit's token likewise; C switches
-  it to its city. Worked tiles are outlined green (the manager's in gold; red if disrupted).
-  Hovering the manager draws a dotted line along its goods' route to the city: the cheapest
+  it to its city. Worked tiles are outlined green (managers' in gold, marked M or M1 to M4; red if disrupted).
+  Hovering a manager draws a dotted line along its goods' route to the city: the cheapest
   route, as you know the board. With yields shown (Y or the Yields button; on by default), the open city's reachable and worked tiles show
   food (wheat), wood (a log) and metal (an ingot) with delivery percentages. Alt shows every
   explored tile's yields, and while something is being placed with yields off, the open city's

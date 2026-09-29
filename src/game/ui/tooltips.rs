@@ -252,12 +252,7 @@ impl GameState {
             notes.push(format!("{} {}", special.name(), gains.join(" ")));
         }
         notes.extend(self.ruin_notes(hex, memory.is_some()));
-        if let Some(worker) = self
-            .cities
-            .iter()
-            .filter(visible)
-            .find(|c| c.worked.contains(&hex))
-        {
+        if let Some(worker) = self.cities.iter().filter(visible).find(|c| c.works(hex)) {
             notes.push(format!("WORKED BY CITY {}", worker.id + 1));
         }
         if let Some(open) = self.selected_city

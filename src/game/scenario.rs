@@ -365,7 +365,7 @@ mod tests {
                     .any(|n| !game.grid.terrain(n).is_water() && routes.costs.contains_key(&n));
                 assert!(land_beside, "seed {seed}: {hex:?} reached over water");
             }
-            let manager = game.cities[0].worked[0];
+            let manager = game.cities[0].clusters[0].manager;
             assert!(!game.grid.terrain(manager).is_water(), "manager on land");
             return;
         }

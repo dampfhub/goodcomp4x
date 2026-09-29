@@ -2840,7 +2840,7 @@ fn waiting_guest() -> GameState {
     guest.update(0.0);
     let team = guest.local_team;
     let city = guest.cities.iter().position(|c| c.team == team).unwrap();
-    let worked = guest.cities[city].worked.clone();
+    let worked = guest.cities[city].worked().collect::<Vec<_>>();
     let pos = guest.cities[city].pos;
     let site = pos
         .neighbors()
@@ -3357,7 +3357,7 @@ fn assigned_by(game: &GameState, order: Priorities) -> Vec<Hex> {
     let mut copy = game.clone();
     copy.cities[city].priorities = order;
     copy.auto_assign_city(city);
-    copy.cities[city].worked.clone()
+    copy.cities[city].worked().collect::<Vec<_>>()
 }
 
 #[test]
@@ -3417,7 +3417,7 @@ fn priority_chips_show_the_order_and_drag_or_click_to_change_it() {
         game.cities[city].priorities,
         Priorities([Metal, Food, Wood])
     );
-    assert_eq!(game.cities[city].worked, expected);
+    assert_eq!(game.cities[city].worked().collect::<Vec<_>>(), expected);
     assert_eq!(game.notice, "CITY PRIORITIES: METAL > FOOD > WOOD");
     // A press and release on one chip (no drag) puts it first.
     let chips = priority_chips(&game);
@@ -3479,7 +3479,58 @@ fn imgui_priority_chips_click_to_put_first_and_drag_to_reorder() {
         Priorities([Metal, Wood, Food])
     );
     let expected = assigned_by(&game, Priorities([Metal, Wood, Food]));
-    assert_eq!(game.cities[city].worked, expected);
+    assert_eq!(game.cities[city].worked().collect::<Vec<_>>(), expected);
+}
+
+#[test]
+fn a_city_of_28_lists_its_four_clusters_and_its_tray_still_fits() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    game.cities[city].population = 28;
+    game.auto_assign_city(city);
+    assert_eq!(game.cities[city].clusters.len(), 4);
+    let text = panel_strings(|p| game.city_tray(city, p));
+    assert_shows(&text, "POPULATION 28/28");
+    assert_shows(&text, "4 OF 4 MANAGERS");
+    // A line per cluster, marked as its manager is on the map.
+    for (k, cluster) in game.cities[city].clusters.iter().enumerate() {
+        let line = format!("M{} {}/6 WORKERS", k + 1, cluster.workers.len());
+        assert_shows(&text, &line);
+    }
+    // With one cluster, the citizens line says it all.
+    let mut small = game.clone();
+    small.cities[city].population = 5;
+    small.auto_assign_city(city);
+    let text = panel_strings(|p| small.city_tray(city, p));
+    assert!(!text.iter().any(|l| l.contains("WORKERS ")), "{text:?}");
+    // Classic, on a big and a small screen: the tray docks on screen, clear
+    // of the other panels, its buttons in it and clickable.
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let layout = game.layout(screen);
+        let tray = panel_with(&layout, Target::OpenInterior).expect("the tray docks");
+        assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{screen}");
+        assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{screen}");
+        for &(min, max) in &layout.panels {
+            let other = Rect { min, max };
+            assert!(min == tray.min || !tray.overlaps(other, 0.0), "{screen}");
+        }
+        for target in [
+            Target::Priority(Good::Food),
+            Target::Grow,
+            Target::OpenInterior,
+        ] {
+            assert!(
+                clickable_in(&layout, tray, target),
+                "{target:?} at {screen}"
+            );
+        }
+    }
+    // ImGui draws the same tray, its buttons with it.
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    for target in [Target::Priority(Good::Food), Target::Grow] {
+        assert!(screen.button(target).is_some(), "{target:?}");
+    }
 }
 
 #[test]
