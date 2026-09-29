@@ -802,5 +802,45 @@ fn looking_inside_a_city_and_ordering_a_troop_there_is_a_sound_plan() {
         play_turn(&mut t);
         assert(t.games[0].checksum() == t.host.checksum() && t.games[1].checksum() == t.host.checksum());
         assert(t.host.turn == 1);
+        // The order was carried out on every machine: the troop stands where it was sent.
+        for k in 0..3 {
+            let game = if k == 0 { &t.host } else if k == 1 { &t.games[0] } else { &t.games[1] };
+            let mut u = 0 - 1;
+            for i in 0..game.units.len() { if game.units[i].id == fighter { u = i; } }
+            assert(u < 0 || game.cities[city].interior.index_of(fighter).is_none() || game.cities[city].interior.fighters[game.cities[city].interior.index_of(fighter).unwrap_or(0)].pos == open);
+        }
+    });
+}
+
+/// Red's first plan is at the host, then Red takes the turn back and sends another while the host
+/// ends its turn: the host closes the turn with Red's first plan before Red's messages reach it,
+/// and Red's take-back and resend, which it sent before it knew, must not spend the next turn's
+/// place: the turn after plays out with both players' plans.
+@test
+fn a_take_back_the_host_answered_first_leaves_the_next_turn_free() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        end_turn_building(&mut t.games[0], Option.None);
+        t.exchange();
+        t.games[0].take_back_turn();
+        end_turn_building(&mut t.games[0], Option.Some(BuildUnit.Melee));
+        end_turn_building(&mut t.host, Option.None);
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 1 && t.games[0].turn == 1);
+        assert(t.is_alive(0) && t.peer_rejected(0) == 0 && t.hub.last_reject == 0);
+        // The next turn takes both plans.
+        end_turn_building(&mut t.games[0], Option.Some(BuildUnit.Ranged));
+        end_turn_building(&mut t.host, Option.None);
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 2 && t.games[0].turn == 2);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(units_queued(&t.host, GUEST_SEAT, BuildUnit.Ranged) == 1);
+        assert(t.host.lockstep.desync.is_none());
     });
 }
