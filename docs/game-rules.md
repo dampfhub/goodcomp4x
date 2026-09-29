@@ -699,7 +699,9 @@ hostile to every side, and no side's AI plays it (World maps only).
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (see Losing a citizen; never below 1).
 - **Supply** (`city/supply.rs`): a hard cap on a side's army. Each city gives its side 3
-  supply, and each of its citizens 1 more (a city of 4 gives 7). Every troop and ship alive,
+  supply. Each of its first 7 citizens (its first manager cluster) gives 1 more, and past those
+  every 2 citizens give 1, rounded down: a city of 4 gives 7, of 7 gives 10, of 9 gives 11, and
+  a full city of 28 gives 20 (placeholder values, to be tuned). Every troop and ship alive,
   and every Scout, uses 1, passengers aboard a Landing Craft included; Settlers and workers
   use none. What counts against the cap is the side's units alive plus every troop, ship or
   Scout in its queues, paid for or not. Nothing that uses supply can be queued past the cap,

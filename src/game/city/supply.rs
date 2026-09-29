@@ -16,25 +16,39 @@
 //!
 //! The formula is meant to change: it's `supply_from_cities` and the table
 //! in `unit_type_supply`, nothing else.
-use super::{Build, BuildUnit, City, Lane, Queued};
+use super::{Build, BuildUnit, CLUSTER_SIZE, City, Lane, Queued};
 use crate::game::GameState;
 use crate::game::unit::{Team, Unit, UnitType};
 
 /// Supply each city gives its side, whatever its size: room for the AI's
 /// two troops a city (`AI_ARMY_PER_CITY`) and a scout.
 pub(in crate::game) const SUPPLY_PER_CITY: u32 = 3;
-/// Supply each citizen of a city adds.
+/// Supply each of a city's first `FULL_SUPPLY_CITIZENS` citizens adds.
 pub(in crate::game) const SUPPLY_PER_CITIZEN: u32 = 1;
+/// The citizens of a city that each add `SUPPLY_PER_CITIZEN`: its first
+/// cluster (a manager and its workers). Past them supply comes slower
+/// (`CITIZENS_PER_SUPPLY_PAST_CLUSTER`), so a big city's cap stays well
+/// under one per citizen. A placeholder, to be tuned.
+pub(in crate::game) const FULL_SUPPLY_CITIZENS: usize = CLUSTER_SIZE;
+/// The citizens past `FULL_SUPPLY_CITIZENS` it takes to add 1 supply,
+/// rounded down: a city of 7 gives 10, a full one of 28 gives 20.
+pub(in crate::game) const CITIZENS_PER_SUPPLY_PAST_CLUSTER: usize = 2;
 /// What a card the supply locks says (`supply_lock` adds the numbers).
 pub(in crate::game) const SUPPLY_FULL_HINT: &str = "SUPPLY FULL";
 
 /// The supply cities of these populations give their side: the one place
 /// the formula lives.
 pub(in crate::game) fn supply_from_cities(populations: impl IntoIterator<Item = usize>) -> u32 {
-    populations
-        .into_iter()
-        .map(|population| SUPPLY_PER_CITY + SUPPLY_PER_CITIZEN * population as u32)
-        .sum()
+    populations.into_iter().map(city_supply).sum()
+}
+
+/// The supply one city of `population` gives: `SUPPLY_PER_CITY`, then
+/// `SUPPLY_PER_CITIZEN` for each of its first `FULL_SUPPLY_CITIZENS`
+/// citizens and 1 for every `CITIZENS_PER_SUPPLY_PAST_CLUSTER` past them.
+fn city_supply(population: usize) -> u32 {
+    let full = population.min(FULL_SUPPLY_CITIZENS);
+    let past = (population - full) / CITIZENS_PER_SUPPLY_PAST_CLUSTER;
+    SUPPLY_PER_CITY + SUPPLY_PER_CITIZEN * full as u32 + past as u32
 }
 
 /// The supply a unit of `kind` uses: 1 for every troop, ship and scout (a
@@ -241,6 +255,27 @@ mod tests {
         assert_eq!(cap, supply_from_cities([g.cities[0].population]));
         g.cities[0].population += 1;
         assert_eq!(g.supply_cap(Team::Blue), cap + SUPPLY_PER_CITIZEN);
+    }
+
+    #[test]
+    fn citizens_past_the_first_cluster_give_1_supply_for_every_2() {
+        assert_eq!(FULL_SUPPLY_CITIZENS, 7);
+        // The first cluster's 7 citizens give 1 each.
+        assert_eq!(supply_from_cities([7]), 3 + 7);
+        // Past it, 1 for every 2 citizens, rounded down.
+        assert_eq!(supply_from_cities([8]), 10);
+        assert_eq!(supply_from_cities([9]), 11);
+        assert_eq!(supply_from_cities([10]), 11);
+        // A full city: 3 + 7 + 21 / 2.
+        assert_eq!(super::super::MAX_CITY_POPULATION, 28);
+        assert_eq!(supply_from_cities([28]), 20);
+        assert_eq!(supply_from_cities([28, 7, 1]), 20 + 10 + 4);
+        // A growing city's cap, in play.
+        let mut g = blue_city();
+        g.cities[0].population = 8;
+        assert_eq!(g.supply_cap(Team::Blue), 10);
+        g.cities[0].population = 9;
+        assert_eq!(g.supply_cap(Team::Blue), 11);
     }
 
     #[test]

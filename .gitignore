@@ -8,3 +8,6 @@ tools/board/cache.json
 
 # Agent worktrees (Claude Code) live inside the checkout.
 /.claude/worktrees/
+
+# Backups left by in-place edits (perl -i.bak on Windows)
+*.bak

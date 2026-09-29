@@ -2,7 +2,9 @@
 
 The supply limit (`docs/game-rules.md`, Supply; `src/game/city/supply.rs`) caps a side's army at
 what its cities give: `SUPPLY_PER_CITY` (3) a city plus `SUPPLY_PER_CITIZEN` (1) a citizen.
-Every troop, ship and Scout uses 1. This note records what the limit does to the tempo that
+Every troop, ship and Scout uses 1. (Since measured: citizens past a city's first cluster of 7
+give 1 for every 2, so a full city gives 20, not 31. See "The cap is loose for big cities"
+below.) This note records what the limit does to the tempo that
 Round 7 (`rts-economy.md`) measured, and why those values were chosen. The user expects the
 formula to change, so the numbers here are a baseline for the next values to compare with.
 
@@ -68,3 +70,8 @@ are medians. "Never" is the share of sides that don't get there by turn 60.
 - **The cap is loose for big cities.** A full city of 28 would give 31. Up to turn 60 no side
   gets near that (8.5 citizens a side at turn 60), but a longer game may want a smaller amount
   per citizen, or a cap per city.
+- **Since: half as much past the first cluster.** The user's follow-up decision: a city's
+  first 7 citizens (its first manager cluster, `FULL_SUPPLY_CITIZENS`) still give 1 each, and
+  every 2 citizens past them give 1, rounded down (`CITIZENS_PER_SUPPLY_PAST_CLUSTER`). A city
+  of 7 still gives 10, and a full city of 28 gives 20 instead of 31. Few cities pass 7 by turn
+  60, so the tables above still describe the early game. The values are a placeholder to tune.
