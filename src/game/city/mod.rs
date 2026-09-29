@@ -54,6 +54,9 @@ pub(super) const CLUSTER_SIZE: usize = 1 + WORKERS_PER_MANAGER;
 pub(super) const MAX_CITY_POPULATION: usize = MAX_MANAGERS * CLUSTER_SIZE;
 pub(super) const BARRACKS_MAX_HP: f32 = 220.0;
 pub(super) const BARRACKS_DEFENSE: f32 = 25.0;
+pub(super) const COASTAL_BATTERY_MAX_HP: f32 = 150.0;
+/// A coastal battery's defense against attacks, fortification included.
+pub(super) const COASTAL_BATTERY_DEFENSE: f32 = 18.0;
 
 /// A good a city's citizens bring in, as its priority order ranks them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]

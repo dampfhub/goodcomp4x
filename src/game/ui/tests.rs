@@ -3991,6 +3991,51 @@ fn imgui_shortens_a_long_notice_at_a_word_before_end_turn() {
     );
 }
 
+#[test]
+fn the_tile_tooltip_puts_the_attack_preview_in_words() {
+    let target = Hex::new(1, 0);
+    let mut game = GameState::new();
+    game.cities.clear();
+    game.units = vec![
+        Unit::new(1, Hex::new(0, 0), Team::Blue, UnitType::Melee),
+        Unit::new(2, target, Team::Red, UnitType::Melee),
+    ];
+    game.selected = None;
+    game.explore();
+    let read = |game: &GameState| {
+        line_strings(
+            game.tile_tooltip_lines(target)
+                .into_iter()
+                .map(|(_, line)| line),
+        )
+    };
+    game.hovered_tile = Some(target);
+    assert!(!read(&game).iter().any(|s| s.contains("DAMAGE")));
+
+    game.selected = Some(0);
+    let preview = game.attack_preview().unwrap();
+    let lines = read(&game);
+    let (dealt, _) = preview.dealt();
+    assert!(lines.contains(&format!("{dealt:.0} DAMAGE")), "{lines:?}");
+    let back = preview.retaliation();
+    assert!(
+        lines.contains(&format!("RETALIATION {back:.0}")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|s| s == "IF IT STAYS"), "{lines:?}");
+
+    game.units[1].hp = 5.0;
+    let lines = read(&game);
+    assert!(
+        lines.contains(&format!("{dealt:.0} DAMAGE, LETHAL")),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|s| s.starts_with("RETALIATION")),
+        "{lines:?}"
+    );
+}
+
 /// The status bar's second line as ImGui drew it last frame.
 fn imgui_status_controls() -> Vec<imgui::DrawnControl> {
     imgui::STATUS_CONTROLS.with_borrow(Clone::clone)

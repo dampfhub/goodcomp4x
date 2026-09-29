@@ -2,7 +2,7 @@
 //! each unit type's role. All units in a step act simultaneously.
 
 use super::ability::{Ability, VOLLEY_DAMAGE};
-use super::city::{BARRACKS_DEFENSE, Building};
+use super::city::{BARRACKS_DEFENSE, Building, COASTAL_BATTERY_DEFENSE};
 use super::effects::{Effect, Outcome};
 use super::fast_hash::HashMap;
 use super::hex::Hex;
@@ -29,7 +29,7 @@ pub(super) enum Phase {
 /// - Siege is slow: it moves and fires last, and may die before it acts.
 /// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
 ///   bears after melee.
-const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
+pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Wolf, Phase::Move),
@@ -71,6 +71,17 @@ pub(super) fn step_rank(unit_type: UnitType, phase: Phase) -> u32 {
         .position(|&(t, _)| t == unit_type)
         .expect("every unit type has a move and an attack step");
     rank as u32 + 1
+}
+
+/// Whether `unit_type`'s move step comes before its attack step, so it
+/// attacks from where its move takes it (ranged shoot, then move).
+pub(super) fn moves_before_attacking(unit_type: UnitType) -> bool {
+    let at = |phase| {
+        RESOLUTION_ORDER
+            .iter()
+            .position(|&step| step == (unit_type, phase))
+    };
+    at(Phase::Move) < at(Phase::Attack)
 }
 
 impl GameState {
@@ -757,7 +768,11 @@ impl GameState {
 
         let mut battery_damage = vec![0.0; self.cities.len()];
         for (attacker, city, scale) in battery_hits {
-            let hit = scale * combat::damage_against(self.units[attacker].stats().attack, 18.0);
+            let hit = scale
+                * combat::damage_against(
+                    self.units[attacker].stats().attack,
+                    COASTAL_BATTERY_DEFENSE,
+                );
             battery_damage[city] += hit;
             log::info!(
                 "{} hits city {}'s coastal battery for {hit:.0}",
