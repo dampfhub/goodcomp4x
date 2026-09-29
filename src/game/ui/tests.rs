@@ -430,6 +430,39 @@ fn breached_post_panel_explicitly_prompts_occupation() {
     assert_shows(&home, "KEEP RED OFF THE CENTER TO PREVENT CAPTURE");
 }
 
+#[test]
+fn an_interior_fighter_is_named_as_its_troop_outside() {
+    let mut game = GameState::siege_scenario();
+    let fighter = game.cities[1].interior.fighters[0].clone();
+    let source = game.units.iter().find(|u| u.id == fighter.source_id);
+    let role = game.unit_role(source.unwrap());
+    game.interior_selected = Some(fighter.source_id);
+    let text = panel_strings(|panel| game.interior_tray(1, panel));
+    assert_shows(&text, &format!("{role}  {:.0} HP", fighter.hp));
+}
+
+#[test]
+fn the_hover_panel_of_another_sides_unit_gives_no_instructions() {
+    let mut game = GameState::city_scenario();
+    let notes = |game: &GameState, idx: usize| panel_strings(|panel| game.unit_info(idx, panel));
+    let told = |text: &[String]| text.iter().any(|s| s.contains("CLICK"));
+    for team in [PLAYER_TEAM, Team::Red] {
+        let land = game
+            .units
+            .iter()
+            .position(|u| u.team == team && !u.is_naval())
+            .unwrap();
+        assert_eq!(told(&notes(&game, land)), game.is_player_controlled(land));
+        game.units[land].unit_type = UnitType::LandingCraft;
+        let text = notes(&game, land);
+        assert_eq!(told(&text), team == PLAYER_TEAM, "{text:?}");
+        assert_eq!(
+            text.iter().any(|s| s.contains("CARGO")),
+            team == PLAYER_TEAM
+        );
+    }
+}
+
 /// The Cities scenario with city 0 open, the camera settled on it and its
 /// side rich.
 fn city_view() -> GameState {
@@ -1145,6 +1178,22 @@ fn the_tooltip_shows_an_unseen_hex_as_last_seen() {
             label: "FARM",
         },
     );
+    assert_eq!(read(&game), before);
+}
+
+#[test]
+fn a_work_camp_out_of_sight_is_connected_by_what_the_player_knows() {
+    let (mut game, city, far) = crate::game::fog::tests::remembered_route_hex();
+    game.cities[city].set_placed_site(crate::game::city::Building::WorkCamp, far);
+    let read =
+        |game: &GameState| line_strings(game.tile_tooltip_lines(far).into_iter().map(|(_, l)| l));
+    let before = read(&game);
+    assert!(before.iter().any(|s| s == "CONNECTED"), "{before:?}");
+
+    // Red cuts the camp off, out of sight.
+    game.units
+        .push(Unit::new(51, far, Team::Red, UnitType::Melee));
+    assert!(!game.routes(city).costs.contains_key(&far));
     assert_eq!(read(&game), before);
 }
 
