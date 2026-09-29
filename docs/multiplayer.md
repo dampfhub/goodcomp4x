@@ -23,7 +23,7 @@ vulkan_engine --host --players 3    # 2-7 people, you included (2 unless given)
 vulkan_engine --join 192.168.1.20 --code K7M2QX    # HOST or HOST:PORT
 ```
 
-The world is made as the F4 world is, from the host's settings (AI Players, Start With), with
+The world is made as the F4 world is, from the host's settings (AI Players, Start With, Animals), with
 at least a side for every player. The host plays Blue; guests take Red, Green and the sides
 after as they join. The End Turn button (and the log) shows the **join code** and how many are
 still to come, like `JOIN CODE K7M2QX - 2 TO COME`, until every seat is filled. Guests need
@@ -123,7 +123,8 @@ can watch or change what's sent. What's in place:
   connection holds up nobody, and one address can't fill every slot.
 - **Seats are the host's to give.** A guest's messages are tied to its seat: a plan for any other
   side drops it. A guest checks the host's `Welcome` (the host first among the human sides, its
-  own seat among them, a world with a side for each) and every `SeatLeft` (only another guest,
+  own seat among them, every one a side and never the animals' wild, a world with a side for each
+  and no more animals than the setting allows) and every `SeatLeft` (only another guest,
   and only once).
 - **Nothing arriving is trusted.** A frame over 1 MiB drops the peer before it's read, and so does
   a message that doesn't open or doesn't decode. The incoming queue is bounded. Every message is

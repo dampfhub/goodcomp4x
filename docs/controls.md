@@ -226,6 +226,7 @@ that end of the range).
 | Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
 | Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
+| Animals (Next World) | Buttons | Off, few (the default: one animal den a side) or many (two a side): the dens of wolf packs and bears in the next world (F4); see `game-rules.md`, Animals |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).

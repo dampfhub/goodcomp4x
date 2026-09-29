@@ -19,7 +19,7 @@ behavior.
 | `combat.rs` | damage formula, retaliation, combat log helpers |
 | `ability.rs` | the abilities and their tuning constants |
 | `unit.rs` | `Team` (the sides, and `Team::Wild`, the animals' owner, which is no side), `UnitType`, base stats, `Unit` and its state-aware `stats()` |
-| `animals.rs` | animals (wolf packs, bears) and their dens: territorial behaviour, decided as each animal step begins (`plan_animal_moves`, `plan_animal_attacks`) |
+| `animals.rs` | animals (wolf packs, bears) and their dens: territorial behaviour, decided as each animal step begins (`plan_animal_moves`, `plan_animal_attacks`); a kill's bounty (`reward_hunts`), clearing dens and their animals coming back (`resolve_dens`, at each turn's end) |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
 | `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
 | `city/mod.rs` | `City` (its citizens as `Cluster`s: a manager and its workers), `Site`, `Good` and `Priorities` (a city's priority order), city tuning constants (barracks HP and defense, the population cap as `MAX_MANAGERS` clusters of `CLUSTER_SIZE`), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
