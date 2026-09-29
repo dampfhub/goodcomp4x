@@ -1,0 +1,359 @@
+//! The host's side of a networked game, sans-IO at the level of lockstep messages: the sequencer
+//! (`lockstep.host`), the host's own player as a `Peer` joined to it in-process, and the seating
+//! of each guest that connects. A driver (`session.tua`, or a test) tells the hub what arrived
+//! from which guest id and takes what the hub has for each; what the hub decides (a guest to
+//! drop) it leaves in `kicks`.
+//!
+//! Every message is a lockstep payload: unframed and unsealed, which is how the sequencer speaks.
+//! The game (`GameState`) is the host player's, passed to each call.
+
+use std.mem.swap;
+use std.rand.Rand;
+use netlib.effects.Deliver;
+use netlib.frame.NEVER;
+use lockstep.host.Host;
+use lockstep.host.HostEvent;
+use lockstep.host.Send;
+use lockstep.host.host_config;
+use lockstep.host.open_host;
+use lockstep.msg.MAX_GUESTS;
+use lockstep.msg.REFUSE_FULL;
+use lockstep.msg.refuse;
+use lockstep.msg.to_bytes;
+use log.Log;
+use game.GameState;
+use game.multiplayer.HOST_SEAT;
+use game.unit.TEAMS;
+use game.unit.Team;
+use link.peer.Peer;
+use link.peer.REFUSE_BAD_PLAN;
+use link.peer.REFUSE_STARTED;
+use link.peer.open_local_peer;
+
+const EV_NEED: i32 = 1;
+const EV_LEFT: i32 = 2;
+const EV_DESYNC: i32 = 3;
+const EV_REJECTED: i32 = 4;
+
+/// `connect` answers: a guest id, or why not.
+pub const CONNECT_FULL: i32 = -1;
+pub const CONNECT_STARTED: i32 = -2;
+
+/// What the sequencer said, flattened: a kind and up to three numbers.
+pub struct HubEvent { kind: i32, a: i64, b: i64, c: i64 }
+
+/// What the sequencer's clauses write: payloads for each guest, guests to drop, what it said.
+pub struct HubIo {
+    local_id: i32,
+    /// Per guest slot: the guest id now holding it, or -1.
+    ids: Vec[i32],
+    /// Per guest slot: payloads for that guest.
+    out: Vec[Vec[Vec[u8]]],
+    to_local: Vec[Vec[u8]],
+}
+
+pub struct Hub {
+    core: Host,
+    local: Peer,
+    io: HubIo,
+    events: Vec[HubEvent],
+    /// Guests to drop.
+    kicks: Vec[i32],
+    /// Per guest slot: the seat it plays (a `TEAMS` index) or -1.
+    seat: Vec[i32],
+}
+
+fn copy_slice(b: &[u8]) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { out.push(b[i]); }
+    out
+}
+
+fn new_io() -> HubIo {
+    let mut io = HubIo { local_id: 0 - 1, ids: Vec.new(), out: Vec.new(), to_local: Vec.new() };
+    for _ in 0..MAX_GUESTS {
+        io.ids.push(0 - 1);
+        io.out.push(Vec.new());
+    }
+    io
+}
+
+fn no_seats() -> Vec[i32] {
+    let mut seat: Vec[i32] = Vec.new();
+    for _ in 0..MAX_GUESTS { seat.push(0 - 1); }
+    seat
+}
+
+/// The payload a `Refuse` with `code` is, for a connection the hub turned away.
+pub fn refusal_payload(code: u32) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.new();
+    let bytes = to_bytes(&refuse(code));
+    for i in 0..bytes.len() { out.push(bytes.buf[i]); }
+    out
+}
+
+fn note_host(e: &HostEvent, events: &mut Vec[HubEvent]) {
+    match e {
+        &HostEvent.NeedSnapshot(g, t) => {
+            let gi = g + 0;
+            let ti = t + 0;
+            events.push(HubEvent { kind: EV_NEED, a: gi as i64, b: ti, c: 0 });
+        }
+        &HostEvent.Left(g, t) => {
+            let gi = g + 0;
+            events.push(HubEvent { kind: EV_LEFT, a: gi as i64, b: 0, c: 0 });
+        }
+        &HostEvent.Desync(t, g1, s1, g2, s2) => {
+            let ti = t + 0;
+            let a = g1 + 0;
+            let b = g2 + 0;
+            events.push(HubEvent { kind: EV_DESYNC, a: ti, b: a as i64, c: b as i64 });
+        }
+        &HostEvent.Rejected(g, why) => {
+            let gi = g + 0;
+            events.push(HubEvent { kind: EV_REJECTED, a: gi as i64, b: 0, c: 0 });
+        }
+        &HostEvent.Joined(g, t) => { }
+        &HostEvent.Closed(t, n) => { }
+        &HostEvent.Stalled(t, g) => { }
+        &HostEvent.Substituted(t, g) => { }
+        &HostEvent.Withdrawn(g, t) => { }
+        &HostEvent.WithdrawLate(g, t) => { }
+    }
+}
+
+/// Where a payload for guest `g` goes: 0 when it was queued, 1 when nobody holds that id.
+fn queue_for(io: &mut HubIo, g: i32, bytes: &[u8]) -> i32 {
+    if g == io.local_id {
+        io.to_local.push(copy_slice(bytes));
+        return 0;
+    }
+    if g < 0 { return 1; }
+    let slot = g % MAX_GUESTS;
+    if io.ids[slot] != g { return 1; }
+    io.out[slot].push(copy_slice(bytes));
+    0
+}
+
+/// A hub for a game of `players` people, the host's player seated and joined.
+pub fn open_hub(players: i32, now: i64, game: &mut GameState) -> Hub can {Log, Rand} {
+    let core = open_host(host_config(0, NEVER, false, 1, players, players, 1000000));
+    let mut hub = Hub { core: core, local: open_local_peer(), io: new_io(), events: Vec.new(), kicks: Vec.new(), seat: no_seats() };
+    let id = hub.core_connect(now);
+    hub.io.local_id = id;
+    hub.io.ids.set(id % MAX_GUESTS, id);
+    hub.seat.set(id % MAX_GUESTS, HOST_SEAT.index());
+    hub.settle(now, game);
+    hub
+}
+
+impl Hub {
+    fn core_connect(&mut self, now: i64) -> i32 {
+        let mut id = 0 - 1;
+        handle { id = self.core.on_connect(now); } with Deliver[HostEvent] {
+            event(e) => { note_host(e, &mut self.events); resume(()) }
+        }
+        id
+    }
+
+    fn core_message(&mut self, now: i64, guest: i32, payload: &[u8]) {
+        handle {
+            handle { self.core.on_message(now, guest, payload); } with Send {
+                to(g, b) => { let rc = queue_for(&mut self.io, g, b); resume(rc) }
+            }
+        } with Deliver[HostEvent] {
+            event(e) => { note_host(e, &mut self.events); resume(()) }
+        }
+    }
+
+    fn core_disconnect(&mut self, now: i64, guest: i32) {
+        handle {
+            handle { self.core.on_disconnect(now, guest); } with Send {
+                to(g, b) => { let rc = queue_for(&mut self.io, g, b); resume(rc) }
+            }
+        } with Deliver[HostEvent] {
+            event(e) => { note_host(e, &mut self.events); resume(()) }
+        }
+    }
+
+    fn core_snapshot(&mut self, now: i64, guest: i32, turn: i64, snap: &[u8]) {
+        handle {
+            handle { self.core.provide_snapshot(now, guest, turn, snap); } with Send {
+                to(g, b) => { let rc = queue_for(&mut self.io, g, b); resume(rc) }
+            }
+        } with Deliver[HostEvent] {
+            event(e) => { note_host(e, &mut self.events); resume(()) }
+        }
+    }
+
+    fn core_tick(&mut self, now: i64) {
+        handle {
+            handle { self.core.on_tick(now); } with Send {
+                to(g, b) => { let rc = queue_for(&mut self.io, g, b); resume(rc) }
+            }
+        } with Deliver[HostEvent] {
+            event(e) => { note_host(e, &mut self.events); resume(()) }
+        }
+    }
+
+    /// Acts on what the sequencer has said: seats a guest that needs a welcome, frees the seat of
+    /// one that left, reports a desync, drops one it rejected.
+    fn settle(&mut self, now: i64, game: &mut GameState) {
+        while !self.events.is_empty() {
+            let e = self.events.remove(0);
+            if e.kind == EV_NEED {
+                let g = e.a as i32;
+                let at = e.b;
+                if g == self.io.local_id {
+                    let snap = game.welcome_bytes(HOST_SEAT);
+                    self.core_snapshot(now, g, at, &snap.buf);
+                } else {
+                    match game.seat_next_guest() {
+                        Option.Some(seat) => {
+                            self.seat.set(g % MAX_GUESTS, seat.index());
+                            let snap = game.welcome_bytes(seat);
+                            self.core_snapshot(now, g, at, &snap.buf);
+                        }
+                        Option.None => {
+                            let _q = queue_for(&mut self.io, g, &refusal_payload(if game.has_started() { REFUSE_STARTED } else { REFUSE_FULL }).buf);
+                            self.core_disconnect(now, g);
+                        }
+                    }
+                }
+            } else if e.kind == EV_LEFT {
+                let g = e.a as i32;
+                let s = self.seat[g % MAX_GUESTS];
+                if s >= 0 && self.io.ids[g % MAX_GUESTS] == g {
+                    game.seat_left(TEAMS[s]);
+                    self.seat.set(g % MAX_GUESTS, 0 - 1);
+                }
+                self.kicks.push(g);
+            } else if e.kind == EV_DESYNC {
+                let other = self.seat[(e.c as i32) % MAX_GUESTS];
+                let team = if other >= 0 { Option.Some(TEAMS[other]) } else { Option.None };
+                game.note_desync(e.a as u32, team);
+            } else if e.kind == EV_REJECTED {
+                let g = e.a as i32;
+                self.kicks.push(g);
+                self.core_disconnect(now, g);
+            }
+        }
+    }
+
+    /// A guest connected (its channel is open): its id, or `CONNECT_FULL` or `CONNECT_STARTED`
+    /// when there is no seat for it.
+    pub fn connect(&mut self, now: i64, game: &mut GameState) -> i32 {
+        if game.has_started() { return CONNECT_STARTED; }
+        if game.open_seats().is_empty() { return CONNECT_FULL; }
+        let id = self.core_connect(now);
+        if id < 0 { return CONNECT_FULL; }
+        self.io.ids.set(id % MAX_GUESTS, id);
+        self.seat.set(id % MAX_GUESTS, 0 - 1);
+        self.io.out[id % MAX_GUESTS].clear();
+        self.settle(now, game);
+        id
+    }
+
+    /// A payload from guest `id`.
+    pub fn on_payload(&mut self, now: i64, id: i32, payload: &[u8], game: &mut GameState) {
+        self.core_message(now, id, payload);
+        self.settle(now, game);
+    }
+
+    /// Guest `id`'s connection ended.
+    pub fn on_disconnect(&mut self, now: i64, id: i32, game: &mut GameState) {
+        if id < 0 || self.io.ids[id % MAX_GUESTS] != id { return; }
+        self.core_disconnect(now, id);
+        self.settle(now, game);
+        self.io.ids.set(id % MAX_GUESTS, 0 - 1);
+    }
+
+    /// Time passing.
+    pub fn tick(&mut self, now: i64, game: &mut GameState) {
+        self.core_tick(now);
+        self.settle(now, game);
+    }
+
+    /// The host player's own turn: what the game says goes to the sequencer, what the sequencer
+    /// says comes back, and bundles apply. Repeats until nothing moves. `Err` says a bundle broke
+    /// the game's checks.
+    pub fn pump(&mut self, now: i64, game: &mut GameState) can {Log, Rand} {
+        let mut moved = true;
+        let mut rounds = 0;
+        while moved && rounds < 64 {
+            moved = false;
+            rounds = rounds + 1;
+            let inbox = take_all(&mut self.io.to_local);
+            for i in 0..inbox.len() {
+                self.local.on_payload(now, &inbox[i].buf, game);
+                moved = true;
+            }
+            self.local.pump(now, game);
+            let sent = self.local.take_out();
+            for i in 0..sent.len() {
+                let id = self.io.local_id;
+                self.core_message(now, id, &sent[i].buf);
+                moved = true;
+            }
+            self.settle(now, game);
+            // A side whose plan the checks refused is dropped: its player broke the rules.
+            let refused = take_refused(game);
+            for i in 0..refused.len() {
+                let mut slot = 0 - 1;
+                for k in 0..MAX_GUESTS { if self.seat[k] == refused[i].index() { slot = k; } }
+                if slot >= 0 && self.io.ids[slot] >= 0 {
+                    let id = self.io.ids[slot];
+                    let _q = queue_for(&mut self.io, id, &refusal_payload(REFUSE_BAD_PLAN).buf);
+                    self.kicks.push(id);
+                    self.core_disconnect(now, id);
+                    self.settle(now, game);
+                    moved = true;
+                }
+            }
+            let mut waiting: Vec[Team] = Vec.new();
+            let ids = self.core.awaiting();
+            for i in 0..ids.len() {
+                let s = self.seat[ids[i] % MAX_GUESTS];
+                if s >= 0 { waiting.push(TEAMS[s]); }
+            }
+            game.set_waiting_on(waiting);
+        }
+    }
+
+    /// Payloads for guest `id`, oldest first.
+    pub fn take_out(&mut self, id: i32) -> Vec[Vec[u8]] {
+        if id < 0 || self.io.ids[id % MAX_GUESTS] != id { return Vec.new(); }
+        take_all(&mut self.io.out[id % MAX_GUESTS])
+    }
+
+    /// Guests whose connections the driver should close, once each.
+    pub fn take_kicks(&mut self) -> Vec[i32] { take_all_ids(&mut self.kicks) }
+
+    /// The next lockstep turn the sequencer will close.
+    pub fn next_turn(&self) -> i64 { self.core.next_turn() }
+
+    /// Guests in the session.
+    pub fn active(&self) -> i32 { self.core.active_count() }
+
+    /// The seat guest `id` plays, if it has one.
+    pub fn seat_of(&self, id: i32) -> Option[Team] {
+        if id < 0 { return Option.None; }
+        let s = self.seat[id % MAX_GUESTS];
+        if s < 0 || self.io.ids[id % MAX_GUESTS] != id { return Option.None; }
+        Option.Some(TEAMS[s])
+    }
+}
+
+fn take_all(v: &mut Vec[Vec[u8]]) -> Vec[Vec[u8]] {
+    let mut out: Vec[Vec[u8]] = Vec.new();
+    swap(&mut out, v);
+    out
+}
+
+fn take_all_ids(v: &mut Vec[i32]) -> Vec[i32] {
+    let mut out: Vec[i32] = Vec.new();
+    swap(&mut out, v);
+    out
+}
+
+fn take_refused(game: &mut GameState) -> Vec[Team] { game.take_refused() }

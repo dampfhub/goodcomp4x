@@ -1,0 +1,106 @@
+//! Several machines' games in one process, for the tests: a host game with its hub and each
+//! guest's game with its peer, joined by in-memory queues that carry the lockstep payloads
+//! (`Lobby.exchange` moves them until nothing is left to move). Every message crosses as the bytes
+//! the sequencer and the cores really send, so the wire encoding and the receivers' checks are
+//! in the path; the sealed channel and the sockets are not (`session_tests.tua` puts them in).
+
+use std.rand.Rand;
+use std.str.to_owned;
+use netlib.frame.NEVER;
+use log.Log;
+use game.GameState;
+use game.multiplayer.HOST_SEAT;
+use game.settings.Settings;
+use game.settings.default_settings;
+use game.unit.Team;
+use link.hub.Hub;
+use link.hub.open_hub;
+use link.peer.Peer;
+use link.peer.open_peer;
+
+/// The join code the tests' games use.
+pub const CODE: str = "K7M2QX";
+
+/// A small world's settings: one AI side, cities to start.
+pub fn small() -> Settings {
+    let mut s = default_settings();
+    s.world_ai = 1;
+    s
+}
+
+pub struct Lobby {
+    hub: Hub,
+    host: GameState,
+    /// Each guest: its peer and game, the id the host gave it, and whether it is still connected.
+    peers: Vec[Peer],
+    games: Vec[GameState],
+    ids: Vec[i32],
+    alive: Vec[bool],
+    now: i64,
+}
+
+/// A table with a host and `guests` guests connected and seated (two to seven people in all), on
+/// a world made from `seed`. The peers have not been given time: call `exchange`.
+pub fn table_seeded(guests: i32, seed: u32) -> Lobby can {Log, Rand} {
+    let players = guests + 1;
+    let mut host = GameState.host_game(players, &small(), seed, to_owned(CODE));
+    let hub = open_hub(players, 1000, &mut host);
+    let mut t = Lobby { hub: hub, host: host, peers: Vec.new(), games: Vec.new(), ids: Vec.new(), alive: Vec.new(), now: 1000 };
+    for _ in 0..guests { t.connect(); }
+    t.exchange();
+    t
+}
+
+pub fn table(guests: i32) -> Lobby can {Log, Rand} { table_seeded(guests, 4242) }
+
+impl Lobby {
+    /// A guest connects to the host: its peer starts joining. Its game is a placeholder until the
+    /// host's welcome builds the real one. Answers its index, or -1 when the host had no seat.
+    pub fn connect(&mut self) -> i32 can {Log, Rand} {
+        let id = self.hub.connect(self.now, &mut self.host);
+        if id < 0 { return id; }
+        self.peers.push(open_peer(NEVER));
+        self.games.push(GameState.new());
+        self.ids.push(id);
+        self.alive.push(true);
+        self.peers.len() - 1
+    }
+
+    /// Moves every payload and lets every side act until nothing is left to move.
+    pub fn exchange(&mut self) can {Log, Rand} {
+        let mut moved = true;
+        let mut rounds = 0;
+        while moved && rounds < 200 {
+            moved = false;
+            rounds = rounds + 1;
+            self.now = self.now + 1000;
+            self.hub.pump(self.now, &mut self.host);
+            for i in 0..self.peers.len() {
+                if !self.alive[i] { continue; }
+                let down = self.hub.take_out(self.ids[i]);
+                for k in 0..down.len() {
+                    self.peers[i].on_payload(self.now, &down[k].buf, &mut self.games[i]);
+                    moved = true;
+                }
+                if let Option.Some(joined) = self.peers[i].take_joined() { self.games[i] = joined; moved = true; }
+                self.peers[i].pump(self.now, &mut self.games[i]);
+                let up = self.peers[i].take_out();
+                for k in 0..up.len() {
+                    self.hub.on_payload(self.now, self.ids[i], &up[k].buf, &mut self.host);
+                    moved = true;
+                }
+            }
+            let kicks = self.hub.take_kicks();
+            for k in 0..kicks.len() {
+                for i in 0..self.ids.len() { if self.ids[i] == kicks[k] { self.alive[i] = false; } }
+                moved = true;
+            }
+        }
+    }
+
+    /// Guest `i` leaves: the host is told its connection ended.
+    pub fn drop_guest(&mut self, i: i32) can {Log, Rand} {
+        self.alive.set(i, false);
+        self.hub.on_disconnect(self.now, self.ids[i], &mut self.host);
+    }
+}

@@ -1,0 +1,1488 @@
+//! Multiplayer in lockstep (`docs/multiplayer.md`). A host and up to six guests play a generated
+//! world, each on their own side, and the AI plays the rest. Every machine runs the whole game.
+//! Turns are simultaneous, so a player's planning stays on their own machine until they end it:
+//! then their side's *plan* (`plan.tua`: its units' orders, its cities' queues and citizens, its
+//! placed jobs, its stockpile) is this machine's lockstep input for the turn. Once the host's
+//! sequencer holds every seat's input it sends every machine the same bundle of them, and each
+//! machine applies the plans, in side order, to the game as it stood when the turn's planning began
+//! (`turn_start`) and resolves the turn. The same plans on the same game resolve the same way (the
+//! simulation is deterministic), and a checksum of the result, compared after every turn, catches
+//! it if they ever don't.
+//!
+//! This module is the game's side of the protocol: what a plan holds, whether one is sound, and
+//! how a bundle of them becomes a turn. `link/` moves the messages (`lockstep`, sealed by `seal`).
+//! Every machine, the host's included, applies bundles the same way, so a plan that fails the
+//! checks is dropped identically everywhere and the host then drops the player that sent it.
+
+use std.collections.Set;
+use std.core.Keep;
+use std.fmt.Out;
+use std.fmt.show_i64;
+use std.math.Wrapping;
+use std.mem.swap;
+use std.rand.Rand;
+use std.rand.draw;
+use std.str.Str;
+use std.str.push;
+use std.str.push_char;
+use std.str.push_byte;
+use std.str.len;
+use std.str.byte_at;
+use std.str.char_at;
+use std.str.to_owned;
+use netlib.wire.DecodeError;
+use netlib.wire.Reader;
+use netlib.wire.Writer;
+use netlib.wire.Wire;
+use netlib.wire.reader;
+use netlib.wire.writer;
+use log.Log;
+use game.GameState;
+use game.text;
+use game.camera.Camera;
+use game.city.Build;
+use game.city.BuildUnit;
+use game.city.Building;
+use game.city.Cluster;
+use game.city.MAX_CITY_POPULATION;
+use game.city.MAX_MANAGERS;
+use game.city.MIN_CITY_DISTANCE;
+use game.city.Priorities;
+use game.city.Queued;
+use game.city.SETTLER_MIN_POPULATION;
+use game.city.Stock;
+use game.city.WORKERS_PER_MANAGER;
+use game.city.cluster_tiles;
+use game.city.grow_price;
+use game.city.managers_for;
+use game.city.queues_supply;
+use game.city.supply_from_cities;
+use game.city.interior.in_bounds;
+use game.hex.Hex;
+use game.plan.CityPlan;
+use game.plan.FighterPlan;
+use game.plan.MAX_PLAN_LIST;
+use game.plan.TeamPlan;
+use game.plan.UnitPlan;
+use game.plan.WorkerPlan;
+use game.plan.plan_bytes;
+use game.plan.plan_of;
+use game.plan.put_team;
+use game.plan.take_team;
+use game.settings.Settings;
+use game.settings.default_settings;
+use game.settings.ANIMALS_MANY;
+use game.workers.StructureKind;
+use game.unit.TurnOrder;
+use std.collections.Map;
+use game.terrain.Resource;
+use game.unit.TEAMS;
+use game.unit.Team;
+use game.unit.Unit;
+use game.workers.WorkerJob;
+
+/// Bumped whenever a plan changes shape, or the rules a turn plays out by, or the map a seed
+/// generates (every machine builds the world from its seed, `mapgen.tua`), so mismatched builds
+/// refuse each other instead of desyncing.
+pub const PROTOCOL_VERSION: u32 = 28;
+/// Letters a join code is made of: no 0/O or 1/I to confuse.
+pub const CODE_LETTERS: str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+pub const CODE_LENGTH: i32 = 6;
+/// The port a host listens on unless told another.
+pub const DEFAULT_PORT: i32 = 7777;
+/// The side the host plays; guests take the sides after it, in `TEAMS` order, as they join.
+pub const HOST_SEAT: Team = Team.Blue;
+/// The most players a game takes: every side a world can have.
+pub const MAX_PLAYERS: i32 = 7;
+
+/// What the top bar says once this side's plan is sent, while it waits for the others'.
+pub const WAITING_NOTICE: str = "ORDERS SENT - THE WAITING BUTTON TAKES THEM BACK";
+
+/// Which end of the game this machine is.
+pub enum NetRole { Host, Guest }
+
+/// What the game asks the link to send: its plan as a lockstep input, taking it back, and the
+/// checksum of a turn it has played out.
+pub enum NetOut {
+    Plan(Vec[u8]),
+    /// Take back the plan for this lockstep turn.
+    Withdraw(u32),
+    /// The game's checksum after this lockstep turn.
+    Checksum(u32, u64),
+}
+
+/// A turn's bundle as the link hands it over: each seat's plan, in the order the sequencer
+/// listed them.
+pub struct Bundle { turn: i64, plans: Vec[Vec[u8]] }
+
+/// A networked game's lockstep state (`GameState.lockstep`).
+pub struct Lockstep {
+    /// Whether this is a networked game at all.
+    active: bool,
+    role: NetRole,
+    /// The game as this turn's planning began: every side's plan is applied to a copy of it.
+    /// `None` only while a turn resolves.
+    turn_start: Option[Box[GameState]],
+    /// Whether this side's player has ended planning this turn.
+    submitted: bool,
+    /// The plans this side has sent for this turn (one, or more if its player took the turn
+    /// back): the bundle must carry one of them for its side.
+    sent: Vec[Vec[u8]],
+    /// Host: the human sides with a player (its own, and each guest's).
+    seated: Vec[Team],
+    /// Host: the world's settings, for guests to build the same one.
+    world_ai: i32,
+    world_start_city: bool,
+    world_animals: i32,
+    /// Host: the code a guest must give to join (`host_game`): the key to the sealed channel.
+    join_code: Str,
+    /// A turn whose checksums didn't match, once one hasn't.
+    desync: Option[u32],
+    /// Guest: why the host dropped it, if it said.
+    dropped: Option[Str],
+    /// Messages for the link to send.
+    outbox: Vec[NetOut],
+    /// Bundles received and not yet applied, oldest first.
+    inbox: Vec[Bundle],
+    /// Sides whose plan the checks refused when a bundle was applied: the host drops their
+    /// players.
+    refused: Vec[Team],
+    /// Host: the sides the sequencer is still waiting for this turn.
+    waiting_on: Vec[Team],
+    /// Every side that has had a player leave since the game began, in the order they went.
+    departed: Vec[Team],
+}
+
+pub fn no_lockstep() -> Lockstep {
+    Lockstep {
+        active: false, role: NetRole.Host, turn_start: Option.None, submitted: false, sent: Vec.new(),
+        seated: Vec.new(), world_ai: 0, world_start_city: false, world_animals: 0, join_code: to_owned(""),
+        desync: Option.None, dropped: Option.None, outbox: Vec.new(), inbox: Vec.new(), refused: Vec.new(),
+        waiting_on: Vec.new(), departed: Vec.new(),
+    }
+}
+
+fn copy_str(s: &Str) -> Str { to_owned(s) }
+
+fn copy_bytes(b: &Vec[u8]) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { out.push(b[i]); }
+    out
+}
+
+fn same_bytes(a: &Vec[u8], b: &Vec[u8]) -> bool {
+    if a.len() != b.len() { return false; }
+    for i in 0..a.len() { if a[i] != b[i] { return false; } }
+    true
+}
+
+fn has_bytes(list: &Vec[Vec[u8]], b: &Vec[u8]) -> bool {
+    for i in 0..list.len() { if same_bytes(&list[i], b) { return true; } }
+    false
+}
+
+/// The world a game's settings and player count make: its AI sides (never fewer than the players
+/// need) and how every side starts.
+pub fn world_settings(settings: &Settings, map_seed: u32, players: i32) -> Settings {
+    let mut world = default_settings();
+    let mut ai = settings.world_ai_for(map_seed);
+    if ai < players - 1 { ai = players - 1; }
+    if ai > MAX_PLAYERS - 1 { ai = MAX_PLAYERS - 1; }
+    world.world_ai = ai;
+    world.world_start_city = settings.world_start_city;
+    world.world_animals = settings.world_animals;
+    world
+}
+
+/// A join code: `CODE_LENGTH` letters and digits drawn from `Rand`.
+pub fn fresh_join_code() -> Str can {Rand} {
+    let mut code = to_owned("");
+    for _ in 0..CODE_LENGTH {
+        let at = (draw() % 32) as i32;
+        push_char(&mut code, char_at(CODE_LETTERS, at as i64).unwrap_or('A'));
+    }
+    code
+}
+
+/// `entered` as the sealed channel takes it: upper case, letters and digits only.
+pub fn clean_code(entered: &str) -> Str {
+    let mut out = to_owned("");
+    let n = len(entered);
+    for i in 0..n {
+        let b = byte_at(entered, i).unwrap_or(0);
+        let upper = if b >= 97 && b <= 122 { b - 32 } else { b };
+        if (upper >= 65 && upper <= 90) || (upper >= 48 && upper <= 57) { push_byte(&mut out, upper); }
+    }
+    out
+}
+
+/// A running FNV-1a hash of the numbers a checksum folds in: the same on every machine that
+/// resolved the same turns the same way.
+struct Sum { h: u64 }
+
+impl Sum {
+    fn add(&mut self, x: i64) {
+        let mut v = x as u64;
+        for _ in 0..8 {
+            self.h = (self.h ^ (v & 255)).wrapping_mul(1099511628211);
+            v = v >> 8;
+        }
+    }
+
+    fn hex(&mut self, h: Hex) { self.add(h.q as i64); self.add(h.r as i64); }
+
+    fn opt_hex(&mut self, h: Option[Hex]) {
+        match h {
+            Option.Some(x) => { self.add(1); self.hex(x); }
+            Option.None => { self.add(0); }
+        }
+    }
+
+    /// A health, to a thousandth: floats a machine computed alike agree to the bit, so this only
+    /// keeps the checksum from depending on a float's spelling.
+    fn hp(&mut self, x: f32) { self.add((x * 1000.0).round() as i64); }
+}
+
+/// The units' ids in ascending order, as indices.
+fn units_by_id(units: &Vec[Unit]) -> Vec[i32] {
+    let mut order: Vec[i32] = Vec.new();
+    for i in 0..units.len() {
+        let mut at = order.len();
+        while at > 0 && units[order[at - 1]].id > units[i].id { at = at - 1; }
+        order.insert(at, i);
+    }
+    order
+}
+
+fn keeps_what_was_paid_build(before: &Vec[Queued[Build]], now: &Vec[Queued[Build]]) -> bool {
+    let mut paid: Vec[Queued[Build]] = Vec.new();
+    for i in 0..before.len() { if before[i].paid { paid.push(before[i]); } }
+    for i in 0..now.len() {
+        let item = now[i];
+        if !item.paid {
+            if item.progress != 0 { return false; }
+            continue;
+        }
+        let mut found = 0 - 1;
+        for k in 0..paid.len() {
+            if found < 0 && paid[k].build == item.build && paid[k].progress == item.progress { found = k; }
+        }
+        if found < 0 { return false; }
+        paid.remove(found);
+    }
+    true
+}
+
+fn keeps_what_was_paid_unit(before: &Vec[Queued[BuildUnit]], now: &Vec[Queued[BuildUnit]]) -> bool {
+    let mut paid: Vec[Queued[BuildUnit]] = Vec.new();
+    for i in 0..before.len() { if before[i].paid { paid.push(before[i]); } }
+    for i in 0..now.len() {
+        let item = now[i];
+        if !item.paid {
+            if item.progress != 0 { return false; }
+            continue;
+        }
+        let mut found = 0 - 1;
+        for k in 0..paid.len() {
+            if found < 0 && paid[k].build == item.build && paid[k].progress == item.progress { found = k; }
+        }
+        if found < 0 { return false; }
+        paid.remove(found);
+    }
+    true
+}
+
+fn count_build(queue: &Vec[Queued[Build]], build: Build) -> i32 {
+    let mut n = 0;
+    for i in 0..queue.len() { if queue[i].build == build { n = n + 1; } }
+    n
+}
+
+/// What a side has paid for and not yet got: every paid item in its cities' queues and Barracks'
+/// queues and every job it has placed, at the price it paid. Its city's paid Grows were priced a
+/// citizen apart, from its population up. Unpaid items cost nothing yet.
+fn committed_city(total: &mut Stock, population: i32, queue: &Vec[Queued[Build]], barracks: &Vec[Queued[BuildUnit]], jobs: &Vec[WorkerJob]) {
+    let mut grows = 0;
+    for i in 0..queue.len() {
+        if !queue[i].paid { continue; }
+        let price = match queue[i].build {
+            Build.Grow => { grows = grows + 1; grow_price(population + grows - 1) }
+            other => other.price(),
+        };
+        *total = total.plus(price);
+    }
+    for i in 0..barracks.len() { if barracks[i].paid { *total = total.plus(barracks[i].build.price()); } }
+    for i in 0..jobs.len() { *total = total.plus(jobs[i].kind.price()); }
+}
+
+fn hex_in(list: &Vec[Hex], h: Hex) -> bool {
+    for i in 0..list.len() { if list[i] == h { return true; } }
+    false
+}
+
+fn short(n: i32) -> bool { n <= MAX_PLAN_LIST }
+
+fn bad_plan(team: Team, why: &str) -> Str {
+    let mut out = to_owned(team.name());
+    push(&mut out, "'S PLAN: ");
+    push(&mut out, why);
+    out
+}
+
+fn bad_plan_text(team: Team, why: Str) -> Str { bad_plan(team, &why) }
+
+fn bad_plan_at(team: Team, prefix: &str, n: i64, suffix: &str) -> Str {
+    let why = text(fn() can {Out} { Out.put(prefix); show_i64(n); Out.put(suffix); });
+    bad_plan(team, &why)
+}
+
+fn bad_city(team: Team, pos: Hex, why: &str) -> Str {
+    let mut at = text(fn() can {Out} { Out.put("CITY AT ("); show_i64(pos.q as i64); Out.put(", "); show_i64(pos.r as i64); Out.put(")"); });
+    if len(why) > 0 { push(&mut at, ": "); push(&mut at, why); }
+    bad_plan(team, &at)
+}
+
+impl GameState {
+    // ---- starting and joining ------------------------------------------------------------------
+
+    /// A game to host: a new world for `players` people (2 to `MAX_PLAYERS`), the host on Blue
+    /// and each guest on the next side as they join, with AI on the rest (as many as `settings`
+    /// ask for, and no fewer than the players need). `code` is the join code.
+    pub fn host_game(players: i32, settings: &Settings, map_seed: u32, code: Str) -> GameState can {Log} {
+        let mut count = players;
+        if count < 2 { count = 2; }
+        if count > MAX_PLAYERS { count = MAX_PLAYERS; }
+        let world = world_settings(settings, map_seed, count);
+        let mut game = GameState.world_scenario_with(map_seed, &world);
+        let mut humans: Vec[Team] = Vec.new();
+        for k in 0..count { humans.push(TEAMS[k]); }
+        game.seat_players(NetRole.Host, HOST_SEAT, humans);
+        let mut hosting = to_owned("HOSTING - JOIN CODE ");
+        push(&mut hosting, &code);
+        game.notice = hosting;
+        game.lockstep.join_code = code;
+        game.lockstep.seated = vec_of_team(HOST_SEAT);
+        game.lockstep.world_ai = world.world_ai;
+        game.lockstep.world_start_city = world.world_start_city;
+        game.lockstep.world_animals = world.world_animals;
+        game
+    }
+
+    /// The code a guest must give to join this hosted game.
+    pub fn join_code(&self) -> Option[Str] {
+        match self.lockstep.role {
+            NetRole.Host => if self.lockstep.active { Option.Some(copy_str(&self.lockstep.join_code)) } else { Option.None },
+            NetRole.Guest => Option.None,
+        }
+    }
+
+    /// Host: the human sides still waiting for a player, in seating order.
+    pub fn open_seats(&self) -> Vec[Team] {
+        let mut open: Vec[Team] = Vec.new();
+        if !self.lockstep.active || !self.is_host() { return open; }
+        for i in 0..self.humans.len() {
+            if !self.lockstep.seated.contains(self.humans[i]) { open.push(self.humans[i]); }
+        }
+        open
+    }
+
+    pub fn is_host(&self) -> bool { match self.lockstep.role { NetRole.Host => true, NetRole.Guest => false } }
+
+    /// Host: seats the next guest on the first open seat. `None` when the game is full or has
+    /// started (a later guest couldn't rebuild the game from its seed).
+    pub fn seat_next_guest(&mut self) -> Option[Team] {
+        if self.turn > 0 || !self.lockstep.active || !self.is_host() { return Option.None; }
+        let open = self.open_seats();
+        if open.is_empty() { return Option.None; }
+        let seat = open[0];
+        self.lockstep.seated.push(seat);
+        let more = open.len() - 1;
+        let joined = text(fn() can {Out} {
+            Out.put(seat.name());
+            if more == 0 { Out.put(" JOINED - EVERYONE'S HERE"); } else { Out.put(" JOINED - "); show_i64(more as i64); Out.put(" MORE TO COME"); }
+        });
+        self.notice = joined;
+        Option.Some(seat)
+    }
+
+    /// The host's welcome for a guest on `seat`: the game to build, the same on every machine
+    /// (the lockstep snapshot the sequencer sends a joining guest).
+    pub fn welcome_bytes(&self, seat: Team) -> Vec[u8] {
+        let buf: Vec[u8] = Vec.with_capacity(256);
+        let mut w = writer(buf);
+        w.put_u32(PROTOCOL_VERSION);
+        put_team(seat, &mut w);
+        w.put_u8(self.humans.len() as u8);
+        for i in 0..self.humans.len() { put_team(self.humans[i], &mut w); }
+        w.put_u32(self.map_seed.unwrap_or(0));
+        w.put_u8(self.lockstep.world_ai as u8);
+        w.put_bool(self.lockstep.world_start_city);
+        w.put_u8(self.lockstep.world_animals as u8);
+        w.put_bool(self.production_speedup);
+        w.put_bool(self.lifetime_special_cap);
+        w.into_vec()
+    }
+
+    /// The guest's game, built from the host's welcome the same way the host built its own.
+    pub fn join_game(welcome: &[u8]) -> Result[GameState, Str] can {Log} {
+        let mut r = reader();
+        let version = match u32.take(welcome, &mut r) { Result.Ok(v) => v, Result.Err(e) => { return Result.Err(to_owned("THE HOST'S WELCOME WAS GARBLED")); } };
+        if version != PROTOCOL_VERSION {
+            return Result.Err(text(fn() can {Out} {
+                Out.put("VERSION MISMATCH: HOST "); show_i64(version as i64); Out.put(", GUEST "); show_i64(PROTOCOL_VERSION as i64);
+            }));
+        }
+        let odd = "THE HOST OFFERED A GAME THAT DOESN'T ADD UP";
+        let seat = match take_team(welcome, &mut r) { Result.Ok(t) => t, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let count = match r.u8(welcome) { Result.Ok(n) => n as i32, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        if count < 2 || count > MAX_PLAYERS { return Result.Err(to_owned(odd)); }
+        let mut humans: Vec[Team] = Vec.new();
+        for k in 0..count {
+            match take_team(welcome, &mut r) { Result.Ok(t) => { humans.push(t); } Result.Err(e) => { return Result.Err(to_owned(odd)); } }
+        }
+        let map_seed = match u32.take(welcome, &mut r) { Result.Ok(v) => v, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let world_ai = match r.u8(welcome) { Result.Ok(n) => n as i32, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let start_city = match bool.take(welcome, &mut r) { Result.Ok(b) => b, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let animals = match r.u8(welcome) { Result.Ok(n) => n as i32, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let speedup = match bool.take(welcome, &mut r) { Result.Ok(b) => b, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        let capped = match bool.take(welcome, &mut r) { Result.Ok(b) => b, Result.Err(e) => { return Result.Err(to_owned(odd)); } };
+        match r.finish(welcome) { Result.Ok(u) => {} Result.Err(e) => { return Result.Err(to_owned(odd)); } }
+        // The human sides: the host's first, each once, the guest's among them, all sides the
+        // world has.
+        let mut unique = true;
+        for i in 0..humans.len() {
+            for k in 0..i { if humans[i] == humans[k] { unique = false; } }
+            if !humans[i].is_side() { unique = false; }
+        }
+        if !unique || humans[0] != HOST_SEAT || seat == HOST_SEAT || !humans.contains(seat)
+            || world_ai + 1 < humans.len() || world_ai >= MAX_PLAYERS || animals > ANIMALS_MANY {
+            return Result.Err(to_owned(odd));
+        }
+        let mut world = default_settings();
+        world.world_ai = world_ai;
+        world.world_start_city = start_city;
+        world.world_animals = animals;
+        let mut game = GameState.world_scenario_with(map_seed, &world);
+        game.production_speedup = speedup;
+        game.lifetime_special_cap = capped;
+        game.seat_players(NetRole.Guest, seat, humans);
+        game.notice = text(fn() can {Out} { Out.put("JOINED AS "); Out.put(seat.name()); });
+        Result.Ok(game)
+    }
+
+    /// Makes this a networked game: `humans` played by people, this one's player on `seat`, and
+    /// this turn's planning begun, looking at this side's home.
+    pub fn seat_players(&mut self, role: NetRole, seat: Team, humans: Vec[Team]) {
+        self.humans = humans;
+        self.local_team = seat;
+        // What this side has seen is its own: none of another side's view.
+        self.memory = Map.new();
+        self.lockstep = no_lockstep();
+        self.lockstep.active = true;
+        self.lockstep.role = role;
+        self.selected = Option.None;
+        self.selected_city = Option.None;
+        self.begin_lockstep_turn();
+        let mut home: Option[Hex] = Option.None;
+        for i in 0..self.cities.len() { if home.is_none() && self.cities[i].team == seat { home = Option.Some(self.cities[i].pos); } }
+        for i in 0..self.units.len() { if home.is_none() && self.units[i].team == seat { home = Option.Some(self.units[i].pos); } }
+        if let Option.Some(h) = home { self.camera = Camera.new(h.to_world(), self.camera.half_height); }
+        self.select_next_needing_attention(Option.None);
+    }
+
+    // ---- state the link and the UI read --------------------------------------------------------
+
+    /// Whether this is a networked game.
+    pub fn is_networked(&self) -> bool { self.lockstep.active }
+
+    /// Whether the first turn has resolved: after it, nobody can join.
+    pub fn has_started(&self) -> bool { self.turn > 0 }
+
+    /// While this side has ended planning and waits for the others' plans. Its plan is sent, so
+    /// nothing may change it (`is_resolving` refuses every order), but the player may still look
+    /// around: select units and cities and open their views, which waits only for `is_playing_out`.
+    pub fn waiting_for_peers(&self) -> bool { self.lockstep.submitted }
+
+    /// A turn playing out: every input waits, looking around included. Anything that changes the
+    /// plan waits for `is_resolving` instead, which also holds while a network game waits for the
+    /// others' plans.
+    pub fn is_playing_out(&self) -> bool { !self.pending_steps.is_empty() }
+
+    /// The lockstep turn this side is planning: the one its plan is for, and the bundle that
+    /// resolves it.
+    pub fn planning_turn(&self) -> u32 { self.turn }
+
+    /// Host: `team`'s plan for this turn is in (the sequencer holds its input).
+    pub fn has_plan_from(&self, team: Team) -> bool {
+        self.lockstep.active && self.open_seats().is_empty() && !self.lockstep.waiting_on.contains(team)
+    }
+
+    /// The host has told the game which sides it is still waiting for this turn.
+    pub fn set_waiting_on(&mut self, sides: Vec[Team]) { self.lockstep.waiting_on = sides; }
+
+    /// What the End Turn button says while the turn isn't this side's to play: the join code and
+    /// the seats to fill, whose plan the host waits for, or that it's resolving.
+    pub fn resolving_label(&self) -> Str {
+        let open = self.open_seats().len();
+        if self.lockstep.active && self.is_host() && open > 0 {
+            let code = copy_str(&self.lockstep.join_code);
+            return text(fn() can {Out} { Out.put("JOIN CODE "); Out.put(&code); Out.put(" - "); show_i64(open as i64); Out.put(" TO COME"); });
+        }
+        if self.lockstep.active && self.lockstep.submitted {
+            if self.is_host() && !self.lockstep.waiting_on.is_empty() {
+                let waiting = &self.lockstep.waiting_on;
+                return text(fn() can {Out} {
+                    Out.put("WAITING FOR ");
+                    for i in 0..waiting.len() {
+                        if i > 0 { Out.put(", "); }
+                        Out.put(waiting[i].name());
+                    }
+                });
+            }
+            return to_owned("WAITING FOR THE OTHERS");
+        }
+        to_owned("RESOLVING")
+    }
+
+    /// The game's messages waiting for the link to send, oldest first.
+    pub fn take_outbox(&mut self) -> Vec[NetOut] {
+        let mut out: Vec[NetOut] = Vec.new();
+        swap(&mut out, &mut self.lockstep.outbox);
+        out
+    }
+
+    /// The sides whose plan the checks refused in the bundle just applied, once: the host drops
+    /// their players.
+    pub fn take_refused(&mut self) -> Vec[Team] {
+        let mut out: Vec[Team] = Vec.new();
+        swap(&mut out, &mut self.lockstep.refused);
+        out
+    }
+
+    /// The host stopped listening after too many refused joins.
+    pub fn stop_listening(&mut self) { self.notice = to_owned("TOO MANY FAILED JOINS - NO LONGER LISTENING"); }
+
+    /// A guest: the host is gone, and the game with it (or it dropped this guest, and said why).
+    pub fn peer_lost(&mut self) {
+        let why = match &self.lockstep.dropped { &Option.Some(w) => Option.Some(to_owned(&w)), &Option.None => Option.None };
+        self.notice = match why {
+            Option.Some(w) => text(fn() can {Out} { Out.put("THE HOST DROPPED YOU: "); Out.put(&w); }),
+            Option.None => to_owned("BLUE (THE HOST) LEFT - THE GAME CAN'T GO ON"),
+        };
+    }
+
+    /// Guest: the host said why it is dropping this guest; shown as it comes, so only what the
+    /// fonts draw, and not much of it.
+    pub fn host_refused(&mut self, reason: &str) {
+        let mut why = to_owned("");
+        let mut kept = 0;
+        for i in 0..len(reason) {
+            let b = byte_at(reason, i).unwrap_or(0);
+            if b >= 32 && b <= 126 && kept < 120 { push_byte(&mut why, b); kept = kept + 1; }
+        }
+        self.lockstep.dropped = Option.Some(why);
+        self.peer_lost();
+    }
+
+    /// A guest, or the host, learned that `team`'s player is gone. Before the first turn the
+    /// seat opens again; after, the AI plays the side from the next bundle on (a bundle that
+    /// lacks the side, `apply_bundle`).
+    pub fn seat_left(&mut self, team: Team) {
+        if !self.lockstep.active || team == HOST_SEAT || !self.is_human(team) { return; }
+        if self.turn == 0 && self.is_host() {
+            self.lockstep.seated.retain_team(team);
+            self.notice = text(fn() can {Out} { Out.put(team.name()); Out.put(" LEFT - WAITING FOR A PLAYER"); });
+        }
+    }
+
+    // ---- ending, taking back and applying a turn -----------------------------------------------
+
+    /// Remembers the game as this turn's planning begins, for the plans to be applied to.
+    fn begin_lockstep_turn(&mut self) {
+        // Troops beside a city stand in its interior from the start of the turn, the same on
+        // every machine, so a player can order them there without the game changing on their
+        // machine alone.
+        self.sync_city_interiors();
+        let start = self.snapshot();
+        self.lockstep.turn_start = Option.Some(box start);
+        self.lockstep.submitted = false;
+        self.lockstep.sent.clear();
+        self.lockstep.refused.clear();
+    }
+
+    /// End Turn in a networked game (`end_planning`, once nothing needs orders): this side's plan
+    /// goes to the sequencer, and input waits for the turn.
+    pub fn submit_plan(&mut self) {
+        let open = self.open_seats().len();
+        if open > 0 {
+            self.notice = text(fn() can {Out} { Out.put("WAITING FOR "); show_i64(open as i64); Out.put(" MORE TO JOIN"); });
+            return;
+        }
+        let plan = self.team_plan(self.local_team);
+        let Option.Some(bytes) = plan_bytes(&plan) else {
+            self.notice = to_owned("THIS TURN'S ORDERS ARE TOO BIG TO SEND");
+            return;
+        };
+        self.lockstep.submitted = true;
+        self.lockstep.sent.push(copy_bytes(&bytes));
+        self.lockstep.outbox.push(NetOut.Plan(bytes));
+        // As in a local game, the city and Barracks views close and the selection is let go...
+        self.close_views_on_end_turn();
+        self.ui_click_mode = Option.None;
+        self.placing_job = Option.None;
+        self.hovered_job = Option.None;
+        self.queue_replace_armed = Option.None;
+        self.disband_armed = Option.None;
+        self.notice = to_owned(WAITING_NOTICE);
+    }
+
+    /// Take back End Turn, while this side's plan waits for the others': the player can change
+    /// their orders and end the turn again. If the sequencer already had every plan the turn
+    /// plays out with the one sent.
+    pub fn take_back_turn(&mut self) {
+        if !self.lockstep.active || !self.lockstep.submitted { return; }
+        self.lockstep.submitted = false;
+        self.lockstep.outbox.push(NetOut.Withdraw(self.turn));
+        self.notice = to_owned("TURN TAKEN BACK - CHANGE YOUR ORDERS, THEN END IT AGAIN");
+    }
+
+    /// A bundle of plans arrived: it waits until this machine is planning the turn it resolves.
+    pub fn receive_bundle(&mut self, turn: i64, plans: Vec[Vec[u8]]) {
+        self.lockstep.inbox.push(Bundle { turn: turn, plans: plans });
+    }
+
+    /// Whether the oldest waiting bundle can be applied now: this machine has begun planning its turn.
+    pub fn bundle_ready(&self) -> bool {
+        if !self.lockstep.active || self.lockstep.inbox.is_empty() || self.is_playing_out() { return false; }
+        self.lockstep.turn_start.is_some() && self.lockstep.inbox[0].turn == self.turn as i64
+    }
+
+    /// Applies the oldest waiting bundle if it can be; `Err` says why the host is not to be
+    /// trusted (a bundle that lacks this side's own orders, or lists a side no one plays).
+    pub fn apply_waiting_bundle(&mut self) -> Result[bool, Str] can {Log, Rand} {
+        if !self.bundle_ready() { return Result.Ok(false); }
+        let bundle = self.lockstep.inbox.remove(0);
+        match self.apply_bundle(&bundle.plans) {
+            Result.Ok(u) => Result.Ok(true),
+            Result.Err(why) => Result.Err(why),
+        }
+    }
+
+    /// Applies every side's plan, in side order, to the game as this turn's planning began,
+    /// keeping this machine's view (camera, fog memory, settings), and resolves the turn.
+    fn apply_bundle(&mut self, blobs: &Vec[Vec[u8]]) -> Result[(), Str] can {Log, Rand} {
+        // One plan for each side still played by a person, each one this bundle's for its side,
+        // and this side's one it sent.
+        let mut teams: Vec[Team] = Vec.new();
+        let mut plans: Vec[TeamPlan] = Vec.new();
+        let mut own: Option[Vec[u8]] = Option.None;
+        let mut refused: Vec[Team] = Vec.new();
+        for i in 0..blobs.len() {
+            if blobs[i].len() == 0 { continue; }
+            let team = match take_team(&blobs[i].buf, &mut reader()) {
+                Result.Ok(t) => t,
+                Result.Err(e) => { return Result.Err(to_owned("A PLAN FOR NO SIDE")); }
+            };
+            if !self.is_human(team) || teams.contains(team) {
+                return Result.Err(text(fn() can {Out} { Out.put("A TURN'S PLANS FOR "); Out.put(team.name()); Out.put(", NOT A PLAYER'S SIDE"); }));
+            }
+            teams.push(team);
+            if team == self.local_team { own = Option.Some(copy_bytes(&blobs[i])); }
+            match plan_of(&blobs[i].buf) {
+                Result.Ok(plan) => {
+                    if plan.team != team { refused.push(team); } else { plans.push(plan); }
+                }
+                Result.Err(e) => { refused.push(team); }
+            }
+        }
+        if !teams.contains(HOST_SEAT) || !teams.contains(self.local_team) {
+            return Result.Err(to_owned("A TURN WITHOUT EVERY SEAT"));
+        }
+        let Option.Some(mine) = own else { return Result.Err(to_owned("A TURN WITHOUT OUR ORDERS")); };
+        if !has_bytes(&self.lockstep.sent, &mine) { return Result.Err(to_owned("A TURN WITH ORDERS WE NEVER SENT")); }
+        // Taken back, but too late: the sequencer had them all, with orders this side has since
+        // changed (or is changing).
+        let last = self.lockstep.sent.len() - 1;
+        let too_late = !self.lockstep.submitted || !same_bytes(&self.lockstep.sent[last], &mine);
+        // The sides that left hand themselves to the AI from this turn on.
+        let mut gone: Vec[Team] = Vec.new();
+        for i in 0..self.humans.len() { if !teams.contains(self.humans[i]) { gone.push(self.humans[i]); } }
+        let mut sound: Vec[bool] = Vec.new();
+        for i in 0..plans.len() {
+            match self.check_plan(&plans[i]) {
+                Result.Ok(u) => { sound.push(true); }
+                Result.Err(why) => { sound.push(false); refused.push(plans[i].team); }
+            }
+        }
+        self.resolve_with_plans(&plans, &sound, &gone);
+        self.lockstep.refused = refused;
+        if too_late { self.notice = to_owned("TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"); }
+        Result.Ok(())
+    }
+
+    /// Applies `plans`, in side order, to the game as planning began, and resolves the turn.
+    fn resolve_with_plans(&mut self, plans: &Vec[TeamPlan], sound: &Vec[bool], gone: &Vec[Team]) can {Log, Rand} {
+        let mut lockstep = no_lockstep();
+        swap(&mut lockstep, &mut self.lockstep);
+        let mut slot: Option[Box[GameState]] = Option.None;
+        swap(&mut slot, &mut lockstep.turn_start);
+        let Option.Some(start) = slot else { swap(&mut lockstep, &mut self.lockstep); return; };
+        // What was open while waiting belongs to the game being replaced; closing the interior
+        // gives the map's camera back.
+        self.leave_city_view();
+        self.selected = Option.None;
+        self.group.clear();
+        let mut next = *start;
+        // Side order.
+        for t in 0..8 {
+            for i in 0..plans.len() {
+                if sound[i] && plans[i].team.index() == t { next.apply_plan(&plans[i]); }
+            }
+        }
+        for i in 0..gone.len() {
+            next.humans.retain_team(gone[i]);
+            lockstep.departed.push(gone[i]);
+            lockstep.seated.retain_team(gone[i]);
+        }
+        next.keep_view_of(self);
+        lockstep.submitted = false;
+        swap(&mut next.lockstep, &mut lockstep);
+        *self = next;
+        // As `end_planning` does for a single-player turn.
+        for i in 0..self.cities.len() {
+            if !self.is_human(self.cities[i].team) { self.auto_assign_city(i); }
+        }
+        self.notice = to_owned("RESOLVING ORDERS");
+        self.resolve_turn();
+    }
+
+    /// Carries this machine's view of the game (not the game itself) over from `old`: the camera,
+    /// fog memory, settings and panels.
+    fn keep_view_of(&mut self, old: &mut GameState) {
+        swap(&mut self.camera, &mut old.camera);
+        swap(&mut self.exterior_camera, &mut old.exterior_camera);
+        swap(&mut self.settings, &mut old.settings);
+        swap(&mut self.memory, &mut old.memory);
+        self.settings_open = old.settings_open;
+        self.show_yields = old.show_yields;
+        self.show_details = old.show_details;
+        self.cloud_time = old.cloud_time;
+        self.quit_requested = old.quit_requested;
+        self.fog_of_war = old.fog_of_war;
+        self.imgui_ui = old.imgui_ui;
+        self.ui_captured = old.ui_captured;
+        self.local_team = old.local_team;
+        self.humans = copy_teams(&old.humans);
+        swap(&mut self.savestate, &mut old.savestate);
+    }
+
+    /// After a networked turn resolves: its checksum goes to the sequencer, and the next turn's
+    /// planning begins.
+    pub fn finish_lockstep_turn(&mut self) {
+        if !self.lockstep.active { return; }
+        let value = self.checksum();
+        let done = self.turn - 1;
+        self.lockstep.outbox.push(NetOut.Checksum(done, value));
+        self.begin_lockstep_turn();
+    }
+
+    /// Two machines' checksums for `turn` differ (`side` is the other player's).
+    pub fn note_desync(&mut self, turn: u32, side: Option[Team]) {
+        if self.lockstep.desync.is_some() { return; }
+        self.lockstep.desync = Option.Some(turn);
+        self.notice = match side {
+            Option.Some(t) => text(fn() can {Out} { Out.put("DESYNC WITH "); Out.put(t.name()); Out.put(" AFTER TURN "); show_i64((turn + 1) as i64); }),
+            Option.None => text(fn() can {Out} { Out.put("DESYNC AFTER TURN "); show_i64((turn + 1) as i64); }),
+        };
+    }
+
+    // ---- plans ------------------------------------------------------------------------------------
+
+    /// `team`'s plan: what its player's planning set, as it stands now.
+    pub fn team_plan(&self, team: Team) -> TeamPlan {
+        let mut units: Vec[UnitPlan] = Vec.new();
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if u.team != team { continue; }
+            let mut queued: Vec[TurnOrder] = Vec.new();
+            for k in 0..u.queued.len() { queued.push(u.queued[k]); }
+            let mut waypoints: Vec[Hex] = Vec.new();
+            for k in 0..u.waypoints.len() { waypoints.push(u.waypoints[k]); }
+            units.push(UnitPlan {
+                id: u.id, planned_move: u.planned_move, planned_attack: u.planned_attack, ability_queued: u.ability_queued,
+                holding: u.holding, guarding: u.guarding, alert: u.alert, queued: queued, following_queue: u.following_queue,
+                waypoints: waypoints, planned_board: u.planned_board, planned_unload: u.planned_unload,
+            });
+        }
+        let mut cities: Vec[CityPlan] = Vec.new();
+        for i in 0..self.cities.len() {
+            let c = &self.cities[i];
+            if c.team != team { continue; }
+            // A city new this turn was founded by the settler that stood on its tile when the
+            // turn began.
+            let mut founded_by: Option[u32] = Option.None;
+            if let &Option.Some(start) = &self.lockstep.turn_start {
+                let mut existed = false;
+                for k in 0..start.cities.len() { if start.cities[k].pos == c.pos { existed = true; } }
+                if !existed {
+                    for k in 0..start.units.len() {
+                        let u = &start.units[k];
+                        if founded_by.is_none() && u.team == team && u.pos == c.pos && start.settlers.contains(u.id) { founded_by = Option.Some(u.id); }
+                    }
+                }
+            }
+            let mut queue: Vec[Queued[Build]] = Vec.new();
+            for k in 0..c.queue.len() { queue.push(c.queue[k]); }
+            let mut barracks_queue: Vec[Queued[BuildUnit]] = Vec.new();
+            for k in 0..c.barracks_queue.len() { barracks_queue.push(c.barracks_queue[k]); }
+            let mut jobs: Vec[WorkerJob] = Vec.new();
+            for k in 0..c.worker_jobs.len() { jobs.push(c.worker_jobs[k]); }
+            cities.push(CityPlan {
+                pos: c.pos, founded_by: founded_by, queue: queue, barracks_queue: barracks_queue,
+                clusters: copy_clusters(&c.clusters), remembered: copy_clusters(&c.remembered),
+                priorities: c.priorities, worker_jobs: jobs, held_workers: c.held_workers,
+            });
+        }
+        let mut workers: Vec[WorkerPlan] = Vec.new();
+        for i in 0..self.field_workers.len() {
+            let w = &self.field_workers[i];
+            if w.team != team { continue; }
+            workers.push(WorkerPlan { id: w.id, job: w.job, work_left: w.work_left, recalled: w.recalled, base: w.base });
+        }
+        let mut fighters: Vec[FighterPlan] = Vec.new();
+        for i in 0..self.cities.len() {
+            let c = &self.cities[i];
+            for k in 0..c.interior.fighters.len() {
+                let f = &c.interior.fighters[k];
+                if f.team != team { continue; }
+                fighters.push(FighterPlan { city: c.pos, source_id: f.source_id, planned_move: f.planned_move, planned_attack: f.planned_attack });
+            }
+        }
+        TeamPlan { turn: self.turn + 1, team: team, stock: self.stock(team), units: units, cities: cities, workers: workers, fighters: fighters }
+    }
+
+    /// Sets what `plan`'s side planned on this game, which must be the one its planning began
+    /// from.
+    pub fn apply_plan(&mut self, plan: &TeamPlan) can {Log} {
+        let team = plan.team;
+        self.set_stock(team, plan.stock);
+        // A city founded this turn too close to one another side's plan founded before it
+        // (`check_plan` saw only the turn's start) isn't founded, and its settler stays.
+        let mut refused: Vec[u32] = Vec.new();
+        for i in 0..plan.cities.len() {
+            let c = &plan.cities[i];
+            let mut exists = false;
+            for k in 0..self.cities.len() { if self.cities[k].pos == c.pos { exists = true; } }
+            if exists { continue; }
+            if let Option.Some(settler) = c.founded_by {
+                if self.founding_issue(c.pos).is_some() { refused.push(settler); }
+            }
+        }
+        // Its units not in the plan were disbanded, or founded a city.
+        let mut gone: Vec[u32] = Vec.new();
+        for i in 0..self.units.len() {
+            let u = &self.units[i];
+            if u.team != team { continue; }
+            let mut kept = refused.contains(u.id);
+            for k in 0..plan.units.len() { if plan.units[k].id == u.id { kept = true; } }
+            if !kept { gone.push(u.id); }
+        }
+        handle { self.units.retain(); } with Keep[Unit] { keep(u) => { resume !gone.contains(u.id) } }
+        for i in 0..gone.len() {
+            let _s = self.settlers.remove(gone[i]);
+            let _p = self.player_controlled_units.remove(gone[i]);
+        }
+        if !gone.is_empty() { self.discard_interior_copies_of_dead_units(); }
+        for i in 0..plan.units.len() {
+            let p = &plan.units[i];
+            let mut at = 0 - 1;
+            for k in 0..self.units.len() { if self.units[k].id == p.id && self.units[k].team == team { at = k; } }
+            if at < 0 { continue; }
+            let unit = &mut self.units[at];
+            unit.planned_move = p.planned_move;
+            unit.planned_attack = p.planned_attack;
+            unit.ability_queued = p.ability_queued;
+            unit.holding = p.holding;
+            unit.guarding = p.guarding;
+            unit.alert = p.alert;
+            unit.queued.clear();
+            for k in 0..p.queued.len() { unit.queued.push(p.queued[k]); }
+            unit.waypoints.clear();
+            for k in 0..p.waypoints.len() { unit.waypoints.push(p.waypoints[k]); }
+            unit.following_queue = p.following_queue;
+            unit.planned_board = p.planned_board;
+            unit.planned_unload = p.planned_unload;
+        }
+        for i in 0..plan.cities.len() {
+            let p = &plan.cities[i];
+            let mut existing = 0 - 1;
+            for k in 0..self.cities.len() { if self.cities[k].pos == p.pos { existing = k; } }
+            let index = if existing >= 0 {
+                existing
+            } else {
+                match p.founded_by {
+                    Option.Some(settler) => if refused.contains(settler) { continue; } else { self.found_city(settler, team, p.pos) },
+                    Option.None => { continue; }
+                }
+            };
+            let city = &mut self.cities[index];
+            if city.team != team { continue; }
+            city.queue.clear();
+            for k in 0..p.queue.len() { city.queue.push(p.queue[k]); }
+            city.barracks_queue.clear();
+            for k in 0..p.barracks_queue.len() { city.barracks_queue.push(p.barracks_queue[k]); }
+            city.clusters = copy_clusters(&p.clusters);
+            city.remembered = copy_clusters(&p.remembered);
+            city.priorities = p.priorities;
+            city.worker_jobs.clear();
+            for k in 0..p.worker_jobs.len() { city.worker_jobs.push(p.worker_jobs[k]); }
+            city.held_workers = p.held_workers;
+        }
+        for i in 0..plan.workers.len() {
+            let p = &plan.workers[i];
+            for k in 0..self.field_workers.len() {
+                if self.field_workers[k].id == p.id && self.field_workers[k].team == team {
+                    let worker = &mut self.field_workers[k];
+                    worker.job = p.job;
+                    worker.work_left = p.work_left;
+                    worker.recalled = p.recalled;
+                    worker.base = p.base;
+                }
+            }
+        }
+        for i in 0..plan.fighters.len() {
+            let p = &plan.fighters[i];
+            for c in 0..self.cities.len() {
+                if self.cities[c].pos != p.city { continue; }
+                for k in 0..self.cities[c].interior.fighters.len() {
+                    if self.cities[c].interior.fighters[k].team == team && self.cities[c].interior.fighters[k].source_id == p.source_id {
+                        let f = &mut self.cities[c].interior.fighters[k];
+                        f.planned_move = p.planned_move;
+                        f.planned_attack = p.planned_attack;
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- checking a plan -------------------------------------------------------------------------
+
+    /// Why `plan` can't be applied to this turn's game, if it can't: it's checked against the game
+    /// as the turn began, which is what it'll be applied to. Everything it names must exist and be
+    /// its side's, every hex must be on the map (or in a city's interior), its lists must be
+    /// short, and its stockpile no more than the side had plus what it could have taken back off
+    /// its queues. It catches a hostile or broken peer before anything reaches the game; it
+    /// doesn't catch every cheat.
+    pub fn check_plan(&self, plan: &TeamPlan) -> Result[(), Str] {
+        let team = plan.team;
+        if let &Option.Some(start) = &self.lockstep.turn_start { return start.check_plan_against_start(plan); }
+        Result.Err(bad_plan(team, "NO TURN IS BEING PLANNED"))
+    }
+
+    /// `check_plan`, run on the game as the turn began.
+    fn check_plan_against_start(&self, plan: &TeamPlan) -> Result[(), Str] {
+        let team = plan.team;
+        if plan.turn != self.turn + 1 {
+            let expected = self.turn + 1;
+            let got = plan.turn;
+            return Result.Err(bad_plan_text(team, text(fn() can {Out} { Out.put("TURN "); show_i64(got as i64); Out.put(", NOT "); show_i64(expected as i64); })));
+        }
+        if !self.is_human(team) { return Result.Err(bad_plan(team, "NOT A PLAYER'S SIDE")); }
+        if !short(plan.units.len()) || !short(plan.cities.len()) || !short(plan.workers.len()) || !short(plan.fighters.len()) {
+            return Result.Err(bad_plan(team, "TOO LONG"));
+        }
+        // Units: its own, each once, with orders on the map.
+        let mut seen: Vec[u32] = Vec.new();
+        for i in 0..plan.units.len() {
+            let unit = &plan.units[i];
+            let mut own = false;
+            for k in 0..self.units.len() { if self.units[k].id == unit.id && self.units[k].team == team { own = true; } }
+            if !own || seen.contains(unit.id) { return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, "")); }
+            seen.push(unit.id);
+            let mut hexes: Vec[Hex] = Vec.new();
+            for k in 0..unit.queued.len() {
+                hexes.push(unit.queued[k].from);
+                if let Option.Some(h) = unit.queued[k].move_to { hexes.push(h); }
+                if let Option.Some(h) = unit.queued[k].attack { hexes.push(h); }
+            }
+            if let Option.Some(h) = unit.planned_move { hexes.push(h); }
+            if let Option.Some(h) = unit.planned_attack { hexes.push(h); }
+            if let Option.Some(h) = unit.planned_unload { hexes.push(h); }
+            for k in 0..unit.waypoints.len() { hexes.push(unit.waypoints[k]); }
+            let mut on_map = true;
+            for k in 0..hexes.len() { if !self.grid.contains(hexes[k]) { on_map = false; } }
+            if !short(unit.queued.len()) || !short(unit.waypoints.len()) || !on_map {
+                return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, "'S ORDERS"));
+            }
+            if let Option.Some(ship) = unit.planned_board {
+                let mut ours = false;
+                for k in 0..self.units.len() { if self.units[k].id == ship && self.units[k].team == team { ours = true; } }
+                if !ours { return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, " BOARDS A SHIP NOT ITS OWN")); }
+            }
+            // No move or attack past the unit's reach: a turn's move within its range, an attack
+            // within its range of where it ends up. One hex to spare for what an ability adds
+            // (Charge, Deploy); the player plans on the board as they see it, so this is a bound,
+            // not a pathfinding check.
+            let mut at = 0;
+            for k in 0..self.units.len() { if self.units[k].id == unit.id { at = k; } }
+            let body = &self.units[at];
+            let stats = body.stats();
+            let moves = stats.move_range + 1;
+            let reach = stats.attack_range + 1;
+            let end = unit.planned_move.unwrap_or(body.pos);
+            let mut steps_ok = end.distance(body.pos) <= moves;
+            if let Option.Some(a) = unit.planned_attack { if a.distance(end) > reach { steps_ok = false; } }
+            for k in 0..unit.queued.len() {
+                let o = &unit.queued[k];
+                if o.end_pos().distance(o.from) > moves { steps_ok = false; }
+                if let Option.Some(a) = o.attack { if a.distance(o.end_pos()) > reach { steps_ok = false; } }
+            }
+            if !steps_ok { return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, "'S ORDERS REACH TOO FAR")); }
+            if unit.ability_queued && !body.ability_queued && body.ability_cooldown > 0 {
+                return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, "'S ABILITY ISN'T READY"));
+            }
+            // On alert only a troop that can be (`alert_capable`), with the plan's ability (a
+            // siege setting up may): never a settler, a scout or a ship.
+            if unit.alert {
+                let mut planned = body.snapshot();
+                planned.ability_queued = unit.ability_queued;
+                if !planned.alert_capable() || self.settlers.contains(unit.id) {
+                    return Result.Err(bad_plan_at(team, "UNIT ", unit.id as i64, " CAN'T GO ON ALERT"));
+                }
+            }
+        }
+        // Cities: its own, or one a settler of its founded where it stood.
+        let mut seen_cities: Vec[Hex] = Vec.new();
+        let mut new_cities: Vec[Hex] = Vec.new();
+        for i in 0..plan.cities.len() {
+            let city = &plan.cities[i];
+            if !self.grid.contains(city.pos) || hex_in(&seen_cities, city.pos) {
+                return Result.Err(bad_plan(team, "A CITY OFF THE MAP, OR TWICE"));
+            }
+            seen_cities.push(city.pos);
+            let mut before: Option[i32] = Option.None;
+            let mut anywhere = false;
+            for k in 0..self.cities.len() {
+                if self.cities[k].pos == city.pos { anywhere = true; if self.cities[k].team == team { before = Option.Some(k); } }
+            }
+            let owned = before.is_some();
+            let mut founded = false;
+            if !anywhere {
+                if let Option.Some(settler) = city.founded_by {
+                    let mut in_plan = false;
+                    for k in 0..plan.units.len() { if plan.units[k].id == settler { in_plan = true; } }
+                    let mut stood = false;
+                    for k in 0..self.units.len() {
+                        let u = &self.units[k];
+                        if u.id == settler && u.team == team && u.pos == city.pos { stood = true; }
+                    }
+                    founded = self.settlers.contains(settler) && !in_plan && stood;
+                }
+            }
+            if !owned && !founded { return Result.Err(bad_city(team, city.pos, "NOT ITS OWN")); }
+            // Founded by the rules (`founding_issue`): on open land, and far enough from every
+            // city, those it founds this turn included.
+            if founded {
+                let mut too_near = false;
+                for k in 0..new_cities.len() { if new_cities[k].distance(city.pos) < MIN_CITY_DISTANCE { too_near = true; } }
+                if self.founding_issue(city.pos).is_some() || too_near {
+                    return Result.Err(bad_city(team, city.pos, "WHERE NONE CAN BE FOUNDED"));
+                }
+                new_cities.push(city.pos);
+            }
+            let mut jobs_on_map = true;
+            for k in 0..city.worker_jobs.len() {
+                let j = &city.worker_jobs[k];
+                if !self.grid.contains(j.hex) { jobs_on_map = false; }
+                if let Option.Some(a) = j.across { if !self.grid.contains(a) { jobs_on_map = false; } }
+            }
+            // Up to its managers' clusters, each a manager and its workers, first: a bound on what
+            // the lists below can hold.
+            if !clusters_fit(&city.clusters) || !clusters_fit(&city.remembered) {
+                return Result.Err(bad_city(team, city.pos, "CLUSTERS PAST THE CAP"));
+            }
+            let worked = cluster_tiles(&city.clusters);
+            let remembered = cluster_tiles(&city.remembered);
+            let mut tiles_on_map = true;
+            for k in 0..worked.len() { if !self.grid.contains(worked[k]) { tiles_on_map = false; } }
+            for k in 0..remembered.len() { if !self.grid.contains(remembered[k]) { tiles_on_map = false; } }
+            if !short(city.queue.len()) || !short(city.barracks_queue.len()) || !short(city.worker_jobs.len()) || !tiles_on_map || !jobs_on_map {
+                return Result.Err(bad_city(team, city.pos, ""));
+            }
+            if !city.priorities.is_order() {
+                return Result.Err(bad_city(team, city.pos, "A PRIORITY ORDER THAT ISN'T FOOD, WOOD AND METAL"));
+            }
+            let population = match before { Option.Some(b) => self.cities[b].population, Option.None => 1 };
+            // Planning pays for nothing and works on nothing: that happens as the turn plays out
+            // (`work_queues`). What it queues is unpaid, with no work, and every paid item it keeps
+            // is one this city had paid for, with the work it had. It never adds work or marks an
+            // item paid.
+            let mut queue: Vec[Queued[Build]] = Vec.new();
+            let mut barracks_queue: Vec[Queued[BuildUnit]] = Vec.new();
+            if let Option.Some(b) = before {
+                for k in 0..self.cities[b].queue.len() { queue.push(self.cities[b].queue[k]); }
+                for k in 0..self.cities[b].barracks_queue.len() { barracks_queue.push(self.cities[b].barracks_queue[k]); }
+            }
+            if !keeps_what_was_paid_build(&queue, &city.queue) || !keeps_what_was_paid_unit(&barracks_queue, &city.barracks_queue) {
+                return Result.Err(bad_city(team, city.pos, "PAYMENT OR PROGRESS IT DIDN'T MAKE"));
+            }
+            // Planning releases held workers; only coming home recalled holds one, as the turn
+            // plays out.
+            let held_before = match before { Option.Some(b) => self.cities[b].held_workers, Option.None => 0 };
+            if city.held_workers > held_before { return Result.Err(bad_city(team, city.pos, "WORKERS IT DIDN'T HOLD")); }
+            // Its queue holds what a city trains: no Cavalry or Armored, ships only with a Harbor,
+            // no growing past the cap, one Scout at a time, and no new Settler below the population
+            // it needs (one it had queued may wait for citizens).
+            let harbor = match before { Option.Some(b) => self.cities[b].placed_site(Building.Harbor).is_some(), Option.None => false };
+            let mut trainable = true;
+            for k in 0..city.queue.len() {
+                if let Build.Unit(u) = city.queue[k].build {
+                    if u.required_resource().is_some() || (u.unit_type().is_naval() && !harbor) { trainable = false; }
+                }
+            }
+            let grows = count_build(&city.queue, Build.Grow);
+            let new_settlers = count_build(&city.queue, Build.Settler) > count_build(&queue, Build.Settler);
+            if !trainable || population + grows > MAX_CITY_POPULATION || count_build(&city.queue, Build.Scout) > 1
+                || (new_settlers && population < SETTLER_MIN_POPULATION) {
+                return Result.Err(bad_city(team, city.pos, "A BUILD IT CAN'T MAKE"));
+            }
+            let has_barracks = match before { Option.Some(b) => self.cities[b].barracks.is_some(), Option.None => false };
+            if !city.barracks_queue.is_empty() {
+                let mut naval = false;
+                for k in 0..city.barracks_queue.len() { if city.barracks_queue[k].build.unit_type().is_naval() { naval = true; } }
+                if !has_barracks || naval { return Result.Err(bad_city(team, city.pos, "A BARRACKS BUILD IT CAN'T MAKE")); }
+            }
+            // Its citizens work tiles in its reach (or ones they already worked), never a city or
+            // a building, no more than it has, each tile once.
+            let routes = self.routes_from(team, city.pos);
+            let mut workable = true;
+            for k in 0..worked.len() {
+                let h = worked[k];
+                let already = match before { Option.Some(b) => self.cities[b].works(h), Option.None => false };
+                if !(routes.costs.has(h) || already) || self.closed_to_citizens(h) { workable = false; }
+            }
+            let mut distinct = true;
+            for k in 0..worked.len() { for m in 0..k { if worked[k] == worked[m] { distinct = false; } } }
+            let cap = if population < MAX_CITY_POPULATION { population } else { MAX_CITY_POPULATION };
+            if worked.len() > cap || remembered.len() > MAX_CITY_POPULATION || !workable || !distinct {
+                return Result.Err(bad_city(team, city.pos, "TILES IT CAN'T WORK"));
+            }
+            // As many managers as its citizens allow, each on land and beside none of the others,
+            // its workers beside it.
+            let mut spaced = true;
+            for k in 0..city.clusters.len() {
+                let a = city.clusters[k].manager;
+                if self.grid.terrain(a).is_water() { spaced = false; }
+                for m in 0..k { if a.distance(city.clusters[m].manager) <= 1 { spaced = false; } }
+                let c = &city.clusters[k];
+                for m in 0..c.count { if c.slots[m].distance(c.manager) != 1 { spaced = false; } }
+            }
+            if city.clusters.len() > managers_for(population) || !spaced {
+                return Result.Err(bad_city(team, city.pos, "CLUSTERS THAT BREAK THE RULES"));
+            }
+        }
+        // Cavalry and Armored: no more queued than its deposits allow, or at least no more than it
+        // had queued.
+        let resources = [Resource.Horses, Resource.Iron];
+        for r in 0..2 {
+            let resource = resources[r];
+            let mut before_n = 0;
+            for c in 0..self.cities.len() {
+                if self.cities[c].team != team { continue; }
+                for k in 0..self.cities[c].barracks_queue.len() {
+                    if self.cities[c].barracks_queue[k].build.required_resource() == Option.Some(resource) { before_n = before_n + 1; }
+                }
+            }
+            let mut now_n = 0;
+            for c in 0..plan.cities.len() {
+                for k in 0..plan.cities[c].barracks_queue.len() {
+                    if plan.cities[c].barracks_queue[k].build.required_resource() == Option.Some(resource) { now_n = now_n + 1; }
+                }
+            }
+            let used = self.special_used(team, resource) - before_n + now_n;
+            if now_n > before_n && used > self.special_cap(team, resource) {
+                let name = resource.name();
+                return Result.Err(bad_plan_text(team, text(fn() can {Out} { Out.put("MORE "); Out.put(name); Out.put(" TROOPS THAN ITS DEPOSITS ALLOW"); })));
+            }
+        }
+        // Supply (`city/supply.tua`): what its units left and its queues use stays within what its
+        // cities give, or at least it queued no more than it had (a side over the cap keeps what it
+        // had queued).
+        let mut queued_before = 0;
+        for c in 0..self.cities.len() {
+            if self.cities[c].team == team { queued_before = queued_before + queues_supply(&self.cities[c].queue, &self.cities[c].barracks_queue); }
+        }
+        let mut queued_now = 0;
+        for c in 0..plan.cities.len() { queued_now = queued_now + queues_supply(&plan.cities[c].queue, &plan.cities[c].barracks_queue); }
+        let mut units_used = 0;
+        for i in 0..plan.units.len() {
+            for k in 0..self.units.len() { if self.units[k].id == plan.units[i].id { units_used = units_used + self.unit_supply(&self.units[k]); } }
+        }
+        // Its cities as the turn began, and any it founded since, with one citizen each.
+        let mut founded_count = 0;
+        for c in 0..plan.cities.len() {
+            let mut known = false;
+            for k in 0..self.cities.len() { if self.cities[k].pos == plan.cities[c].pos { known = true; } }
+            if !known { founded_count = founded_count + 1; }
+        }
+        let mut ones: Vec[i32] = Vec.new();
+        for _ in 0..founded_count { ones.push(1); }
+        let cap = self.supply_cap(team) + supply_from_cities(&ones);
+        if queued_now > queued_before && units_used + queued_now > cap {
+            let total = units_used + queued_now;
+            return Result.Err(bad_plan_text(team, text(fn() can {Out} {
+                Out.put("MORE TROOPS THAN ITS SUPPLY ALLOWS ("); show_i64(total as i64); Out.put("/"); show_i64(cap as i64); Out.put(")");
+            })));
+        }
+        // Workers out on the map: its own, with jobs on the map.
+        for i in 0..plan.workers.len() {
+            let worker = &plan.workers[i];
+            let mut at = 0 - 1;
+            for k in 0..self.field_workers.len() { if self.field_workers[k].id == worker.id && self.field_workers[k].team == team { at = k; } }
+            let mut job_on_map = true;
+            if let Option.Some(j) = worker.job {
+                if !self.grid.contains(j.hex) { job_on_map = false; }
+                if let Option.Some(a) = j.across { if !self.grid.contains(a) { job_on_map = false; } }
+            }
+            if at < 0 || !self.grid.contains(worker.base) || !job_on_map {
+                return Result.Err(bad_plan_at(team, "WORKER ", worker.id as i64, ""));
+            }
+            // Planning only recalls a worker: its job and work go, and it heads for its city. It
+            // can't be given work, or un-recalled.
+            let body = &self.field_workers[at];
+            let home = if body.home >= 0 && body.home < self.cities.len() { Option.Some(self.cities[body.home].pos) } else { Option.None };
+            let job_given = match (worker.job, body.job) {
+                (Option.Some(a), Option.Some(b)) => a != b,
+                (Option.Some(a), Option.None) => true,
+                _ => false,
+            };
+            let left_given = match (worker.work_left, body.work_left) {
+                (Option.Some(a), Option.Some(b)) => a != b,
+                (Option.Some(a), Option.None) => true,
+                _ => false,
+            };
+            let base_moved = worker.base != body.base && Option.Some(worker.base) != home;
+            if job_given || left_given || (body.recalled && !worker.recalled) || base_moved {
+                return Result.Err(bad_plan_at(team, "WORKER ", worker.id as i64, ": WORK IT WASN'T GIVEN"));
+            }
+        }
+        // Work put into a job stays with it through planning (a recalled worker's job goes back on
+        // its city's list), or goes with the job taken off: planning never adds any, or copies it
+        // onto a second job.
+        let mut worked_jobs: Vec[WorkerJob] = Vec.new();
+        for c in 0..self.cities.len() {
+            if self.cities[c].team != team { continue; }
+            for k in 0..self.cities[c].worker_jobs.len() {
+                let j = self.cities[c].worker_jobs[k];
+                if j.done > 0 { worked_jobs.push(j); }
+            }
+        }
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].team != team { continue; }
+            if let Option.Some(j) = self.field_workers[w].job { if j.done > 0 { worked_jobs.push(j); } }
+        }
+        let mut planned_jobs: Vec[WorkerJob] = Vec.new();
+        for w in 0..plan.workers.len() { if let Option.Some(j) = plan.workers[w].job { planned_jobs.push(j); } }
+        for c in 0..plan.cities.len() { for k in 0..plan.cities[c].worker_jobs.len() { planned_jobs.push(plan.cities[c].worker_jobs[k]); } }
+        for p in 0..planned_jobs.len() {
+            let job = planned_jobs[p];
+            if job.done == 0 { continue; }
+            let mut found = 0 - 1;
+            for k in 0..worked_jobs.len() {
+                if found < 0 && worked_jobs[k].fresh() == job.fresh() && worked_jobs[k].done >= job.done { found = k; }
+            }
+            if found < 0 {
+                let hex = job.hex;
+                return Result.Err(bad_plan_text(team, text(fn() can {Out} {
+                    Out.put("JOB AT ("); show_i64(hex.q as i64); Out.put(", "); show_i64(hex.r as i64); Out.put("): WORK IT DIDN'T DO");
+                })));
+            }
+            worked_jobs.remove(found);
+        }
+        // Troops in a city's interior: its own, ordered within it.
+        for i in 0..plan.fighters.len() {
+            let f = &plan.fighters[i];
+            let mut own = false;
+            for c in 0..self.cities.len() {
+                if self.cities[c].pos != f.city { continue; }
+                for k in 0..self.cities[c].interior.fighters.len() {
+                    let x = &self.cities[c].interior.fighters[k];
+                    if x.source_id == f.source_id && x.team == team { own = true; }
+                }
+            }
+            let mut inside = true;
+            if let Option.Some(h) = f.planned_move { if !in_bounds(h) { inside = false; } }
+            if let Option.Some(h) = f.planned_attack { if !in_bounds(h) { inside = false; } }
+            if !own || !inside { return Result.Err(bad_plan_at(team, "TROOP ", f.source_id as i64, " INSIDE A CITY")); }
+        }
+        // Nothing comes free. Planning pays for no queued item (the check above), placing a job
+        // pays its price, and taking a paid item or a job off refunds what was paid, so what the
+        // side holds plus every paid item and placed job is worth exactly what it held and had paid
+        // for when the turn began. Unpaid items count for nothing.
+        let mut before_total = self.stock(team);
+        for c in 0..self.cities.len() {
+            let city = &self.cities[c];
+            if city.team == team { committed_city(&mut before_total, city.population, &city.queue, &city.barracks_queue, &city.worker_jobs); }
+        }
+        for w in 0..self.field_workers.len() {
+            if self.field_workers[w].team != team { continue; }
+            if let Option.Some(j) = self.field_workers[w].job { before_total = before_total.plus(j.kind.price()); }
+        }
+        let mut after_total = plan.stock;
+        for c in 0..plan.cities.len() {
+            let city = &plan.cities[c];
+            let mut population = 1;
+            for k in 0..self.cities.len() { if self.cities[k].pos == city.pos { population = self.cities[k].population; } }
+            committed_city(&mut after_total, population, &city.queue, &city.barracks_queue, &city.worker_jobs);
+        }
+        for w in 0..plan.workers.len() { if let Option.Some(j) = plan.workers[w].job { after_total = after_total.plus(j.kind.price()); } }
+        let stock = plan.stock;
+        if stock.food < 0 || stock.wood < 0 || stock.metal < 0 || after_total != before_total {
+            return Result.Err(bad_plan(team, "SPENDING THAT DOESN'T ADD UP"));
+        }
+        Result.Ok(())
+    }
+
+    // ---- the checksum ----------------------------------------------------------------------------
+
+    /// A fingerprint of the game's state, the same on every machine that resolved the same turns
+    /// the same way: units, cities, the stockpiles, workers, what's built on the map, the animals'
+    /// dens and how much of it each side's own memory holds (`side_fog`, which the AI plans on).
+    /// Views (camera, the player's fog memory, panels) aren't in it.
+    pub fn checksum(&self) -> u64 {
+        let mut h = Sum { h: 14695981039346656037 };
+        h.add(self.turn as i64);
+        let order = units_by_id(&self.units);
+        for n in 0..order.len() {
+            let u = &self.units[order[n]];
+            h.add(u.id as i64); h.add(u.team.index() as i64); h.hex(u.pos); h.hp(u.hp); h.hp(u.interior_hp);
+            h.add(u.ability_cooldown as i64); h.add(if u.deployed { 1 } else { 0 }); h.add(u.cargo.len() as i64);
+            h.add(if u.alert { 1 } else { 0 }); h.opt_hex(u.home);
+        }
+        for c in 0..self.cities.len() {
+            let city = &self.cities[c];
+            h.add(city.id as i64); h.add(city.team.index() as i64); h.hex(city.pos); h.add(city.population as i64); h.add(city.workers as i64);
+            h.add(city.held_workers as i64);
+            h.opt_hex(city.barracks); h.hp(city.barracks_hp);
+            for k in 0..city.queue.len() { h.add(if city.queue[k].paid { 1 } else { 0 }); h.add(city.queue[k].progress as i64); }
+            for k in 0..city.barracks_queue.len() { h.add(if city.barracks_queue[k].paid { 1 } else { 0 }); h.add(city.barracks_queue[k].progress as i64); }
+            for k in 0..city.clusters.len() {
+                let cl = &city.clusters[k];
+                h.hex(cl.manager); h.add(cl.count as i64);
+                for m in 0..cl.count { h.hex(cl.slots[m]); }
+            }
+            for k in 0..3 { h.add(city.priorities.at(k).index() as i64); }
+            h.add(city.built.len() as i64);
+            h.add(city.queue.len() as i64);
+            for k in 0..city.worker_jobs.len() { h.hex(city.worker_jobs[k].hex); h.add(city.worker_jobs[k].done as i64); }
+            h.hp(city.interior.core_hp);
+            for k in 0..city.interior.fighters.len() {
+                let f = &city.interior.fighters[k];
+                h.add(f.source_id as i64); h.add(f.team.index() as i64); h.hex(f.pos); h.hp(f.hp);
+            }
+        }
+        for t in 0..self.stockpiles.len() { h.add(self.stockpiles[t].food as i64); h.add(self.stockpiles[t].wood as i64); h.add(self.stockpiles[t].metal as i64); }
+        let mut workers: Vec[i32] = Vec.new();
+        for i in 0..self.field_workers.len() {
+            let mut at = workers.len();
+            while at > 0 && self.field_workers[workers[at - 1]].id > self.field_workers[i].id { at = at - 1; }
+            workers.insert(at, i);
+        }
+        for n in 0..workers.len() {
+            let w = &self.field_workers[workers[n]];
+            h.add(w.id as i64); h.add(w.team.index() as i64); h.hex(w.pos);
+            match w.work_left { Option.Some(x) => { h.add(1); h.add(x as i64); } Option.None => { h.add(0); } }
+            match w.job { Option.Some(j) => { h.add(1); h.add(j.done as i64); } Option.None => { h.add(0); } }
+        }
+        let roads = sorted_hexes(&self.roads);
+        h.add(roads.len() as i64);
+        for k in 0..roads.len() { h.hex(roads[k]); }
+        let mut site_hexes: Vec[Hex] = Vec.new();
+        for k in 0..self.sites.len() { if let Option.Some(x) = self.sites.key_at(k) { site_hexes.push(x); } }
+        sort_hexes(&mut site_hexes);
+        for k in 0..site_hexes.len() {
+            h.hex(site_hexes[k]);
+            if let Option.Some(s) = self.sites.get(site_hexes[k]) { h.add(s.team.index() as i64); h.add(s.food as i64); h.add(s.production as i64); }
+        }
+        let mut structure_hexes: Vec[Hex] = Vec.new();
+        for k in 0..self.structures.len() { if let Option.Some(x) = self.structures.key_at(k) { structure_hexes.push(x); } }
+        sort_hexes(&mut structure_hexes);
+        for k in 0..structure_hexes.len() {
+            h.hex(structure_hexes[k]);
+            if let Option.Some(s) = self.structures.get(structure_hexes[k]) { h.add(s.team.index() as i64); h.add(kind_number(s.kind)); }
+        }
+        for k in 0..self.dens.len() { h.hex(self.dens[k].pos); }
+        for k in 0..self.side_memory.len() { h.add(self.side_memory[k].len() as i64); }
+        h.h
+    }
+}
+
+fn kind_number(k: StructureKind) -> i64 {
+    match k {
+        StructureKind.Wall => 0,
+        StructureKind.Gate => 1,
+        StructureKind.Outpost => 2,
+        StructureKind.Fort => 3,
+    }
+}
+
+fn clusters_fit(clusters: &Vec[Cluster]) -> bool {
+    if clusters.len() > MAX_MANAGERS { return false; }
+    for i in 0..clusters.len() { if clusters[i].count > WORKERS_PER_MANAGER { return false; } }
+    true
+}
+
+fn copy_clusters(v: &Vec[Cluster]) -> Vec[Cluster] {
+    let mut out: Vec[Cluster] = Vec.new();
+    for i in 0..v.len() { out.push(v[i]); }
+    out
+}
+
+fn copy_teams(v: &Vec[Team]) -> Vec[Team] {
+    let mut out: Vec[Team] = Vec.new();
+    for i in 0..v.len() { out.push(v[i]); }
+    out
+}
+
+fn vec_of_team(t: Team) -> Vec[Team] {
+    let mut out: Vec[Team] = Vec.new();
+    out.push(t);
+    out
+}
+
+fn sorted_hexes(set: &Set[Hex]) -> Vec[Hex] {
+    let mut out: Vec[Hex] = Vec.new();
+    for k in 0..set.len() { if let Option.Some(x) = set.key_at(k) { out.push(x); } }
+    sort_hexes(&mut out);
+    out
+}
+
+fn sort_hexes(v: &mut Vec[Hex]) {
+    let mut i = 1;
+    while i < v.len() {
+        let mut k = i;
+        while k > 0 && (v[k - 1].q > v[k].q || (v[k - 1].q == v[k].q && v[k - 1].r > v[k].r)) {
+            let a = v[k - 1];
+            let b = v[k];
+            v[k - 1] = b;
+            v[k] = a;
+            k = k - 1;
+        }
+        i = i + 1;
+    }
+}
+
+fn replace_start(l: &mut Lockstep) -> Option[Box[GameState]] {
+    let mut out: Option[Box[GameState]] = Option.None;
+    swap(&mut out, &mut l.turn_start);
+    out
+}
+
+trait TeamList { fn retain_team(&mut self, t: Team); }
+
+impl TeamList for Vec[Team] {
+    fn retain_team(&mut self, t: Team) {
+        let mut i = 0;
+        while i < self.len() { if self[i] == t { self.remove(i); } else { i = i + 1; } }
+    }
+}

@@ -1,0 +1,219 @@
+//! A guest's side of a networked game, sans-IO at the level of lockstep messages: a `Peer` holds
+//! the lockstep guest core, is handed each message the host sent it, and leaves each message for
+//! the host in `out`. It carries the game through the guest's states: waiting for the host's
+//! welcome (which builds the game from the host's world), playing, or failed.
+//!
+//! The host's own player is a `Peer` too (`hub.tua`), joined to the sequencer in the same
+//! process, so every machine applies a turn's bundle the same way.
+
+use std.mem.swap;
+use std.rand.Rand;
+use std.str.Str;
+use std.str.to_owned;
+use netlib.effects.Deliver;
+use netlib.effects.Transmit;
+use netlib.frame.NEVER;
+use lockstep.guest.Guest;
+use lockstep.guest.GuestEvent;
+use lockstep.guest.open_guest;
+use lockstep.msg.REFUSE_CATCHUP;
+use lockstep.msg.REFUSE_FULL;
+use lockstep.msg.REFUSE_SNAPSHOT;
+use log.Log;
+use game.GameState;
+use game.multiplayer.NetOut;
+
+/// `Refuse` codes the game adds to the library's: the game has started, and this guest's plan
+/// broke the rules.
+pub const REFUSE_STARTED: u32 = 16;
+pub const REFUSE_BAD_PLAN: u32 = 17;
+
+/// Where a peer is.
+pub enum PeerPhase {
+    /// Waiting for the host's welcome.
+    Joining,
+    Playing,
+    /// The host refused it, or it refused the host: the words to show.
+    Failed(Str),
+}
+
+pub struct PeerState {
+    /// Payloads for the host, oldest first.
+    out: Vec[Vec[u8]],
+    phase: PeerPhase,
+    /// The game exists: built from a welcome, or given at the start (`open_local_peer`).
+    has_game: bool,
+    /// The host's own player: its game exists already and a welcome only seats it.
+    hosting: bool,
+    rejected: i32,
+    silent: bool,
+    /// The game a welcome built, until `take_joined` hands it over.
+    joined: Option[GameState],
+}
+
+pub struct Peer { core: Guest, st: PeerState }
+
+/// A guest core that has not joined yet. `silence_ns` is how long the host may say nothing.
+pub fn open_peer(silence_ns: i64) -> Peer {
+    Peer { core: open_guest(silence_ns), st: fresh_state(false) }
+}
+
+/// The host's own player, over the game it hosts.
+pub fn open_local_peer() -> Peer {
+    let mut st = fresh_state(true);
+    st.has_game = true;
+    Peer { core: open_guest(NEVER), st: st }
+}
+
+fn fresh_state(hosting: bool) -> PeerState {
+    PeerState {
+        out: Vec.new(), phase: PeerPhase.Joining, has_game: false, hosting: hosting, rejected: 0, silent: false,
+        joined: Option.None,
+    }
+}
+
+fn copy_bytes(b: &Vec[u8]) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { out.push(b[i]); }
+    out
+}
+
+fn copy_slice(b: &[u8]) -> Vec[u8] {
+    let mut out: Vec[u8] = Vec.with_capacity(b.len());
+    for i in 0..b.len() { out.push(b[i]); }
+    out
+}
+
+/// What a refusal says.
+pub fn refusal_words(code: u32) -> Str {
+    if code == REFUSE_FULL { return to_owned("THE GAME IS FULL"); }
+    if code == REFUSE_STARTED { return to_owned("THE GAME HAS STARTED"); }
+    if code == REFUSE_CATCHUP || code == REFUSE_SNAPSHOT { return to_owned("THE HOST COULD NOT SEAT YOU"); }
+    if code == REFUSE_BAD_PLAN { return to_owned("YOU SENT A BAD PLAN"); }
+    to_owned("THE HOST REFUSED THE CONNECTION")
+}
+
+fn note_event(st: &mut PeerState, e: &GuestEvent, game: &mut GameState) can {Log} {
+    match e {
+        &GuestEvent.Joined(id, delay, snap_turn, join_turn, snapshot) => {
+            if st.hosting {
+                st.phase = PeerPhase.Playing;
+            } else {
+                match GameState.join_game(&snapshot.buf) {
+                    Result.Ok(g) => {
+                        st.joined = Option.Some(g);
+                        st.phase = PeerPhase.Playing;
+                        st.has_game = true;
+                    }
+                    Result.Err(why) => { st.phase = PeerPhase.Failed(why); }
+                }
+            }
+        }
+        &GuestEvent.Apply(turn, guests, data) => {
+            let mut plans: Vec[Vec[u8]] = Vec.new();
+            for i in 0..data.len() { plans.push(copy_bytes(&data[i])); }
+            let t = turn + 0;
+            if st.has_game { game.receive_bundle(t, plans); }
+        }
+        &GuestEvent.Desync(turn, mine, other, theirs) => {
+            let t = turn + 0;
+            if st.has_game { game.note_desync(t as u32, Option.None); }
+        }
+        &GuestEvent.Refused(code) => {
+            let c = code + 0;
+            st.phase = PeerPhase.Failed(refusal_words(c));
+        }
+        &GuestEvent.Rejected(why) => { st.rejected = st.rejected + 1; }
+        &GuestEvent.HostSilent(t) => { st.silent = true; }
+    }
+}
+
+impl Peer {
+    pub fn is_playing(&self) -> bool { match &self.st.phase { &PeerPhase.Playing => true, _ => false } }
+
+    /// Why the peer failed, if it has.
+    pub fn failure(&self) -> Option[Str] {
+        match &self.st.phase {
+            &PeerPhase.Failed(why) => Option.Some(to_owned(&why)),
+            _ => Option.None,
+        }
+    }
+
+    /// How many messages from the host were refused as malformed or out of order.
+    pub fn rejected(&self) -> i32 { self.st.rejected }
+
+    /// Whether the host has gone quiet for longer than the peer was told to allow.
+    pub fn host_silent(&self) -> bool { self.st.silent }
+
+    /// The guest id the host gave this peer, or -1 before it is admitted.
+    pub fn id(&self) -> i32 { self.core.id() }
+
+    /// The game a welcome built, once: the caller replaces its own with it.
+    pub fn take_joined(&mut self) -> Option[GameState] {
+        let mut out: Option[GameState] = Option.None;
+        swap(&mut out, &mut self.st.joined);
+        out
+    }
+
+    /// Payloads for the host, oldest first.
+    pub fn take_out(&mut self) -> Vec[Vec[u8]] {
+        let mut out: Vec[Vec[u8]] = Vec.new();
+        swap(&mut out, &mut self.st.out);
+        out
+    }
+
+    /// One payload from the host.
+    pub fn on_payload(&mut self, now: i64, payload: &[u8], game: &mut GameState) can {Log} {
+        handle { self.core.on_message(now, payload); } with Deliver[GuestEvent] {
+            event(e) => { note_event(&mut self.st, e, game); resume(()) }
+        }
+    }
+
+    /// Time passing: a silent host is noticed.
+    pub fn on_tick(&mut self, now: i64, game: &mut GameState) can {Log} {
+        handle { self.core.on_tick(now); } with Deliver[GuestEvent] {
+            event(e) => { note_event(&mut self.st, e, game); resume(()) }
+        }
+    }
+
+    /// Sends what the game has to say (its plan, a checksum) and applies the bundles that have
+    /// arrived and can be. A bundle the checks cannot trust fails the peer.
+    pub fn pump(&mut self, now: i64, game: &mut GameState) can {Log, Rand} {
+        if !self.is_playing() || !self.st.has_game { return; }
+        let outs = game.take_outbox();
+        for i in 0..outs.len() {
+            match &outs[i] {
+                &NetOut.Plan(bytes) => {
+                    let mut rc = 0;
+                    handle { rc = self.core.input(now, &bytes.buf); } with Transmit {
+                        bytes(b) => { self.st.out.push(copy_slice(b)); resume(()) }
+                    }
+                    if rc != 0 { game.set_notice("THE ORDERS COULD NOT BE SENT"); }
+                }
+                &NetOut.Withdraw(turn) => {
+                    let t = turn + 0;
+                    handle { let _r = self.core.withdraw(t as i64); } with Transmit {
+                        bytes(b) => { self.st.out.push(copy_slice(b)); resume(()) }
+                    }
+                }
+                &NetOut.Checksum(turn, sum) => {
+                    let t = turn + 0;
+                    let s = sum + 0;
+                    handle { let _r = self.core.checksum(t as i64, s); } with Transmit {
+                        bytes(b) => { self.st.out.push(copy_slice(b)); resume(()) }
+                    }
+                }
+            }
+        }
+        while game.bundle_ready() {
+            match game.apply_waiting_bundle() {
+                Result.Ok(applied) => {}
+                Result.Err(why) => {
+                    game.host_refused(&why);
+                    self.st.phase = PeerPhase.Failed(why);
+                    return;
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,113 @@
+//! A networked game across the lockstep libraries (`multiplayer.tua`, `link/`): what a host and
+//! its guests agree on, and what the sequencer and the game's checks refuse, played out over the
+//! in-memory table (`table.tua`).
+
+use std.rand.Rand;
+use std.str.char_at;
+use std.str.find_char;
+use std.str.len;
+use std.str.to_owned;
+use std.test.assert;
+use std.test.Assert;
+use log.Log;
+use game.GameState;
+use game.city.BuildUnit;
+use game.hex.Hex;
+use game.multiplayer.CODE_LETTERS;
+use game.multiplayer.CODE_LENGTH;
+use game.multiplayer.HOST_SEAT;
+use game.scenario.Scenario;
+use game.tests.sandbox;
+use game.unit.Team;
+use link.table.Lobby;
+use link.table.table;
+
+/// The seat the first guest gets.
+const GUEST_SEAT: Team = Team.Red;
+
+/// Plays out a turn that's resolving.
+fn play_out(game: &mut GameState) can {Log, Rand} {
+    while game.is_playing_out() { game.update(1.0); }
+}
+
+/// A hex beside `from` that a unit can move to.
+fn open_neighbor(game: &GameState, from: Hex) -> Hex {
+    let around = from.neighbors();
+    for k in 0..6 {
+        if game.grid.is_passable(around[k]) && !game.is_occupied(around[k]) { return around[k]; }
+    }
+    from
+}
+
+/// Gives `game`'s side a move and a Melee in its city, as a player would.
+fn plan_something(game: &mut GameState) {
+    let team = game.local_team;
+    let mut unit = 0 - 1;
+    for i in 0..game.units.len() { if unit < 0 && game.units[i].team == team { unit = i; } }
+    let from = game.units[unit].pos;
+    let target = open_neighbor(&*game, from);
+    game.units[unit].planned_move = Option.Some(target);
+    let mut city = 0 - 1;
+    for i in 0..game.cities.len() { if city < 0 && game.cities[i].team == team { city = i; } }
+    game.open_city(city);
+    game.queue_selected_city_unit(BuildUnit.Melee);
+    game.leave_city_view();
+}
+
+fn queued_total(g: &GameState) -> i32 {
+    let mut n = 0;
+    for c in 0..g.cities.len() { n = n + g.cities[c].queue.len(); }
+    n
+}
+
+@test
+fn a_guest_joins_on_red_with_the_hosts_world() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        assert(t.host.scenario == Scenario.World);
+        assert(t.host.map_seed == t.games[0].map_seed);
+        assert(t.host.local_team == HOST_SEAT);
+        assert(t.games[0].local_team == GUEST_SEAT);
+        assert(t.host.humans.len() == 2 && t.games[0].humans.len() == 2);
+        assert(t.host.ai_teams().is_empty() && t.games[0].ai_teams().is_empty());
+        assert(t.host.checksum() == t.games[0].checksum());
+        // A second guest finds the game full.
+        assert(t.connect() == 0 - 1);
+        // A join code: six letters and digits, none of them easily confused.
+        let code = t.host.join_code().unwrap_or(to_owned(""));
+        assert(len(&code) == CODE_LENGTH as i64);
+        for i in 0..len(&code) {
+            let c = char_at(&code, i).unwrap_or('?');
+            assert(find_char(CODE_LETTERS, c, 0).is_some());
+        }
+    });
+}
+
+@test
+fn both_plans_resolve_the_same_turn_on_both_machines() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut t = table(1);
+        plan_something(&mut t.host);
+        plan_something(&mut t.games[0]);
+        // The guest ends its turn first: the host waits for nothing more than its own player.
+        t.games[0].submit_plan();
+        assert(t.games[0].waiting_for_peers() && t.games[0].is_resolving());
+        t.exchange();
+        assert(!t.host.is_resolving());
+        t.host.submit_plan();
+        t.exchange();
+        play_out(&mut t.host);
+        play_out(&mut t.games[0]);
+        t.exchange();
+        assert(t.host.turn == 1);
+        assert(t.games[0].turn == 1);
+        assert(t.host.checksum() == t.games[0].checksum());
+        assert(t.host.lockstep.desync.is_none());
+        assert(t.games[0].lockstep.desync.is_none());
+        // Each side's build played out on both machines.
+        assert(queued_total(&t.host) >= 2);
+        assert(queued_total(&t.games[0]) >= 2);
+        // A new turn's planning began on both.
+        assert(!t.host.waiting_for_peers() && !t.games[0].waiting_for_peers());
+    });
+}

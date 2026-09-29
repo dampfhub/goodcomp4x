@@ -32,6 +32,8 @@ use game.workers.FieldWorker;
 use game.workers.JobKind;
 use game.hex.Edge;
 use game.effects.Playing;
+use game.multiplayer.Lockstep;
+use game.multiplayer.no_lockstep;
 use game.scenario.Scenario;
 use game.ruins.Ruin;
 use game.animals.Den;
@@ -275,6 +277,8 @@ pub struct GameState {
     disband_armed: Option[u32],
     /// Attack animations playing out.
     effects: Vec[Playing],
+    /// A networked game's lockstep state (`multiplayer.tua`); inactive in a game of one's own.
+    lockstep: Lockstep,
 }
 
 impl GameState {
@@ -382,6 +386,7 @@ impl GameState {
             queue_replace_armed: Option.None,
             disband_armed: Option.None,
             effects: Vec.new(),
+            lockstep: no_lockstep(),
         };
         game.select_next_needing_attention(Option.None);
         game

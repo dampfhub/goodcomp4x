@@ -21,6 +21,7 @@ use game.hex.HexGrid;
 use game.hex.Hex;
 use game.fog.Sighting;
 use game.transition.no_transition;
+use game.multiplayer.no_lockstep;
 use game.turn.TurnStep;
 use game.unit.UnitType;
 use game.settings.Settings;
@@ -248,6 +249,7 @@ impl GameState {
             humans: copy_vec(&self.humans),
             refused_sites: copy_vec(&self.refused_sites),
             next_unit_id: self.next_unit_id,
+            lockstep: no_lockstep(),
         }
     }
 }

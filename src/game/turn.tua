@@ -131,7 +131,9 @@ struct Engagement {
 }
 
 impl GameState {
-    pub fn is_resolving(&self) -> bool { !self.pending_steps.is_empty() }
+    /// A turn playing out or, in a network game, this side's plan sent and the others' awaited:
+    /// what changes the plan waits for it (`is_playing_out` is the first alone).
+    pub fn is_resolving(&self) -> bool { !self.pending_steps.is_empty() || self.waiting_for_peers() }
 
     /// Plans the AI's turn, then queues every step for `update` to play out. Called after the
     /// player explicitly ends planning.
@@ -263,6 +265,7 @@ impl GameState {
             self.advance_queues();
             let turn = self.turn;
             info(fn() can {Out} { Out.put("=== turn "); show_u64(turn as u64); Out.put(" resolved ==="); });
+            self.finish_lockstep_turn();
             // Planning begins: the player's queues go on from what they now know.
             self.replan_queues();
             self.select_next_needing_attention(Option.None);
