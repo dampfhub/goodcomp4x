@@ -19,6 +19,19 @@ keyboard shortcuts, which are in their tooltips: hovering never changes a
 button's text. Debug buttons keep their keys visible.
 Unit orders and a city's priority chips use shared vector-icon toolbars; hovering an
 icon gives its action name, shortcut and explanation.
+An ImGui panel fits its content to whatever width it has, however narrow the
+player makes it, so no text or icon runs into another: a line of text wraps
+between words (`wrap_spans`; a label ending in one space stays with its value,
+"DEFENSE 20"); a row of buttons takes as many columns as its widest button's
+text leaves room for, so a pair such as Grow and Gather stacks when it can't sit
+side by side, and a compact button's price and turns go under its label, then
+wrap, before its text would leave the button (`button_grid`, which
+`measure_panel` uses too); a catalogue card keeps a fixed room for its unit's
+pictogram before the name and drops its price, which its tooltip gives, when the
+two don't fit (`split_button`); a queue title's Clear button moves under the
+title; and a setting's control goes under its name, a choice becoming a
+drop-down list when its buttons don't fit (`setting_fit`). Text drawn on a
+button is clipped to it, as ImGui clips its own labels.
 `ImGuiLayoutState` measures rows in ImGui's logical pixels and docks visible
 windows without overlap. A window follows the dock as its content changes
 until the player drags its title bar or resize grip; moved windows reserve
@@ -113,7 +126,8 @@ rest of the first line, up to End Turn, since Menu and the view controls
 share the second line); a notice too long for it is cut after its last whole word
 that fits, ending in "…" (`fit_text`, `text.rs`), and ImGui shows all of it
 when the notice is hovered. ImGui's fonts carry the ellipsis and em dash
-beyond Latin-1 (`IMGUI_GLYPHS`, `app.rs`).
+beyond Latin-1 (`IMGUI_GLYPHS`, `imgui.rs`); `style_imgui` there gives a context
+the game's fonts and style, for `App` and for the tests (`ImGuiScreen::styled`).
 Resources and turns appear in text as icons: a UI string may hold the icon
 characters of `map_icons.rs` (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`,
 `TIME_ICON`), which the classic font (`font::Face::width` and `push`) and

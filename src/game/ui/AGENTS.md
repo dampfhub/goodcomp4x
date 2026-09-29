@@ -34,10 +34,16 @@ file holds.
 - Cursor-following tooltips and the selection box are overlays with their own anchors. The
   settings menu is the one panel placed outside the dock: centered, in both presentations.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05. ImGui
-  style colors (`app.rs`) and draw-list colors are linear too.
+  style colors (`style_imgui`, `imgui.rs`) and draw-list colors are linear too.
 - Map geometry drawn in a panel (the turn strip's chips) comes from the world drawing code
   (`draw::push_unit_token`, `draw::push_city_tower`, via `paint::push_chip_icon`), built Y-up;
   ImGui's draw list is Y-down, so flip it.
+- **Fit any width.** An ImGui panel can be resized narrow, so text and icons in it must never
+  overlap or leave their button: lay a new kind of row out from the width it has (as
+  `button_grid`, `wrap_spans`, `setting_fit` do), measure it the same way in `measure_panel`,
+  and note what it draws for the test (`note_mark`, `note_text_item`, `note_button_label`;
+  `fill_shapes` and `draw_rich` note theirs). `imgui_panels_keep_their_text_and_icons_apart_at_every_width`
+  sweeps the panels' widths.
 - **Icons in text.** Prices, stockpiles and turns use the icon characters of `map_icons.rs`
   (`stock_icons`, `turns_icon`, `cost_hint` in `text.rs`); both presentations draw them as the
   map's icons: classic in `font::Face`, ImGui through `rich_text` / `rich_button` (`imgui.rs`).
@@ -78,7 +84,8 @@ file holds.
 the real panels and clicks a button where ImGui drew it (`imgui::DRAWN_BUTTONS`, filled by
 `note_drawn_button` for panel buttons and catalogue cards). `imgui` allows one context per process,
 so any test that makes one holds `imgui::one_context_at_a_time()`. `imgui.rs` has the dock-plan
-tests.
+tests. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
+`imgui::DRAWN_MARKS` holds each piece of text and icon drawn, with what clips it.
 After UI changes run `cargo build --release` and look at a screenshot
 (`cargo run -- --screenshot out.png --scenario cities`); screenshot mode shows ImGui, and the
 classic view needs a temporary `use_imgui: false` in `App::new` (revert it by editing the line,

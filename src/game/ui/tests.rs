@@ -2649,6 +2649,16 @@ impl ImGuiScreen {
 
     /// The same, in a window of `size`.
     fn with_size(size: Vec2) -> Self {
+        Self::build(size, false)
+    }
+
+    /// The same with the game's fonts and style (`style_imgui`), so text
+    /// measures as it does in play: for tests of where text goes.
+    fn styled(size: Vec2) -> Self {
+        Self::build(size, true)
+    }
+
+    fn build(size: Vec2, styled: bool) -> Self {
         let one = imgui::one_context_at_a_time();
         let mut context = ::imgui::Context::create();
         context.set_ini_filename(None);
@@ -2657,13 +2667,19 @@ impl ImGuiScreen {
             .io_mut()
             .config_flags
             .insert(::imgui::ConfigFlags::DOCKING_ENABLE);
-        let font = context
-            .fonts()
-            .add_font(&[::imgui::FontSource::DefaultFontData { config: None }]);
+        let fonts = if styled {
+            context.io_mut().config_windows_resize_from_edges = false;
+            style_imgui(&mut context)
+        } else {
+            let font = context
+                .fonts()
+                .add_font(&[::imgui::FontSource::DefaultFontData { config: None }]);
+            [font; 3]
+        };
         context.fonts().build_rgba32_texture();
         Self {
             context,
-            fonts: [font; 3],
+            fonts,
             layout: ImGuiLayoutState::default(),
             size,
             _one: one,
@@ -2679,6 +2695,7 @@ impl ImGuiScreen {
         io.add_mouse_pos_event(mouse.map_or([f32::MIN; 2], |m| m.to_array()));
         io.add_mouse_button_event(::imgui::MouseButton::Left, down);
         imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
+        imgui::DRAWN_MARKS.with_borrow_mut(Vec::clear);
         let ui = self.context.frame();
         game.draw_imgui(ui, self.size, mouse, &self.fonts, &mut self.layout);
         self.context.render();
@@ -4284,4 +4301,148 @@ fn imgui_view_controls_share_the_menu_line_and_leave_the_notice_the_bar() {
         "{}",
         screen.layout.to_text()
     );
+}
+
+/// Where the text and icons ImGui drew last frame in the window titled
+/// `window` run into each other, or past the side of what holds them (their
+/// window, or their button): a line each. What is scrolled out of sight
+/// counts only as far as it shows.
+fn crowded_marks(window: &str) -> Vec<String> {
+    // How far two spans overlap: a pixel's rounding is no overlap.
+    const SLACK: f32 = 0.5;
+    let marks: Vec<imgui::DrawnMark> = imgui::DRAWN_MARKS.with_borrow(|marks| {
+        marks
+            .iter()
+            .filter(|mark| mark.window == window)
+            .cloned()
+            .collect()
+    });
+    let shown = |mark: &imgui::DrawnMark| {
+        let min = Vec2::from(mark.min).max(Vec2::from(mark.clip_min));
+        let max = Vec2::from(mark.max).min(Vec2::from(mark.clip_max));
+        (max - min)
+            .cmpgt(Vec2::splat(SLACK))
+            .all()
+            .then_some((min, max))
+    };
+    let mut crowded = Vec::new();
+    for (index, mark) in marks.iter().enumerate() {
+        let Some((min, max)) = shown(mark) else {
+            continue;
+        };
+        if mark.min[0] < mark.clip_min[0] - SLACK || mark.max[0] > mark.clip_max[0] + SLACK {
+            crowded.push(format!(
+                "{:?} ({:?}-{:?}) runs out of {:?}-{:?}",
+                mark.what, mark.min, mark.max, mark.clip_min, mark.clip_max
+            ));
+        }
+        for other in &marks[index + 1..] {
+            let Some((other_min, other_max)) = shown(other) else {
+                continue;
+            };
+            let overlap = max.min(other_max) - min.max(other_min);
+            if overlap.cmpgt(Vec2::splat(SLACK)).all() {
+                crowded.push(format!(
+                    "{:?} ({:?}-{:?}) overlaps {:?} ({:?}-{:?})",
+                    mark.what, mark.min, mark.max, other.what, other.min, other.max
+                ));
+            }
+        }
+    }
+    crowded
+}
+
+#[test]
+fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
+    // #311: resized narrow, the city panel's Grow and Gather ran into each
+    // other, and the catalogue's unit icons into their names.
+    let size = Vec2::new(1600.0, 1200.0);
+    let height = size.y - 120.0;
+    let city = || {
+        let mut game = city_view();
+        game.cities[0].population = 3;
+        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::BuildSettler);
+        game
+    };
+    let barracks = || {
+        let mut game = city_view();
+        game.units.clear();
+        game.cities[0].barracks = Some(Hex::new(-2, 0));
+        game.cities[0].built.push(Building::Barracks);
+        game.open_barracks(0);
+        game.activate_target(Target::BarracksBuild(BuildUnit::Melee));
+        game
+    };
+    let unit = || {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(vec![units[0]]);
+        game
+    };
+    let group = || {
+        let mut game = GameState::new();
+        let units = player_units(&game);
+        game.set_selection(units[..3].to_vec());
+        game
+    };
+    let settings = || {
+        let mut game = GameState::new();
+        game.clear_selection();
+        game.press_escape();
+        game
+    };
+    let multiplayer = || {
+        let mut game = settings();
+        game.activate_target(Target::OpenMultiplayer);
+        game
+    };
+    let panels: [(&str, &str, &dyn Fn() -> GameState); 9] = [
+        ("city", "Selection", &city),
+        ("city queue", "Production Queue", &city),
+        ("barracks", "Selection", &barracks),
+        ("barracks queue", "Production Queue", &barracks),
+        ("unit", "Selection", &unit),
+        ("group", "Selection", &group),
+        ("debug", "Debug", &unit),
+        ("settings", "Settings", &settings),
+        ("multiplayer", "Settings", &multiplayer),
+    ];
+    let mut screen = ImGuiScreen::styled(size);
+    for (name, window, make) in panels {
+        let mut game = make();
+        screen.settle(&mut game);
+        // From the least width a panel can be resized to up, closely
+        // where the room runs out.
+        for width in (240..400).step_by(10).chain((400..=640).step_by(40)) {
+            let width = width as f32;
+            screen.layout.resize_panel(window, Vec2::new(width, height));
+            screen.settle(&mut game);
+            let drawn = imgui::DRAWN_MARKS
+                .with_borrow(|marks| marks.iter().filter(|mark| mark.window == window).count());
+            assert!(drawn > 3, "{name} at {width}: {window} shows its text");
+            let crowded = crowded_marks(window);
+            assert!(crowded.is_empty(), "{name} at {width}: {crowded:#?}");
+            // The catalogue's cards further down, scrolled to, then back.
+            let Some(card) = screen.button(Target::Build(BuildUnit::Melee)) else {
+                continue;
+            };
+            let before = screen.button(Target::BuildSettler);
+            for wheel in [-5.0, 5.0] {
+                for _ in 0..3 {
+                    screen.context.io_mut().add_mouse_wheel_event([0.0, wheel]);
+                    screen.frame(&mut game, Some(card), false);
+                }
+                screen.frame(&mut game, None, false);
+                if wheel < 0.0 {
+                    assert_ne!(screen.button(Target::BuildSettler), before, "scrolled");
+                }
+                let crowded = crowded_marks(window);
+                assert!(
+                    crowded.is_empty(),
+                    "{name} at {width}, scrolled: {crowded:#?}"
+                );
+            }
+        }
+    }
 }
