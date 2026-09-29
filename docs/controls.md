@@ -181,7 +181,7 @@ interior map; its clicks control only the interior copies.
 | F8 | Toggle turn playback: every step at once (the default) or step by step (same outcome); also in the settings menu |
 | F9 | Finish the open city's or barracks' current build at once (debug) |
 | F10 | Toggle fog of war (on by default) |
-| F11 | Switch between the ImGui and classic UI presentations |
+| F11 | Switch between the ImGui and classic UI presentations; cancel any drag in progress |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
 | Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default |
 
