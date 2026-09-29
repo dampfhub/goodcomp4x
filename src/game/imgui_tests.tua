@@ -28,6 +28,7 @@ use ui.input.MouseButton;
 use ui.input.Mods;
 use ui_win32.next_frame;
 use game.GameState;
+use game.dock.overlaps;
 use game.city.Build;
 use game.city.Building;
 use game.city.LaborFocus;
@@ -776,5 +777,23 @@ fn a_panel_dragged_into_a_box_is_pinned_and_acts_on_its_own_city() {
         assert(r.st.layout.outer_boxes.is_empty());
         assert(r.st.layout.pinned.is_empty());
         assert(!r.ctx.is_docked(&pin_title));
+    });
+}
+
+@test
+fn the_queue_keeps_its_room_on_a_narrow_screen() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        for _ in 0..5 { game.queue_selected_city_unit(BuildUnit.Melee); }
+        let mut r = rig(game);
+        // 1600 by 900 pixels at 150%: a 1067 by 600 screen, too narrow for a second column.
+        let cursor = r.st.input.mouse;
+        for _ in 0..6 { run_ui(&mut r.game, &mut r.ctx, &mut r.st, screen(), 1.5, 0.016, cursor); }
+        let Option.Some(queue) = r.ctx.window_rect("Production Queue") else { assert(false); return; };
+        let Option.Some(selection) = r.ctx.window_rect("Selection") else { assert(false); return; };
+        assert(!overlaps(queue, selection, 0.0));
+        // Both are inside the screen, under the status bar.
+        assert(queue.min.y >= 52.0 && selection.max.y <= 600.0 && selection.max.x <= 1067.0);
     });
 }
