@@ -302,7 +302,7 @@ impl UiLayout {
         Option.None
     }
 
-    fn covers(&self, point: Vec2) -> bool {
+    pub fn covers(&self, point: Vec2) -> bool {
         for i in 0..self.panels.len() {
             if contains(self.panels[i].min, self.panels[i].max, point) { return true; }
         }

@@ -15,6 +15,9 @@ use game.city.Build;
 use game.city.Building;
 use game.city.BuildUnit;
 use game.hex.Hex;
+use game.hex.edge;
+use game.workers.JobKind;
+use game.workers.JOB_KINDS;
 use game.orders.ClickMode;
 use game.scenario.Scenario;
 use game.tests.find;
@@ -667,5 +670,150 @@ fn opening_another_view_drops_the_site_placement() {
         assert(game.site_placement().is_none());
         assert(game.placing_building.is_none());
         assert(!queued(&game, city, Building.Mill));
+    });
+}
+
+/// The Cities scenario, explored, nothing selected, and an open, unoccupied land tile two from
+/// Blue's city with no road or city on it, the smallest `(q, r)`.
+fn empty_tile_near_blue_city() -> (GameState, Hex) can {Log} {
+    let mut game = GameState.city_scenario();
+    game.explore();
+    let _had = game.clear_selection();
+    let city = game.cities[0].pos;
+    let mut best: Option[Hex] = Option.None;
+    for hh in game.grid.hexes() {
+        let h = *hh;
+        if h.distance(city) != 2 || !game.grid.is_passable(h) || game.roads.contains(h) || game.count_at(h) > 0 || !game.is_explored(h) || game.city_at(h).is_some() { continue; }
+        let better = match best { Option.None => true, Option.Some(b) => h.q < b.q || (h.q == b.q && h.r < b.r) };
+        if better { best = Option.Some(h); }
+    }
+    (game, best.unwrap_or(city))
+}
+
+fn job_button_armed(game: &GameState, kind: JobKind) -> bool {
+    let layout = game.layout(screen());
+    match layout.button_for(Target.WorkerJob(kind)) { Option.Some(i) => layout.buttons[i].armed, Option.None => false }
+}
+
+@test
+fn the_city_panel_opens_the_worker_menu_and_done_closes_it() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.city_scenario();
+        game.select_city();
+        game.handle_click(button_cursor(&game, Target.WorkerMode), screen(), ClickMode.Normal);
+        assert(game.worker_mode);
+        assert(game.selected_city.is_none());
+        game.handle_click(button_cursor(&game, Target.WorkerMode), screen(), ClickMode.Normal);
+        assert(!game.worker_mode);
+    });
+}
+
+@test
+fn the_worker_menu_places_a_picked_job_on_the_map() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex) = empty_tile_near_blue_city();
+        game.toggle_worker_mode();
+        let layout = game.layout(screen());
+        for k in 0..6 {
+            let Option.Some(i) = layout.button_for(Target.WorkerJob(JOB_KINDS[k])) else { assert(false); return; };
+            let button = &layout.buttons[i];
+            // Every job's button sits inside its panel.
+            let mut inside = false;
+            for p in 0..layout.panels.len() {
+                let r = layout.panels[p];
+                if r.min.x <= button.min.x && r.min.y <= button.min.y && button.max.x <= r.max.x && button.max.y <= r.max.y { inside = true; }
+            }
+            assert(inside);
+        }
+        // With nothing picked, a map click places nothing.
+        game.handle_map_click(hex_cursor(&game, hex), screen(), ClickMode.Normal);
+        assert(game.cities[0].worker_jobs.is_empty());
+        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Road)), screen(), ClickMode.Normal);
+        assert(game.placing_job == Option.Some(JobKind.Road));
+        // The button shows it's picked.
+        assert(job_button_armed(&game, JobKind.Road));
+        game.handle_map_click(hex_cursor(&game, hex), screen(), ClickMode.Normal);
+        assert(game.cities[0].worker_jobs.len() == 1);
+        assert(game.cities[0].worker_jobs[0].hex == hex && game.cities[0].worker_jobs[0].kind == JobKind.Road);
+        // Still picked, for the next one.
+        assert(job_button_armed(&game, JobKind.Road));
+        // Picking it again puts it down.
+        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Road)), screen(), ClickMode.Normal);
+        assert(game.placing_job.is_none());
+    });
+}
+
+@test
+fn a_wall_is_placed_by_dragging_along_hex_edges() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex) = empty_tile_near_blue_city();
+        game.toggle_worker_mode();
+        game.handle_click(button_cursor(&game, Target.WorkerJob(JobKind.Wall)), screen(), ClickMode.Normal);
+        assert(game.placing_job == Option.Some(JobKind.Wall));
+        assert(job_button_armed(&game, JobKind.Wall));
+
+        // Drag across the midpoints of three of the hex's edges, as the mouse would pass over
+        // them.
+        let around = hex.neighbors();
+        let mut sides: Vec[Hex] = Vec.new();
+        for k in 0..6 { if sides.len() < 3 && game.grid.contains(around[k]) { sides.push(around[k]); } }
+        for k in 0..sides.len() {
+            let at = game.camera.world_to_screen(hex.to_world().add(sides[k].to_world()).scale(0.5), screen());
+            assert(game.paint_job_at(at, screen(), false));
+            // Passing the same edge again adds nothing.
+            let _again = game.paint_job_at(at, screen(), false);
+        }
+        {
+            let jobs = &game.cities[0].worker_jobs;
+            assert(jobs.len() == 3);
+            for k in 0..3 {
+                assert(jobs[k].kind == JobKind.Wall);
+                assert(edge(jobs[k].hex, jobs[k].across.unwrap_or(jobs[k].hex)) == edge(hex, sides[k]));
+            }
+        }
+
+        // A press on the panel itself doesn't place anything through it.
+        assert(!game.paint_job_at(button_cursor(&game, Target.WorkerJob(JobKind.Wall)), screen(), true));
+
+        // Escape stops placing but leaves the worker menu open.
+        game.press_escape();
+        assert(game.placing_job.is_none());
+        assert(game.worker_mode);
+        let at = game.camera.world_to_screen(hex.to_world().add(sides[0].to_world()).scale(0.5), screen());
+        assert(!game.paint_job_at(at, screen(), false));
+    });
+}
+
+@test
+fn a_plain_click_on_an_empty_tile_opens_nothing() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let (mut game, hex) = empty_tile_near_blue_city();
+        game.handle_click(hex_cursor(&game, hex), screen(), ClickMode.Normal);
+        assert(game.selected.is_none());
+        // Workers take orders from the worker menu only.
+        let layout = game.layout(screen());
+        for b in 0..layout.buttons.len() {
+            assert(match layout.buttons[b].target { Target.WorkerJob(_) => false, _ => true });
+        }
+    });
+}
+
+@test
+fn city_interior_map_fits_and_its_tiles_issue_orders() {
+    sandbox(fn() can {Log, Rand, Assert} {
+        let mut game = GameState.siege_scenario();
+        let layout = game.layout(screen());
+        let tiles = [Hex.new(-2, 0), Hex.new(-1, 0), Hex.new(0, 0), Hex.new(2, 0)];
+        for k in 0..4 {
+            let cursor = hex_cursor(&game, tiles[k]);
+            assert(cursor.x > 0.0 && cursor.x < SCREEN_W);
+            assert(cursor.y > 0.0 && cursor.y < SCREEN_H);
+            // No interior tile hidden by a panel.
+            assert(!layout.covers(to_ui(cursor, screen())));
+        }
+        game.handle_click(hex_cursor(&game, Hex.new(-2, 0)), screen(), ClickMode.Normal);
+        game.handle_click(hex_cursor(&game, Hex.new(-1, 0)), screen(), ClickMode.Normal);
+        let Option.Some(k) = game.cities[1].interior.index_of(0) else { assert(false); return; };
+        assert(game.cities[1].interior.fighters[k].planned_move == Option.Some(Hex.new(-1, 0)));
     });
 }
