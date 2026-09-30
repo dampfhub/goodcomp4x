@@ -1314,14 +1314,14 @@ impl GameState {
     /// takes the first job of these it can pay for and do:
     /// - cutting a forest it works where a farm could go once it's gone
     ///   (fresh water, open ground): a lump of wood now, and food after;
-    /// - while its side is short of wood (less than a Melee's), cutting the
+    /// - while its side is short of wood (less than a Ranged's), cutting the
     ///   nearest forest in its workers' reach that no city works;
     /// - improving the tiles it works, then roads on them.
     ///
     /// None where `unsafe_tile` says an animal would attack (`animals.rs`),
     /// and only on ground its side has seen.
     pub(super) fn plan_ai_workers(&mut self, team: Team, unsafe_tile: impl Fn(Hex) -> bool) {
-        let short_of_wood = self.stock(team).wood < BuildUnit::Melee.price().wood;
+        let short_of_wood = self.stock(team).wood < BuildUnit::Ranged.price().wood;
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() {

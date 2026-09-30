@@ -185,14 +185,7 @@ fn worth(stock: Stock) -> f32 {
 /// What a troop of `kind` at full health is worth to the AI: its price
 /// (`BuildUnit`).
 fn troop_worth(kind: UnitType) -> f32 {
-    let troops = [
-        BuildUnit::Melee,
-        BuildUnit::Ranged,
-        BuildUnit::Cavalry,
-        BuildUnit::Siege,
-        BuildUnit::Armored,
-    ];
-    let build = troops
+    let build = BuildUnit::ALL
         .into_iter()
         .find(|b| b.unit_type() == kind)
         .unwrap_or(BuildUnit::Melee);
@@ -341,10 +334,11 @@ impl GameState {
     /// the city grows or gathers instead. The Barracks is
     /// the military building (`city/barracks.rs`): an idle one trains
     /// Cavalry or Armored when its deposits allow and the side can pay, else
-    /// Melee, or Ranged for one in three. A city's own queue trains a worker
+    /// Melee, or Ranged for one in three (the other when the side can pay
+    /// only for it). A city's own queue trains a worker
     /// first if it has none left; its workers then build a Barracks (sited
     /// by `ai_barracks_site`, paid when placed), and the queue grows; a city
-    /// without a Barracks trains Melee itself, slowly, until the side has
+    /// without a Barracks, built or going up, trains Melee itself, slowly, until the side has
     /// `AI_ARMY_PER_CITY` units per city, falling back on growth, and
     /// gathering when it can't pay for anything. A side with no scout, alive
     /// or queued, trains one after the worker. A city of
@@ -407,14 +401,18 @@ impl GameState {
             // A job is paid when placed.
             spare -= stock - self.stock(team);
             if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
-                let basic = if soldiers(self, Some(UnitType::Ranged)) * 2
+                // Melee, or Ranged for one in three; they're paid in
+                // different goods (food or wood, and metal), so when the
+                // side can pay for only one, that one.
+                let basics = if soldiers(self, Some(UnitType::Ranged)) * 2
                     < soldiers(self, Some(UnitType::Melee))
                 {
-                    BuildUnit::Ranged
+                    [BuildUnit::Ranged, BuildUnit::Melee]
                 } else {
-                    BuildUnit::Melee
+                    [BuildUnit::Melee, BuildUnit::Ranged]
                 };
-                for build in [BuildUnit::Cavalry, BuildUnit::Armored, basic] {
+                let builds = [BuildUnit::Cavalry, BuildUnit::Armored].into_iter();
+                for build in builds.chain(basics) {
                     if self.barracks_lock(city, build).is_none() && spare.covers(build.price()) {
                         self.queue_barracks(city, build);
                         spare -= build.price();
@@ -436,7 +434,12 @@ impl GameState {
             if !scouting {
                 choices.push(Build::Scout);
             }
-            if c.barracks.is_none() && army < AI_ARMY_PER_CITY * cities.len() {
+            // Not while its workers build a Barracks, which trains one
+            // twice as fast.
+            if c.barracks.is_none()
+                && !self.building_job_queued(city, Building::Barracks)
+                && army < AI_ARMY_PER_CITY * cities.len()
+            {
                 choices.push(melee);
             }
             if !settling
@@ -532,9 +535,9 @@ impl GameState {
     /// walks toward its site, keeping out of the reach of enemies in sight
     /// where it can. A site the rules refuse (a city its side hadn't seen
     /// is too near) goes on its side's list (`refused_sites`) and it looks
-    /// again. A settler with no city to found and no site known founds its
-    /// side's first city where it stands, closer than the rules allow if it
-    /// must; any other waits for its side to see more.
+    /// again. A settler with no site known waits for its side to see more:
+    /// never founding closer than the rules allow, even a side's first city
+    /// (one whose city was taken, its settler left beside it).
     fn plan_ai_settlers(
         &mut self,
         team: Team,
@@ -567,14 +570,8 @@ impl GameState {
                 self.refused_sites.push((team, pos));
                 site = self.ai_city_site(team, pos, known, first);
             }
+            // With no site known, it waits for its side to see more.
             let Some(site) = site else {
-                let open_land = self.grid.is_passable(pos)
-                    && !self.grid.terrain(pos).is_water()
-                    && self.ruin_at(pos).is_none()
-                    && self.den_at(pos).is_none();
-                if first && open_land {
-                    self.found_city(id, team, pos);
-                }
                 continue;
             };
             let dest = self.settler_step(idx, site, known, floods);
@@ -1706,7 +1703,8 @@ mod tests {
         let wolf = animals(UnitType::Wolf, 1);
         let bite = combat::damage(&wolf[0], &unit(UnitType::Melee), 1.0);
         let loss = den_fight(&melee(1), &wolf, 1.0).expect("won");
-        assert_eq!(loss, bite / 100.0 * troop_worth(UnitType::Melee));
+        let expected = bite / 100.0 * troop_worth(UnitType::Melee);
+        assert!((loss - expected).abs() < 1e-4, "{loss} {expected}");
         // Two wolves kill it, and so does a bear; three wolves take one of
         // four with them.
         assert_eq!(den_fight(&melee(1), &animals(UnitType::Wolf, 2), 1.0), None);
@@ -1806,23 +1804,23 @@ mod tests {
 
     #[test]
     fn clearing_a_den_is_worth_the_strays_it_would_send_out_and_its_land() {
-        // Red, three melee troops, and a bear den at (6, 0) with its bear,
-        // which Red has seen.
-        let mut game = lone_red();
+        // Red, three cavalry, and a bear den at (6, 0) with its bear, which
+        // Red has seen.
+        let mut game = lone_red_unit(UnitType::Cavalry);
         red_explores_the_rest(&mut game);
         game.make_dens(&[Hex::new(-8, 4), Hex::new(6, 0)], 1);
         game.dens.remove(0);
         game.units.retain(|u| u.home != Some(Hex::new(-8, 4)));
         for (id, pos) in [(2, Hex::new(0, 1)), (3, Hex::new(1, -1))] {
             game.units
-                .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+                .push(Unit::new(id, pos, Team::Red, UnitType::Cavalry));
         }
         red_glances_from(&mut game, Hex::new(4, 0));
         let den = Hex::new(6, 0);
         // Three troops kill a bear, but for more than its bounty and the
         // den's spoils: in a world with no strays and no city of its own
         // near, it leaves the den alone.
-        let fight = [(); 3].map(|_| Unit::new(1, Hex::new(0, 0), Team::Red, UnitType::Melee));
+        let fight = [(); 3].map(|_| Unit::new(1, Hex::new(0, 0), Team::Red, UnitType::Cavalry));
         let bear = [Unit::new(9, den, Team::Wild, UnitType::Bear)];
         let loss = den_fight(&fight, &bear, 1.0).expect("won");
         let spoils = worth(DEN_SPOILS) + worth(bounty(UnitType::Bear));
@@ -2393,5 +2391,25 @@ mod expansion_tests {
         game.plan_ai_turn(Team::Red);
         let city = game.cities.iter().find(|c| c.team == Team::Red).unwrap();
         assert_eq!((city.pos, city.workers), (Hex::new(-3, 0), 1));
+
+        // Knowing of nowhere it could found (it has seen only the hexes
+        // near Blue's city), it waits: it never founds too close.
+        let mut game = red_ready_to_expand();
+        game.cities = vec![City::new(0, Team::Blue, Hex::new(3, 0))];
+        let near: Vec<Hex> = game.grid.all_hexes().collect();
+        let memory = Arc::make_mut(&mut game.side_memory[Team::Red.index()]);
+        memory.retain(|hex, _| hex.distance(Hex::new(3, 0)) < MIN_CITY_DISTANCE);
+        assert!(near.len() > memory.len());
+        game.units.clear();
+        let id = add_red_settler(&mut game, Hex::new(1, 0));
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        assert_eq!(
+            game.ai_city_site(Team::Red, Hex::new(1, 0), &known, true),
+            None
+        );
+        game.plan_ai_turn(Team::Red);
+        assert!(game.cities.iter().all(|c| c.team != Team::Red));
+        assert!(game.settlers.contains(&id));
     }
 }

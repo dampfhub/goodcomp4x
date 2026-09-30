@@ -1462,7 +1462,7 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     game.open_city(0);
     let melee = find_button(&game, Target::Build(BuildUnit::Melee));
     assert_eq!(melee.state(), ButtonState::Ready);
-    let price = format!("{FOOD_ICON}3 {WOOD_ICON}9");
+    let price = stock_icons(BuildUnit::Melee.price());
     assert!(melee.hint.contains(&price), "{}", melee.hint);
     // The city center takes twice a Barracks' turns.
     assert!(
@@ -2095,14 +2095,14 @@ fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
     game.cities[0].barracks = Some(Hex::new(-2, 0));
     game.cities[0].built.push(Building::Barracks);
     let id = game.cities[0].id;
-    // Broke: a Melee and a Ranged, each first in its queue, wait for wood.
+    // Broke: a Melee and a Ranged, each first in its queue, wait for metal.
     game.stockpiles[Team::Blue.index()] = Stock::default();
     game.queue_build(0, Build::Unit(BuildUnit::Melee));
     game.queue_barracks(0, BuildUnit::Ranged);
     let short = game
         .expected_stock(Team::Blue)
         .shortfall(BuildUnit::Melee.price());
-    assert!(short.wood > 0, "{short:?}");
+    assert!(short.metal > 0, "{short:?}");
     let idle = game.idle_queues();
     assert_eq!(idle.len(), 2, "{idle:?}");
     assert!(idle.iter().all(|wait| wait.idle && wait.city == 0));

@@ -836,9 +836,13 @@ only).
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 3/9/0, 3; Ranged
-  3/11/0, 3; Cavalry 5/6/5, 4; Siege 2/12/6, 4; Armored 5/3/11, 4; Patrol Galley 1/10/2, 3; Landing
-  Craft 1/12/2, 4; Bombard Ship 1/12/6, 4; Worker 4/2/0, 2; Grow as above, 2; Gather free, 1. A city center
+- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 5/0/2, 3; Ranged
+  0/9/2, 3; Cavalry 6/0/5, 4; Siege 0/12/6, 4; Armored 6/0/10, 4; Patrol Galley 0/10/2, 3; Landing
+  Craft 0/12/2, 4; Bombard Ship 0/12/6, 4; Scout 2/4/0, 2; Worker 4/2/0, 2; Settler 30/10/0, 6;
+  Grow as above, 2; Gather free, 1. A unit costs at most two kinds of goods: every troop and ship
+  pays metal, the foot and horse troops with food and those built of timber (Ranged, Siege,
+  ships) with wood, so metal is what most often limits an army; Scouts, Workers and Settlers
+  pay food and wood. A city center
   trains land troops at half a Barracks' pace (twice the turns: a Melee takes 6); ships, which
   only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
@@ -1105,12 +1109,12 @@ that turn; a queue whose items all wait anyway (for the stockpile, or for supply
 its supply: at the cap its Barracks stays idle and its cities grow or gather instead. An AI city with an empty queue trains a worker first when it has none. With a worker,
 it places a Barracks for its workers to build, paid like the player's: on a Horses or Iron
 deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
-within 2. Its queue otherwise grows the city. A city without a Barracks trains Melee itself,
+within 2. Its queue otherwise grows the city. A city without a Barracks (built or going up) trains Melee itself,
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
 pay. An idle AI Barracks trains Cavalry or Armored when its deposits allow and the side can pay,
-else Melee, or Ranged for every two Melee. An AI city with a worker at home and an empty list places one job it can
+else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one). An AI city with a worker at home and an empty list places one job it can
 pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
-ground); while its side has less wood than a Melee costs, cutting the nearest forest within
+ground); while its side has less wood than a Ranged costs, cutting the nearest forest within
 workers' reach that no city works; an improvement on a tile it works; a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
@@ -1130,8 +1134,9 @@ The AI builds Scouts and expands with Settlers:
   remembered, and the side tries nowhere within 2 hexes of it again. A settler that knows no
   site waits.
 - **First city:** a side with a settler and no city founds at once where the rules allow it,
-  as before, and otherwise walks to the nearest site they allow; knowing none, it founds where
-  it stands anyway.
+  as before, and otherwise walks to the nearest site they allow; knowing none, it waits like
+  any settler, never founding closer than the rules allow (a side whose city was taken, its
+  settler beside it, included).
 
 The AI and animals (see Animals): it fights animals only where it expects to win, and to gain
 more than it loses. For each den its side knows of (in sight or as last seen) it expects the

@@ -817,3 +817,94 @@ Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release simulation` and
 `cargo test --release plans_the_ai_makes -- --ignored`. The simulations' default seeds are
 now 1, 2, 4 and 8: with smaller armies no side cleared a den in 40 turns on seeds 1-4, which
 the check that the AI hunts needs.
+
+## Round 11: two goods a unit, metal the usual limit (#374)
+
+The user settled it in #374: a unit costs at most two kinds of goods, and metal is what usually
+limits an army. Melee pays food and metal, Ranged and Siege wood and metal. The rest follow the
+same line: troops on foot or horse pay food and metal, those built of timber (bows, engines,
+ships) wood and metal. Scouts, Workers and Settlers already paid two goods and no metal, and
+keep their prices. Build times are unchanged.
+
+| Unit | Before | After |
+|---|---|---|
+| Melee | 3 / 9 / 0 | 5 / 0 / 2 |
+| Ranged | 3 / 11 / 0 | 0 / 9 / 2 |
+| Cavalry | 5 / 6 / 5 | 6 / 0 / 5 |
+| Siege | 2 / 12 / 6 | 0 / 12 / 6 |
+| Armored | 5 / 3 / 11 | 6 / 0 / 10 |
+| Patrol Galley | 1 / 10 / 2 | 0 / 10 / 2 |
+| Landing Craft | 1 / 12 / 2 | 0 / 12 / 2 |
+| Bombard Ship | 1 / 12 / 6 | 0 / 12 / 6 |
+| Scout, Worker, Settler | 2 / 4 / 0, 4 / 2 / 0, 30 / 10 / 0 | unchanged |
+
+**Why 2 metal for a Melee or Ranged.** Metal comes almost only from Gather (half a metal a
+turn) and the few hills a side works: about 0.6 a turn a side at turn 60 in the World. At 2
+metal, metal stops about 30% of the AI's idle Barracks-turns, and the supply limit the rest. At
+1, supply stops 97% and armies grow past today's (army at turn 60 6.4-7.0 against 5.5); at 3,
+metal stops 85% and the army at turn 20 falls from 3.4 to 2.1.
+
+**The AI** follows in three small ways:
+- An idle Barracks that can't pay for the Melee (or Ranged) it wants trains the other when the
+  side can pay for that one: they're paid in different goods.
+- A city whose workers are building a Barracks no longer trains a Melee itself meanwhile. With
+  a Melee needing no wood, it could start one on turn 1, bringing the first troop from turn 9 to
+  turn 6; the Barracks trains one twice as fast a few turns later.
+- Its workers cut a forest no city works while the side has less wood than a Ranged costs (it
+  was a Melee's, which now needs none).
+
+### Measured
+
+`economy_report`, 60 turns, seeds 0-23, the default games; before is `main` at b3df035. The
+report now splits an idle Barracks' turns into those at the supply cap and those a Melee or a
+Ranged lacked a good.
+
+```
+SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side (world5 and world6 are within 0.3; turns are medians, "never"
+the share of sides that don't get there by turn 60):
+
+| | before | after |
+|---|---|---|
+| First troop | 9 | 8 |
+| Army at turn 20 / 40 / 60 | 3.4 / 4.9 / 5.5 | 3.8 / 4.9 / 5.9 |
+| Trained by turn 20 / 40 / 60 | 3.3 / 6.2 / 9.8 | 3.7 / 6.4 / 10.4 |
+| Gained by turn 60: Melee / Ranged / Cavalry / Armored | 4.3 / 2.3 / 2.2 / 0.9 | 5.6 / 3.4 / 1.0 / 0.3 |
+| Population at turn 20 / 40 / 60 | 2.4 / 3.7 / 5.0 | 2.6 / 3.7 / 5.4 |
+| Second city (never) | 51 (47%) | 47 (43%) |
+| Stockpile f / w / m at turn 20 | 15 / 12 / 5 | 14 / 20 / 3 |
+| Stockpile f / w / m at turn 40 | 18 / 20 / 10 | 18 / 38 / 10 |
+| Stockpile f / w / m at turn 60 | 19 / 22 / 17 | 18 / 58 / 18 |
+| Barracks idle | 40% | 41% |
+| of those: at supply / a Melee lacked wood / lacked metal | 67% / 27% / 0% | 70% / 0% / 30% |
+
+- **Tempo holds.** The army at turns 20, 40 and 60 is within 0.4 of before, and so is what's
+  trained. The first troop comes a turn earlier.
+- **Metal is now the good that stops the Barracks**, where wood did: 30% of its idle turns,
+  the rest the supply limit. Metal still rises slowly in the stockpile (18 at turn 60), but
+  only because supply holds the army back.
+- **Fewer Cavalry and Armored, more Melee and Ranged.** They draw on the same metal, and an
+  Armored's 10 is five Melee's.
+- **Wood piles up:** 58 at turn 60 against 22, as only Ranged, Siege, ships and buildings take
+  it now. It's there for buildings and Settlers.
+- The World with 1 AI side moves the same way (army at turns 20 / 40 / 60 3.5 / 5.4 / 6.4 →
+  3.8 / 5.5 / 7.7). In Cities, whose map has no metal tiles, the army at turns 20 / 60 goes
+  from 3.0 / 8.0 to 3.5 / 10.0.
+- **Army first** (`REPORT_ARMY_FIRST=1`), World with 4 AI sides: army at turns 20 / 40 / 60
+  3.4 / 4.7 / 5.0 → 3.7 / 4.6 / 5.2, first troop 9 → 6. The report's Melee in the city center
+  doesn't wait for the Barracks as the AI now does.
+- **Queueing ahead** (`REPORT_QUEUE_AHEAD=1`) loses more: army at turns 20 / 40 / 60 3.0 / 4.6
+  / 4.8 → 2.8 / 3.5 / 3.8. Its cities keep a Melee queued at the city center (6 turns), which pays
+  before the Barracks does, so the scarce metal goes on the slow troops: the Barracks is idle 86%
+  of turns, 72% of those short of metal. A player who queues troops ahead should queue them at
+  the Barracks.
+
+`PROTOCOL_VERSION` 37. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
+
+The crowded settler world (`a_crowded_world_of_settlers_keeps_the_board_consistent`) found an
+old slip on the new games: a side whose city was taken founded its next one 2 hexes from it,
+because a settler of a side without a city that knew no site founded where it stood, whatever
+the rules said. It now waits, like any settler with no site.

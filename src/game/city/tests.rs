@@ -468,14 +468,14 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
     assert_eq!(g.stock(Team::Blue), expected);
     assert!(g.notice.ends_with("- REFUNDED"), "{}", g.notice);
 
-    // Short of wood, it's queued all the same, and waits unpaid; the notice
+    // Short of metal, it's queued all the same, and waits unpaid; the notice
     // says what for.
-    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 0, 0);
+    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 20, 0);
     g.queue_selected_city_unit(BuildUnit::Melee);
     let short = g
         .expected_stock(Team::Blue)
         .shortfall(BuildUnit::Melee.price());
-    assert!(short.wood > 0 && short.food == 0);
+    assert!(short.metal > 0 && short.food == 0);
     assert!(
         g.notice
             .contains(&format!("WAITS FOR {}", stock_icons(short))),
@@ -506,8 +506,8 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
-    // Wood for a Melee but no metal for the Siege ahead of it.
-    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 20, 0);
+    // Food and metal for a Melee but no wood for the Siege ahead of it.
+    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 0, 20);
     let siege = Build::Unit(BuildUnit::Siege);
     let melee = Build::Unit(BuildUnit::Melee);
     g.queue_selected_city_unit(BuildUnit::Siege);
@@ -519,7 +519,7 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     let short = g.waiting_items(lane);
     assert_eq!(short.len(), 1);
     assert_eq!(short[0].0, 0);
-    assert!(short[0].1.metal > 0, "the Siege waits for metal");
+    assert!(short[0].1.wood > 0, "the Siege waits for wood");
     let head = g.head_wait(lane).expect("the Siege waits");
     assert_eq!(head.waits_for, WaitsFor::Stock(short[0].1));
     assert!(!head.idle, "the queue works the Melee");
@@ -530,9 +530,9 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     assert_eq!(g.cities[0].queue[1], Queued::worked(melee, WORK_PER_TURN));
     assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Melee.price());
 
-    // Metal arrives: the Siege, first in the queue, is paid for and worked
+    // Wood arrives: the Siege, first in the queue, is paid for and worked
     // the next turn, and the Melee keeps the work it had.
-    g.stockpiles[Team::Blue.index()].metal += BuildUnit::Siege.price().metal;
+    g.stockpiles[Team::Blue.index()].wood += BuildUnit::Siege.price().wood;
     let expected = g.expected_stock(Team::Blue);
     g.resolve_economy();
     assert_eq!(g.cities[0].queue[0], Queued::worked(siege, WORK_PER_TURN));
@@ -561,8 +561,8 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
     let income = g.side_income(Team::Blue);
     g.stockpiles[Team::Blue.index()] = Stock {
         food: 80,
-        wood: BuildUnit::Melee.price().wood - income.wood,
-        metal: 0,
+        wood: 0,
+        metal: BuildUnit::Melee.price().metal - income.metal,
     };
     let forecast = g.forecast(Team::Blue);
     assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, Some(0));
@@ -583,10 +583,10 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
     assert!(!g.cities[0].barracks_queue[0].paid);
     assert!(!g.cities[other].queue[0].paid);
     // All spent; the city left waiting gathers.
-    assert_eq!(g.stock(Team::Blue).wood, GATHER_YIELD.wood);
+    assert_eq!(g.stock(Team::Blue).metal, GATHER_YIELD.metal);
 
-    // With wood for one more, the Barracks, next in order, pays.
-    g.stockpiles[Team::Blue.index()].wood = BuildUnit::Melee.price().wood - income.wood;
+    // With metal for one more, the Barracks, next in order, pays.
+    g.stockpiles[Team::Blue.index()].metal = BuildUnit::Melee.price().metal - income.metal;
     g.resolve_economy();
     assert!(g.cities[0].barracks_queue[0].paid);
     assert!(!g.cities[other].queue[0].paid, "still waiting");
@@ -880,7 +880,7 @@ fn a_city_waiting_for_the_stockpile_gathers_until_it_can_pay() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.selected_city = Some(0);
-    // No wood for the Melee: it waits, and the city gathers meanwhile.
+    // No metal for the Melee: it waits, and the city gathers meanwhile.
     g.stockpiles[Team::Blue.index()] = Stock::whole(20, 0, 0);
     g.queue_selected_city_unit(BuildUnit::Melee);
     let melee = Queued::new(Build::Unit(BuildUnit::Melee));
@@ -894,9 +894,9 @@ fn a_city_waiting_for_the_stockpile_gathers_until_it_can_pay() {
     assert_eq!(g.stock(Team::Blue), expected + GATHER_YIELD);
     assert!(g.notice.contains("GATHERED"), "{}", g.notice);
 
-    // Wood for it: the Melee is paid for and worked, and the city gathers
+    // Metal for it: the Melee is paid for and worked, and the city gathers
     // no more.
-    g.stockpiles[Team::Blue.index()].wood += BuildUnit::Melee.price().wood;
+    g.stockpiles[Team::Blue.index()].metal += BuildUnit::Melee.price().metal;
     assert!(!g.gathers_this_turn(&g.forecast(Team::Blue), 0));
     let expected = g.expected_stock(Team::Blue);
     g.resolve_economy();
@@ -2871,4 +2871,27 @@ fn no_city_is_founded_in_a_contested_hex() {
     g.units
         .push(Unit::new(101, site, Team::Red, UnitType::Melee));
     assert!(g.founding_issue(site).is_some());
+}
+
+/// #374: a unit costs at most two kinds of goods, and every troop and ship
+/// pays metal, the good that most often limits an army. Scouts, workers and
+/// settlers pay none.
+#[test]
+fn every_unit_costs_at_most_two_goods_and_troops_pay_metal() {
+    let kinds = |price: Stock| {
+        [price.food, price.wood, price.metal]
+            .iter()
+            .filter(|&&n| n > 0)
+            .count()
+    };
+    for unit in BuildUnit::ALL {
+        let price = unit.price();
+        assert!(kinds(price) <= 2, "{unit:?}: {price:?}");
+        assert!(price.metal > 0, "{unit:?} pays metal");
+    }
+    for build in [Build::Scout, Build::Worker, Build::Settler] {
+        let price = build.price();
+        assert!(kinds(price) <= 2, "{build:?}: {price:?}");
+        assert_eq!(price.metal, 0, "{build:?}");
+    }
 }

@@ -3755,7 +3755,7 @@ mod tests {
         game.selected = None;
         let rim = |game: &GameState| count_color(&game.build_vertices(), WAITING_TAG_RIM);
         assert_eq!(rim(&game), 0, "nothing queued");
-        // Broke: a Melee at the head of the queue waits for wood.
+        // Broke: a Melee at the head of the queue waits for metal.
         game.stockpiles[Team::Blue.index()] = Stock::default();
         game.cities[0].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
         let forecast = game.forecast(Team::Blue);
@@ -3763,12 +3763,12 @@ mod tests {
         let WaitsFor::Stock(short) = wait.waits_for else {
             panic!("{wait:?}")
         };
-        assert!(short.wood > 0, "{short:?}");
+        assert!(short.metal > 0, "{short:?}");
         assert!(rim(&game) > 0, "the tag shows");
         // Its text is the shortfall, each resource's icon and amount.
         let text = map_wait_text(wait.waits_for);
         assert!(
-            text.starts_with(&format!("-{}", crate::game::map_icons::WOOD_ICON)),
+            text.starts_with(&format!("-{}", crate::game::map_icons::METAL_ICON)),
             "{text}"
         );
         let one = rim(&game);
