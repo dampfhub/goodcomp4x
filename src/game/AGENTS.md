@@ -145,10 +145,11 @@ behavior.
 ## Recipes
 
 - **Text:** an area whose text has moved to `text/` (so far the menus, the status and top
-  bars, the Debug panel and the window titles) takes new words as entries there, asked for with `text!("tag")` or
-  `tooltip!("tag", name = value)` (`strings.rs`, `docs/text.md`), the tag always a literal. The
-  tests check each tag used exists with its placeholders and each entry is used. A key is never
-  spelled out in a file: the entry has a placeholder the code fills with `Command::key` (`keys.rs`).
+  bars, the Debug panel, the window titles and the units) takes new words as entries there,
+  asked for with `text!("tag")` or `tooltip!("tag", name = value)` (`strings.rs`,
+  `docs/text.md`), the tag always a literal. The tests check each tag used exists with its
+  placeholders and each entry is used. A key is never spelled out in a file: the entry has a
+  placeholder the code fills with `Command::key` (`keys.rs`).
 
 - **New key:** a `Command` bound to a key in the key map (`keys.rs`: `PLAYING`, or `TYPING` for a
   text field), its arm in `App::carry_out` (`src/app.rs`) calling a `GameState` method (a key
@@ -157,8 +158,8 @@ behavior.
   only points to that file; don't list keys in it.
 - **New unit button or panel:** see the recipes in `ui/AGENTS.md`.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
-  to players: `ability_text` in `ui/text.rs` (tooltips) and the tables in
-  `docs/game-rules.md`. Grep for the old value.
+  to players: the text files (`text/units.ini`: the abilities' and upgrades' descriptions) and
+  the tables in `docs/game-rules.md`. Grep for the old value.
 - **New player setting:** `settings.rs`: a field in `Settings` (and its default), a
   `Setting` variant in `Setting::ALL`, and its arms in the `Setting` and `Settings` matches (the
   module comment lists them); its name, tooltip and values are entries in `text/menus.ini`. The settings menu shows it in both presentations with no UI

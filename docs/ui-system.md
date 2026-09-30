@@ -154,7 +154,8 @@ clamps to the range. A new setting therefore needs no UI code: add it in
 values are entries in `text/menus.ini`), and both presentations show it
 with its control.
 **Text files.** The menus' words come from `text/menus.ini`, and the status and
-top bars', the Debug panel's and the window titles' from `text/ui.ini`, through
+top bars', the Debug panel's and the window titles' from `text/ui.ini`, and the
+units' (trays, orders, abilities) from `text/units.ini`, through
 `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
 the UI's text is still in the code and moves to `text/` area by area
 (#341). In an area that has moved, new text is an entry in its file, not a

@@ -14,7 +14,8 @@ use super::city::turns_icon;
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::Fog;
 use super::hex::Hex;
-use super::orders::SHIPS_NOTICE;
+use super::orders::ships_notice;
+use super::strings::text;
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, TurnOrder, Unit};
 
@@ -73,9 +74,9 @@ impl GameState {
         let length = self.plan_length(&others).min(before);
         self.pad_plan(idx, length);
         self.notice = if turn + 1 < before {
-            format!("TOOK THE MOVE OFF TURN {} AND ALL AFTER IT", turn + 1)
+            text!("order_unqueued_from", turn = turn + 1)
         } else {
-            format!("TOOK THE MOVE OFF TURN {}", turn + 1)
+            text!("order_unqueued", turn = turn + 1)
         };
         true
     }
@@ -134,7 +135,7 @@ impl GameState {
         }
         let naval = self.units[members[0]].is_naval();
         if members.iter().any(|&i| self.units[i].is_naval() != naval) {
-            self.notice = "QUEUE LAND AND NAVAL UNITS SEPARATELY".into();
+            self.notice = text!("order_queue_land_and_naval").into();
             return false;
         }
         let fog = self.fog();
@@ -160,18 +161,18 @@ impl GameState {
                 // for the top bar of a small window.
                 let limit = self.settings.max_queued_turns.max(1);
                 self.notice = if cut_short {
-                    format!("QUEUED UP TO THE {} LIMIT", turns_icon(limit as i32))
+                    text!("order_queued_to_limit", limit = turns_icon(limit as i32))
                 } else {
                     queued_notice(first, length - first)
                 };
                 true
             }
             Extended::Full(limit) => {
-                self.notice = format!("QUEUE FULL - {} LIMIT", turns_icon(limit as i32));
+                self.notice = text!("order_queue_full", limit = turns_icon(limit as i32));
                 false
             }
             Extended::NoCloser => {
-                self.notice = "CAN'T GET ANY CLOSER THERE".into();
+                self.notice = text!("order_no_closer").into();
                 false
             }
         }
@@ -412,7 +413,7 @@ impl GameState {
             return false;
         }
         if self.known_empty_city_target(target, self.units[members[0]].team, &fog) {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = text!("order_city_center").into();
             return false;
         }
         let len = self.plan_length(&members);
@@ -444,14 +445,14 @@ impl GameState {
         }
         let limit = self.settings.max_queued_turns.max(1);
         if turn >= limit {
-            self.notice = format!("QUEUE FULL - {} LIMIT", turns_icon(limit as i32));
+            self.notice = text!("order_queue_full", limit = turns_icon(limit as i32));
             return false;
         }
         if attackers.is_empty() {
             self.notice = if water && members.iter().all(|&i| !self.units[i].attacks_water()) {
-                SHIPS_NOTICE.into()
+                ships_notice().into()
             } else {
-                "OUT OF RANGE THERE".into()
+                text!("order_out_of_range").into()
             };
             return false;
         }
@@ -603,7 +604,11 @@ impl GameState {
                 let unit = &self.units[i];
                 log::info!("{unit} drops its queued orders: {reason}");
                 if self.is_player_controlled(i) {
-                    self.notice = format!("{} STOPPED: {reason}", self.unit_role(unit));
+                    self.notice = text!(
+                        "order_queue_stopped",
+                        unit = self.unit_role(unit),
+                        reason = reason
+                    );
                 }
                 self.units[i].clear_orders();
             }
@@ -616,16 +621,16 @@ impl GameState {
     fn queued_turn_problem(&self, idx: usize, from: Hex) -> Option<&'static str> {
         let unit = &self.units[idx];
         if unit.pos != from {
-            return Some("IT DIDN'T GET WHERE IT WAS GOING");
+            return Some(text!("order_stopped_short"));
         }
         if self.rival_of(idx).is_some() {
-            return Some("IT IS FIGHTING FOR ITS HEX");
+            return Some(text!("order_stopped_fighting"));
         }
         if let Some(target) = unit.planned_attack
             && (!unit.can_attack()
                 || unit.planned_pos().distance(target) > unit.stats().attack_range)
         {
-            return Some("ITS TARGET IS OUT OF RANGE");
+            return Some(text!("order_stopped_out_of_range"));
         }
         None
     }
@@ -705,7 +710,7 @@ impl GameState {
         let unit = &self.units[idx];
         let dest = unit.planned_move?;
         if fog.sees(dest) && self.enemy_of_team_at(dest, unit.team).is_some() {
-            return Some("AN ENEMY STANDS IN ITS WAY");
+            return Some(text!("order_stopped_enemy"));
         }
         if !unit.waypoints.is_empty() {
             return None;
@@ -718,14 +723,14 @@ impl GameState {
             unit.is_naval(),
         );
         if !reachable.contains(&dest) {
-            return Some("ITS WAY IS BLOCKED");
+            return Some(text!("order_stopped_blocked"));
         }
         let ally_there =
             self.units.iter().enumerate().any(|(j, other)| {
                 j != idx && other.team == unit.team && other.planned_pos() == dest
             });
         if ally_there {
-            return Some("AN ALLY IS IN ITS WAY");
+            return Some(text!("order_stopped_ally"));
         }
         None
     }
@@ -734,7 +739,11 @@ impl GameState {
     fn stop_queue(&mut self, idx: usize, reason: &str) {
         let unit = &self.units[idx];
         log::info!("{unit} drops its queued orders: {reason}");
-        self.notice = format!("{} STOPPED: {reason}", self.unit_role(unit));
+        self.notice = text!(
+            "order_queue_stopped",
+            unit = self.unit_role(unit),
+            reason = reason
+        );
         self.units[idx].clear_orders();
     }
 }
@@ -759,10 +768,10 @@ enum Extended {
 fn queued_notice(first: usize, turns: usize) -> String {
     let last = first + turns;
     match (first, turns) {
-        (0, 1) => "QUEUED FOR THIS TURN - SHIFT-CLICK AGAIN FOR THE NEXT".into(),
-        (0, _) => format!("QUEUED FOR THE NEXT {}", turns_icon(turns as i32)),
-        (_, 1) => format!("QUEUED FOR TURN {last} FROM NOW"),
-        _ => format!("QUEUED FOR TURNS {} TO {last} FROM NOW", first + 1),
+        (0, 1) => text!("order_queued_this_turn").into(),
+        (0, _) => text!("order_queued_next", turns = turns_icon(turns as i32)),
+        (_, 1) => text!("order_queued_turn", turn = last),
+        _ => text!("order_queued_turns", first = first + 1, last = last),
     }
 }
 
@@ -1524,7 +1533,7 @@ mod tests {
             g.selected = Some(0);
             assert_eq!(g.queue_attack(lake), queued, "{unit_type:?}");
             if !queued {
-                assert_eq!(g.notice, SHIPS_NOTICE);
+                assert_eq!(g.notice, ships_notice());
             }
         }
     }

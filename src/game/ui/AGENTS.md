@@ -60,14 +60,16 @@ file holds.
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
 - **Text files.** The menus' text is in `text/menus.ini`, and the status and top bars', the
-  Debug panel's, the view controls' and the window titles' in `text/ui.ini`, asked for by tag
-  (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an entry, not a
-  literal. A button whose label is an entry takes its hover text too,
+  Debug panel's, the view controls' and the window titles' in `text/ui.ini`, and the units'
+  (the unit and group trays, orders, abilities and order notices) in `text/units.ini`, asked
+  for by tag (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an
+  entry, not a literal. A button whose label is an entry takes its hover text too,
   `.hover_text(hover_text!("tag"))`, which both presentations draw while it's hovered (the
   shipped files set none). An ImGui window's title is its ID: name a slot's window with
-  `slot_titles()`, never its words. Other areas move there in stages (#341); until theirs does, keep
-  their text as it is. In a moved area, a key's name in text or a button's hint comes from the
-  key map (`Command::key`, `game/keys.rs`), never a literal such as `"ESC"`.
+  `slot_titles()`, never its words. Other areas move there in stages (#341); until theirs
+  does, keep their text as it is. In a moved area, a key's name in text or a button's hint
+  comes from the key map (`Command::key`, `game/keys.rs`), never a literal such as `"ESC"`;
+  a mouse click (CLICK, RMB) is words in the file.
 - **Characters past ASCII** in game text: only those in `font::UI_PUNCTUATION`
   (`font.rs`), which both presentations' fonts carry. A new one goes in that list;
   `ui_text_uses_only_the_shared_glyphs` finds one used and not listed.
@@ -85,8 +87,9 @@ file holds.
 - **New unit button:** a `UnitAction` variant (`mod.rs`), a `ButtonSpec` in the tray's button
   list (`unit_buttons` or `group_tray_for` in `trays.rs`), when it's off and why
   (`unit_action_unavailable`, `trays.rs`; a group's is off when no member can take it), its
-  tooltip text (the `UnitAction` match in `unit_action_text`, `tooltips.rs`), and an arm in
-  `activate_target` (`mod.rs`). Add a hit-test unit test in `tests.rs`.
+  label, tooltip and reasons as entries in `text/units.ini` (its label in `order_label`,
+  `trays.rs`; its tooltip in the `UnitAction` match in `unit_action_text`, `tooltips.rs`), a key
+  in the key map if it has one (`game/keys.rs`), and an arm in `activate_target` (`mod.rs`). Add a hit-test unit test in `tests.rs`.
 - **New panel:** shared content in a `GameState` method returning a `PanelBuilder`; dock it in
   `layout()` for classic and give it an ImGui slot (above). Add a layout test (no overlap,
   buttons inside their panel) in `tests.rs`, and for ImGui extend the `plan` tests in

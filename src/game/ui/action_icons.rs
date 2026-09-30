@@ -5,6 +5,7 @@ use glam::Vec2;
 use super::{Target, UnitAction};
 use crate::game::city::{Build, Good};
 use crate::game::mesh;
+use crate::game::strings::text;
 use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
 
@@ -43,12 +44,15 @@ pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
         Target::Unit(UnitAction::ClearOrders) => ActionIcon::Clear,
         Target::Unit(UnitAction::Disband) => ActionIcon::Disband,
         Target::Unit(UnitAction::Settle) => ActionIcon::Settle,
+        // The ability's name, as `ability_text` gives it.
         Target::Unit(UnitAction::Ability) => match label.split(" (").next().unwrap_or(label) {
-            "SHIELD WALL" => ActionIcon::ShieldWall,
-            "VOLLEY" => ActionIcon::Volley,
-            "CHARGE" => ActionIcon::Charge,
-            "DEPLOY" | "PACK UP" => ActionIcon::Deploy,
-            "LOOKOUT" => ActionIcon::Lookout,
+            name if name == text!("ability_shield_wall") => ActionIcon::ShieldWall,
+            name if name == text!("ability_volley") => ActionIcon::Volley,
+            name if name == text!("ability_charge") => ActionIcon::Charge,
+            name if name == text!("ability_deploy") || name == text!("ability_pack_up") => {
+                ActionIcon::Deploy
+            }
+            name if name == text!("ability_lookout") => ActionIcon::Lookout,
             _ => return None,
         },
         Target::Priority(Good::Food) => ActionIcon::Food,

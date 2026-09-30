@@ -5,14 +5,15 @@ can be read and changed without touching Rust. The files are built into the exec
 (`include_str!`), so after editing one, rebuild (`cargo build`, or `cargo run`) to see it.
 
 This is being done in stages (#341). So far the settings menu and its Multiplayer page
-(`text/menus.ini`), and the status bar, top bar, Debug panel, view controls and window titles
-(`text/ui.ini`) read their text from here; everything else is still written in the code, and
-moves over area by area.
+(`text/menus.ini`), the status bar, top bar, Debug panel, view controls and window titles
+(`text/ui.ini`), and the units (`text/units.ini`) read their text from here; everything else
+is still written in the code, and moves over area by area.
 
 | File | What it holds |
 |---|---|
 | `text/menus.ini` | The settings menu (its title, headings, each setting's name, tooltip and values, its buttons and their tooltips, and the notice when a setting changes) and its Multiplayer page (its rows, fields, buttons, tooltips and what it says when a field isn't filled in) |
 | `text/ui.ini` | The screen's frame: the status bar (ImGui) and top bar (classic) with the turn, supply, Menu and End Turn in all its forms and its tooltip; the Debug panel's buttons, scenarios and tooltips; ImGui's view controls; and the panels' window titles |
+| `text/units.ini` | The units: their names, the unit and group trays, each order's button, hint, tooltip and why it's off, the abilities, and what the game says as orders are given (arming, queueing, disbanding, a queue that stops) |
 
 ## An entry
 
@@ -83,6 +84,9 @@ tooltip = PLAY EACH TURN OUT AT ONCE ({key}).
 ```
 
 The game shows that tooltip as "PLAY EACH TURN OUT AT ONCE (F8)."
+
+Mouse clicks aren't keys: CLICK, RIGHT-CLICK, RMB, and CTRL or SHIFT with a click, are written
+out in the files (`CTRL-RIGHT-CLICK`), as the game names them.
 
 ## Checking a change
 
