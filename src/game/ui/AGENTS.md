@@ -12,10 +12,10 @@ file holds.
   classic views show the same thing and do the same thing. A new kind of row is a `Row` variant
   that `builder.rs` places (classic) and `imgui.rs` measures (`measure_panel`) and renders
   (`render_imgui_panel`).
-- **A button that changes the plan** (an order, a build, a citizen, a worker) has its `Target`
-  in `Target::changes_plan` (`mod.rs`), so both presentations show it disabled while a network
-  game waits for the others' plans (`PanelBuilder::freeze_plan`); the method it calls refuses
-  while `is_resolving`.
+- **A button that changes the plan** (an order, a build, a citizen, a worker) stays on while a
+  network game waits for the others' plans: the method it calls refuses only while
+  `is_playing_out`, and the change takes the turn back (`take_back_on_new_orders`,
+  `multiplayer.rs`). Never refuse an order on `is_resolving`, which also holds while waiting.
 - **A button that can be off says why.** Build buttons with `ButtonSpec::new(target, label, hint)`
   and its `.queued(..)`, `.unavailable(reason)`, `.armed(..)` (`builder.rs`): a button is
   disabled exactly when it has a reason, which its tooltip shows in red in both presentations, so

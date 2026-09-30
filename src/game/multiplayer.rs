@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -47,7 +47,8 @@ const MAX_REASON: usize = 120;
 
 /// What the top bar says once this side's plan is sent, while it waits for
 /// the others'.
-pub(super) const WAITING_NOTICE: &str = "ORDERS SENT - THE WAITING BUTTON TAKES THEM BACK";
+pub(super) const WAITING_NOTICE: &str =
+    "ORDERS SENT - A NEW ORDER OR THE WAITING BUTTON TAKES THEM BACK";
 
 /// The port a host listens on unless told another.
 pub const DEFAULT_PORT: u16 = 7777;
@@ -100,6 +101,10 @@ pub enum Message {
     /// sent after it) came too late and changes nothing, and the turn plays
     /// out with the plan the host had.
     Withdraw { turn: u32 },
+    /// Host to guests: the human sides whose plans it holds for `turn` (the
+    /// one being planned), whenever that changes and the turn doesn't
+    /// resolve at once: who has ended the turn, and who has taken it back.
+    Ready { turn: u32, sides: Vec<Team> },
 }
 
 /// Which end of the connection this game is.
@@ -280,6 +285,10 @@ pub(super) struct Lockstep {
     pub desync: Option<u32>,
     /// Guest: why the host dropped it, if it said.
     dropped: Option<String>,
+    /// Guest: the sides the host last said had ended a turn, and which
+    /// turn (`Message::Ready`), for the End Turn button to name who it
+    /// waits for.
+    ready: (u32, Vec<Team>),
     /// Messages for `src/net` to send: from the host, to every guest; from
     /// a guest, to the host.
     outbox: Vec<Message>,
@@ -300,6 +309,7 @@ impl Lockstep {
             checksums: Vec::new(),
             desync: None,
             dropped: None,
+            ready: (0, Vec::new()),
             outbox: Vec::new(),
         }
     }
@@ -407,6 +417,8 @@ impl GameState {
         } else {
             format!("{seat:?} JOINED - {open} MORE TO COME").to_uppercase()
         };
+        // Who has ended the first turn already, for the newcomer too.
+        self.announce_ready();
         (Some(seat), welcome)
     }
 
@@ -530,16 +542,17 @@ impl GameState {
     }
 
     /// While this side has ended planning and waits for the others' plans.
-    /// Its plan is sent, so nothing may change it (`is_resolving` refuses
-    /// every order), but the player may still look around: select units and
-    /// cities and open their views, which waits only for `is_playing_out`.
+    /// Its plan is sent, but the player may still look around (select units
+    /// and cities, open their views), and an order they give takes the turn
+    /// back (`take_back_on_new_orders`): orders wait only for
+    /// `is_playing_out`.
     pub(super) fn waiting_for_peers(&self) -> bool {
         self.lockstep.as_ref().is_some_and(|l| l.submitted)
     }
 
-    /// While a turn plays out: every input waits, looking around included.
-    /// Anything that changes the plan waits for `is_resolving` instead, which
-    /// also holds while a network game waits for the others' plans.
+    /// While a turn plays out: every input waits, orders and looking around
+    /// alike. (`is_resolving` also holds while a network game waits for the
+    /// others' plans, when orders are still taken.)
     pub fn is_playing_out(&self) -> bool {
         !self.pending_steps.is_empty()
     }
@@ -552,21 +565,53 @@ impl GameState {
             Some(l) if l.role == Role::Host && open > 0 => {
                 format!("JOIN CODE {} - {open} TO COME", l.join_code)
             }
-            Some(l) if l.submitted => match l.role {
-                // The host knows whose plans are in.
-                Role::Host => {
-                    let waiting: Vec<String> = self
-                        .humans
-                        .iter()
-                        .filter(|t| !l.plans.iter().any(|p| p.team == **t))
-                        .map(|t| format!("{t:?}").to_uppercase())
-                        .collect();
+            Some(l) if l.submitted => {
+                let waiting: Vec<String> = self
+                    .humans
+                    .iter()
+                    .filter(|&&t| t != self.local_team && !self.has_ended_turn(t))
+                    .map(|t| format!("{t:?}").to_uppercase())
+                    .collect();
+                if waiting.is_empty() {
+                    // A guest whose plan the host is still to hear of.
+                    "WAITING FOR THE OTHERS".into()
+                } else {
                     format!("WAITING FOR {}", waiting.join(", "))
                 }
-                Role::Guest => "WAITING FOR THE OTHERS".into(),
-            },
+            }
             _ => "RESOLVING".into(),
         }
+    }
+
+    /// Whether `team`'s player has ended the turn being planned, as this
+    /// machine knows: the host holds its plan (on a guest, as the host last
+    /// said, `Message::Ready`).
+    fn has_ended_turn(&self, team: Team) -> bool {
+        let Some(lockstep) = self.lockstep.as_deref() else {
+            return false;
+        };
+        match lockstep.role {
+            Role::Host => lockstep.plans.iter().any(|p| p.team == team),
+            Role::Guest => {
+                let (turn, sides) = &lockstep.ready;
+                *turn == self.turn + 1 && sides.contains(&team)
+            }
+        }
+    }
+
+    /// Host: tells the guests whose plans it holds for the turn being
+    /// planned (`Message::Ready`), after they may have changed. Nothing
+    /// while a turn plays out: a turn that has just resolved sent its
+    /// `Resolve` instead.
+    fn announce_ready(&mut self) {
+        let Some(turn) = self.planning_turn() else {
+            return;
+        };
+        let Some(lockstep) = self.lockstep.as_mut().filter(|l| l.role == Role::Host) else {
+            return;
+        };
+        let sides = lockstep.plans.iter().map(|p| p.team).collect();
+        lockstep.outbox.push(Message::Ready { turn, sides });
     }
 
     /// Whether messages from the other machines may be handed to `receive`
@@ -616,6 +661,7 @@ impl GameState {
         lockstep.late.1.retain(|&(t, _)| t != team);
         if !started {
             self.notice = format!("{team:?} LEFT - WAITING FOR A PLAYER").to_uppercase();
+            self.announce_ready();
             return;
         }
         lockstep.outbox.push(Message::SeatLeft(team));
@@ -652,7 +698,8 @@ impl GameState {
 
     /// End Turn in a networked game (`end_planning`, once nothing needs
     /// orders): this side's plan goes to the host (or, on the host, waits
-    /// for the guest's), and input waits for the turn.
+    /// for the guests'), and the turn waits for the others' plans. An order
+    /// given meanwhile takes it back (`take_back_on_new_orders`).
     pub(super) fn submit_plan(&mut self) {
         let plan = self.team_plan(self.local_team);
         let open = self.open_seats().len();
@@ -672,9 +719,9 @@ impl GameState {
             }
         }
         // As in a local game, the city and Barracks views close and the
-        // selection is let go. The player may go on looking (selecting and
-        // opening views again), but nothing armed to change the plan
-        // outlives it.
+        // selection is let go, and nothing armed for the next click outlives
+        // it. The player may go on looking (selecting and opening views
+        // again), or give an order, which takes the turn back.
         self.close_views_on_end_turn();
         self.ui_click_mode = None;
         self.placing_job = None;
@@ -693,6 +740,11 @@ impl GameState {
         let Some(role) = self.lockstep.as_ref().map(|l| l.role) else {
             return Ok(());
         };
+        // An order the player gave since the last frame takes the turn back
+        // before anything arriving is handled, so a turn that resolves on
+        // this message resolves without the plan it replaced (the host
+        // waits for its own; a guest learns its take-back came too late).
+        self.take_back_on_new_orders();
         match (role, message) {
             (Role::Host, Message::Plan(plan)) => {
                 if plan.team != from || from == HOST_SEAT || !self.is_human(from) {
@@ -726,6 +778,31 @@ impl GameState {
                 };
                 lockstep.plans.remove(at);
                 self.notice = format!("{from:?} IS CHANGING THEIR ORDERS").to_uppercase();
+                self.announce_ready();
+            }
+            (Role::Guest, Message::Ready { turn, sides }) => {
+                // Only for the turn being planned (the host sends it before
+                // that turn's `Resolve`), and only human sides, each once.
+                if turn != self.turn + 1 {
+                    return Err(format!("READY FOR TURN {turn}"));
+                }
+                let mut unique = sides.clone();
+                unique.sort();
+                unique.dedup();
+                if unique.len() != sides.len() || !sides.iter().all(|&t| self.is_human(t)) {
+                    return Err(format!("READY: {sides:?}"));
+                }
+                let lockstep = self.lockstep.as_mut().expect("networked");
+                let (was_turn, was) = std::mem::replace(&mut lockstep.ready, (turn, sides));
+                // Another player who had ended this turn took it back.
+                let local = self.local_team;
+                let now = &lockstep.ready.1;
+                let back = was.iter().find(|&&t| t != local && !now.contains(&t));
+                if was_turn == turn
+                    && let Some(team) = back
+                {
+                    self.notice = format!("{team:?} IS CHANGING THEIR ORDERS").to_uppercase();
+                }
             }
             (Role::Guest, Message::Resolve(plans)) => {
                 // One plan for each human side, each one sound, and this
@@ -829,7 +906,8 @@ impl GameState {
     /// Take back End Turn, while this side's plan waits for the others':
     /// the player can change their orders and end the turn again. On a
     /// guest the host is told (`Withdraw`), and if it already had every
-    /// plan the turn plays out with the one sent; the host drops its own.
+    /// plan the turn plays out with the one sent; the host drops its own
+    /// and tells the guests (`Ready`).
     pub fn take_back_turn(&mut self) {
         let (team, turn) = (self.local_team, self.turn + 1);
         let Some(lockstep) = self.lockstep.as_mut().filter(|l| l.submitted) else {
@@ -837,10 +915,42 @@ impl GameState {
         };
         lockstep.submitted = false;
         match lockstep.role {
-            Role::Host => lockstep.plans.retain(|p| p.team != team),
+            Role::Host => {
+                lockstep.plans.retain(|p| p.team != team);
+                self.announce_ready();
+            }
             Role::Guest => lockstep.outbox.push(Message::Withdraw { turn }),
         }
         self.notice = "TURN TAKEN BACK - CHANGE YOUR ORDERS, THEN END IT AGAIN".into();
+    }
+
+    /// The plan this side sent (or, on the host, holds) for the turn, while
+    /// it waits for the others'.
+    fn plan_sent(&self) -> Option<&TeamPlan> {
+        let lockstep = self.lockstep.as_deref().filter(|l| l.submitted)?;
+        match lockstep.role {
+            Role::Host => lockstep.plans.iter().find(|p| p.team == self.local_team),
+            Role::Guest => lockstep.sent.last(),
+        }
+    }
+
+    /// While this side's plan waits for the others', an order the player
+    /// has given since (anything that changed the plan: a move, an attack,
+    /// a queue, a citizen, a worker) takes the turn back, as the End Turn
+    /// button would, and stands: they plan on and end the turn again,
+    /// which sends the plan anew. Looking around changes no plan, so it
+    /// takes nothing back. Checked every frame (`update`) and before any
+    /// message is handled (`receive`); once the turn resolves, what's
+    /// changed is replaced by the turn as sent, as every machine plays it.
+    pub(super) fn take_back_on_new_orders(&mut self) {
+        let Some(sent) = self.plan_sent() else {
+            return;
+        };
+        if *sent == self.team_plan(self.local_team) {
+            return;
+        }
+        self.take_back_turn();
+        self.notice = "ORDERS CHANGED - TURN TAKEN BACK; END IT AGAIN TO SEND THEM".into();
     }
 
     /// Why `plan` can't be applied to this turn's game, if it can't: it's
@@ -1286,20 +1396,24 @@ impl GameState {
         Ok(())
     }
 
-    /// Host: once every human side's plan is in, sends them all and resolves.
+    /// Host, once the plans it holds may have changed: once every human
+    /// side's plan is in, sends them all and resolves; until then, tells
+    /// the guests whose are in (`announce_ready`).
     fn resolve_when_ready(&mut self) {
-        if !self.open_seats().is_empty() {
-            return;
-        }
         let humans = self.humans.clone();
+        let seats_open = !self.open_seats().is_empty();
         let Some(lockstep) = self.lockstep.as_mut() else {
             return;
         };
-        if lockstep.role != Role::Host
+        if lockstep.role != Role::Host {
+            return;
+        }
+        if seats_open
             || !humans
                 .iter()
                 .all(|t| lockstep.plans.iter().any(|p| p.team == *t))
         {
+            self.announce_ready();
             return;
         }
         let plans = std::mem::take(&mut lockstep.plans);
@@ -1805,15 +1919,34 @@ mod tests {
         game.handle_map_click(cursor, SCREEN, mode);
     }
 
-    #[test]
-    fn waiting_for_the_others_a_player_looks_around_but_changes_nothing() {
-        use super::super::ClickMode;
+    /// The open hexes around `around`: passable, empty, and no city's or
+    /// Barracks'.
+    fn open_hexes(game: &GameState, around: Hex) -> Vec<Hex> {
+        around
+            .neighbors()
+            .into_iter()
+            .filter(|&h| {
+                game.grid.is_passable(h)
+                    && !game.is_occupied(h)
+                    && game
+                        .cities
+                        .iter()
+                        .all(|c| c.pos != h && c.barracks != Some(h))
+            })
+            .collect()
+    }
+
+    /// A host and Red, with a Barracks by Red's city on both machines (as
+    /// an earlier turn would leave it) and both sides funded; Red has
+    /// planned a unit's move and a build and ended its turn, its plan on
+    /// its way to the host. Red's city, its Barracks' hex, the unit, and
+    /// the plan sent.
+    fn red_waiting() -> (GameState, GameState, usize, Hex, usize, TeamPlan) {
         let (mut host, mut guest) = pair();
         let team = GUEST_SEAT;
-        let city = guest.cities.iter().position(|c| c.team == team).unwrap();
+        let city = city_of(&guest, team);
         let city_pos = guest.cities[city].pos;
-        // A Barracks by its city (not on a tile a citizen works), on both
-        // machines, as an earlier turn would leave it.
+        // Not on a tile a citizen works.
         let worked = guest.cities[city].worked().collect::<Vec<_>>();
         let barracks = city_pos
             .neighbors()
@@ -1822,147 +1955,105 @@ mod tests {
             .unwrap();
         for game in [&mut host, &mut guest] {
             game.cities[city].barracks = Some(barracks);
+            game.fund(team);
             game.finish_lockstep_turn();
             let _ = game.take_outbox();
         }
         // What Red sees, as a frame would show it.
         guest.update(0.0);
-        // The guest plans: a unit's move and a build, then ends its turn.
-        let units: Vec<usize> = (0..guest.units.len())
-            .filter(|&i| {
+        let unit = (0..guest.units.len())
+            .find(|&i| {
                 let u = &guest.units[i];
-                u.team == team && u.pos != city_pos && u.pos != barracks
+                u.team == team
+                    && u.pos != city_pos
+                    && u.pos != barracks
+                    && open_hexes(&guest, u.pos).len() >= 2
             })
-            .collect();
-        assert!(!units.is_empty(), "a unit of Red's out on the map");
-        let unit = units[0];
+            .expect("a unit of Red's out on the map");
         let pos = guest.units[unit].pos;
-        let open = |game: &GameState, around: Hex| {
-            around
-                .neighbors()
-                .into_iter()
-                .find(|&h| {
-                    game.grid.is_passable(h)
-                        && !game.is_occupied(h)
-                        && game
-                            .cities
-                            .iter()
-                            .all(|c| c.pos != h && c.barracks != Some(h))
-                })
-                .unwrap()
-        };
-        guest.units[unit].planned_move = Some(open(&guest, pos));
+        guest.units[unit].planned_move = Some(open_hexes(&guest, pos)[0]);
         guest.open_city(city);
         guest.queue_selected_city_unit(BuildUnit::Melee);
         guest.end_planning();
         assert!(guest.waiting_for_peers(), "{}", guest.notice);
         let sent = guest.take_outbox();
-        let [Message::Plan(sent_plan)] = &sent[..] else {
+        let [Message::Plan(plan)] = &sent[..] else {
             panic!("{sent:?}")
         };
-        let plan = guest.team_plan(team);
-        assert_eq!(&plan, sent_plan);
+        assert_eq!(guest.team_plan(team), *plan);
+        (host, guest, city, barracks, unit, plan.clone())
+    }
+
+    #[test]
+    fn waiting_for_the_others_a_player_looks_around_and_the_turn_stays_ended() {
+        use super::super::ClickMode;
+        let (mut host, mut guest, city, barracks, unit, plan) = red_waiting();
+        let team = GUEST_SEAT;
+        let city_pos = guest.cities[city].pos;
+        let pos = guest.units[unit].pos;
         let checksum = guest.checksum();
-        let unchanged = |game: &GameState, what: &str| {
+        // Each look is a frame's input, and the frame after it (`update`)
+        // takes nothing back.
+        let unchanged = |game: &mut GameState, what: &str| {
+            game.update(0.0);
             assert_eq!(game.team_plan(team), plan, "{what} changed the plan");
             assert_eq!(game.checksum(), checksum, "{what} changed the game");
-            assert!(game.waiting_for_peers(), "{what}");
+            assert!(game.waiting_for_peers(), "{what}: {}", game.notice);
+            assert!(game.take_outbox().is_empty(), "{what} sent something");
         };
 
-        // A unit, selected by clicking it; a click elsewhere only lets go.
-        let away = open(&guest, pos);
+        // A unit, selected by clicking it, and let go by clicking it again;
+        // with nothing selected, a click on an open hex does nothing.
         assert_eq!(guest.selected_city, None, "End Turn closed the city view");
         click(&mut guest, pos, ClickMode::Normal);
         assert_eq!(guest.selected, Some(unit), "{}", guest.notice);
-        click(&mut guest, away, ClickMode::Normal);
-        assert_eq!(guest.selected, None);
-        unchanged(&guest, "a click on an open hex");
         click(&mut guest, pos, ClickMode::Normal);
-        // Every order for it is refused.
+        assert_eq!(guest.selected, None);
+        let away = open_hexes(&guest, pos)[1];
+        click(&mut guest, away, ClickMode::Normal);
+        unchanged(&mut guest, "a click on a unit, and on an open hex");
+        // Arming an order for the next click isn't one yet.
+        click(&mut guest, pos, ClickMode::Normal);
         guest.choose_move_action();
-        assert_eq!(guest.ui_click_mode, None);
-        click(&mut guest, away, ClickMode::Move);
-        guest.selected = Some(unit);
-        guest.toggle_selected_ability();
-        guest.hold_selected_unit();
-        guest.toggle_guard();
-        guest.toggle_alert();
-        guest.disband_selected();
-        guest.disband_selected();
-        guest.found_city_selected();
-        guest.handle_right_click();
-        guest.hold_or_end_turn();
-        unchanged(&guest, "a unit's orders");
+        assert!(guest.ui_click_mode.is_some());
+        unchanged(&mut guest, "arming a move");
+        guest.clear_selection();
         // Tab picks a unit, and a box picks every one in it.
-        guest.set_selection(Vec::new());
         guest.select_next_unit();
         assert!(guest.selected.is_some());
         guest.camera.focus_on(pos.to_world());
         guest.camera.update(10.0);
         guest.select_in_box(glam::Vec2::ZERO, SCREEN, SCREEN, false);
         assert!(guest.selection().contains(&unit));
-        unchanged(&guest, "selecting");
+        unchanged(&mut guest, "selecting");
 
-        // Its city opens (C), and nothing in it changes.
+        // Its city opens (C).
         guest.select_city();
         assert_eq!(guest.selected_city, Some(city));
-        guest.queue_selected_city_unit(BuildUnit::Ranged);
-        guest.queue_selected_city_gather();
-        guest.queue_selected_city_growth();
-        guest.queue_selected_city_worker();
-        guest.queue_selected_city_scout();
-        guest.queue_selected_city_settler();
-        guest.queue_selected_city_building(Building::Mill);
-        guest.move_selected_city_queue_item(0, false);
-        guest.remove_selected_city_queue_item(0);
-        guest.clear_selected_city_queue();
-        guest.auto_assign_selected_city();
-        guest.prioritize_selected_city(Good::Metal);
-        guest.set_selected_city_priorities(Priorities([Good::Wood, Good::Food, Good::Metal]));
-        guest.arm_worker_job(super::super::JobKind::Road);
-        assert_eq!(guest.placing_job, None);
-        guest.release_worker();
-        // Clicks on its tiles don't move citizens (or its manager, picked
-        // up from its tile).
-        let worked = guest.cities[city].worked().collect::<Vec<_>>();
-        for &hex in worked.iter().chain(&city_pos.neighbors()) {
-            click(&mut guest, hex, ClickMode::Normal);
-            guest.open_city(city);
-        }
-        unchanged(&guest, "the city view");
-        assert_eq!(guest.selected_city, Some(city));
+        unchanged(&mut guest, "the city view");
 
-        // The interior: a troop there can be picked, not ordered.
-        guest.open_city(city);
+        // The interior: a troop there can be picked.
         click(&mut guest, city_pos, ClickMode::Normal);
         assert_eq!(guest.interior_view, Some(city), "{}", guest.notice);
-        let fighters: Vec<(u32, Hex)> = guest.cities[city]
+        let fighter = guest.cities[city]
             .interior
             .fighters
             .iter()
-            .filter(|f| f.team == team)
-            .map(|f| (f.source_id, f.pos))
-            .collect();
-        if let Some(&(id, at)) = fighters.first() {
+            .find(|f| f.team == team)
+            .map(|f| (f.source_id, f.pos));
+        if let Some((id, at)) = fighter {
             guest.interior_click(at);
             assert_eq!(guest.interior_selected, Some(id));
-            for hex in at.neighbors() {
-                guest.interior_click(hex);
-                guest.interior_selected = Some(id);
-            }
-            guest.clear_selected_interior_orders();
         }
+        unchanged(&mut guest, "the interior");
         guest.press_escape();
         assert_eq!(guest.interior_view, None);
-        unchanged(&guest, "the interior");
 
         // The Barracks, by clicking it.
         guest.press_escape();
         click(&mut guest, barracks, ClickMode::Normal);
         assert_eq!(guest.selected_barracks, Some(city), "{}", guest.notice);
-        guest.queue_selected_barracks_unit(BuildUnit::Melee);
-        guest.clear_selected_barracks_queue();
-        unchanged(&guest, "the Barracks view");
+        unchanged(&mut guest, "the Barracks view");
 
         // The host gets the plan as sent, and both machines play the same
         // turn, the guest looking inside its city as it arrives.
@@ -1970,9 +2061,8 @@ mod tests {
         let map_camera = (guest.camera.center, guest.camera.half_height);
         guest.toggle_city_interior();
         assert!(guest.interior_view.is_some());
-        for message in sent {
-            host.receive(GUEST_SEAT, roundtrip(&message)).unwrap();
-        }
+        host.receive(GUEST_SEAT, roundtrip(&Message::Plan(plan.clone())))
+            .unwrap();
         assert_eq!(host.lockstep.as_ref().unwrap().plans, [plan]);
         host.submit_plan();
         exchange(&mut host, &mut guest);
@@ -1988,8 +2078,345 @@ mod tests {
         exchange(&mut host, &mut guest);
         assert_eq!(host.turn, 1);
         assert_eq!(host.checksum(), guest.checksum());
-        let queued = &guest.cities[city].queue;
-        assert_eq!(queued.len(), 1, "the one build sent");
+        assert_eq!(
+            guest.units_queued(team, BuildUnit::Melee),
+            1,
+            "the build sent"
+        );
+    }
+
+    /// What the top bar says once an order has taken the turn back.
+    const ORDERS_CHANGED: &str = "ORDERS CHANGED - TURN TAKEN BACK; END IT AGAIN TO SEND THEM";
+
+    #[test]
+    fn waiting_for_the_others_any_order_takes_the_turn_back() {
+        use super::super::ClickMode;
+        let (host, guest, city, _, unit, plan) = red_waiting();
+        let pos = guest.units[unit].pos;
+        let away = open_hexes(&guest, pos)[1];
+        let Priorities([a, b, c]) = guest.cities[city].priorities;
+        let select = move |g: &mut GameState| g.set_selection(vec![unit]);
+        type Order = Box<dyn Fn(&mut GameState)>;
+        let orders: Vec<(&str, Order)> = vec![
+            (
+                "a move, by clicking",
+                Box::new(move |g| {
+                    click(g, pos, ClickMode::Normal);
+                    click(g, away, ClickMode::Normal);
+                }),
+            ),
+            (
+                "a move, armed from the tray",
+                Box::new(move |g| {
+                    select(g);
+                    g.choose_move_action();
+                    click(g, away, ClickMode::Normal);
+                }),
+            ),
+            (
+                "a move queued for later turns",
+                Box::new(move |g| {
+                    select(g);
+                    click(g, away, ClickMode::QueueMove);
+                }),
+            ),
+            (
+                "hold",
+                Box::new(move |g| {
+                    select(g);
+                    g.hold_selected_unit();
+                }),
+            ),
+            (
+                "guard",
+                Box::new(move |g| {
+                    select(g);
+                    g.toggle_guard();
+                }),
+            ),
+            (
+                "a disband, confirmed",
+                Box::new(move |g| {
+                    select(g);
+                    g.disband_selected();
+                    g.disband_selected();
+                }),
+            ),
+            (
+                "a city's build",
+                Box::new(move |g| {
+                    g.open_city(city);
+                    g.queue_selected_city_gather();
+                }),
+            ),
+            (
+                "a build off the city's queue",
+                Box::new(move |g| {
+                    g.open_city(city);
+                    g.remove_selected_city_queue_item(0);
+                }),
+            ),
+            (
+                "the city's priority order",
+                Box::new(move |g| {
+                    g.open_city(city);
+                    g.set_selected_city_priorities(Priorities([b, c, a]));
+                }),
+            ),
+            (
+                "a Barracks build",
+                Box::new(move |g| {
+                    g.open_barracks(city);
+                    g.queue_selected_barracks_unit(BuildUnit::Melee);
+                }),
+            ),
+        ];
+        for (what, order) in &orders {
+            let (mut host, mut guest) = (host.clone(), guest.clone());
+            order(&mut guest);
+            // The frame after the order takes the turn back, and the order
+            // stands.
+            guest.update(0.0);
+            assert!(!guest.waiting_for_peers(), "{what}: {}", guest.notice);
+            assert_eq!(guest.notice, ORDERS_CHANGED, "{what}");
+            assert_ne!(
+                guest.team_plan(GUEST_SEAT),
+                plan,
+                "{what}: the order stands"
+            );
+            let sent = guest.take_outbox();
+            assert!(
+                matches!(&sent[..], [Message::Withdraw { turn: 1 }]),
+                "{what}: {sent:?}"
+            );
+            // The host, which had its plan, lets it go: Red is no longer
+            // ready.
+            host.receive(GUEST_SEAT, roundtrip(&Message::Plan(plan.clone())))
+                .unwrap();
+            for m in sent {
+                host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+            }
+            assert!(!host.has_plan_from(GUEST_SEAT), "{what}");
+            assert_eq!(host.notice, "RED IS CHANGING THEIR ORDERS", "{what}");
+            // Ended again, the plan goes anew, as it now stands.
+            guest.end_planning();
+            if !guest.waiting_for_peers() {
+                // A city left with nothing to build opens instead, as ever.
+                guest.queue_selected_city_gather();
+                guest.end_planning();
+            }
+            assert!(guest.waiting_for_peers(), "{what}: {}", guest.notice);
+            let now = guest.team_plan(GUEST_SEAT);
+            let sent = guest.take_outbox();
+            assert!(
+                matches!(&sent[..], [Message::Plan(p)] if *p == now),
+                "{what}: {sent:?}"
+            );
+            for m in sent {
+                host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+            }
+            assert!(host.has_plan_from(GUEST_SEAT), "{what}");
+        }
+    }
+
+    #[test]
+    fn an_order_after_ending_the_turn_takes_it_back_and_the_new_plan_plays_out() {
+        let (mut host, mut guest) = pair();
+        end_turn_building(&mut guest, None);
+        exchange(&mut host, &mut guest);
+        assert!(host.has_plan_from(GUEST_SEAT));
+        assert_eq!(guest.resolving_label(), "WAITING FOR BLUE");
+        // Red opens its city and queues a Melee: that takes the turn back.
+        let city = city_of(&guest, GUEST_SEAT);
+        guest.open_city(city);
+        assert!(guest.waiting_for_peers(), "looking takes nothing back");
+        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.update(0.0);
+        assert!(!guest.waiting_for_peers(), "{}", guest.notice);
+        exchange(&mut host, &mut guest);
+        assert!(!host.has_plan_from(GUEST_SEAT));
+        assert_eq!(host.notice, "RED IS CHANGING THEIR ORDERS");
+        // The host ends its turn, and waits for Red.
+        host.submit_plan();
+        assert!(!host.is_playing_out());
+        assert_eq!(host.resolving_label(), "WAITING FOR RED");
+        exchange(&mut host, &mut guest);
+        // Red ends it again, and the turn plays out with the new plan on
+        // both machines.
+        guest.end_planning();
+        exchange(&mut host, &mut guest);
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!((host.turn, guest.turn), (1, 1));
+        assert_eq!(host.checksum(), guest.checksum());
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+        for game in [&host, &guest] {
+            assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 1);
+        }
+    }
+
+    #[test]
+    fn a_guest_sees_the_host_take_its_turn_back_with_an_order() {
+        let (mut host, mut guests) = table(2);
+        // Red and the host end their turns; Green hasn't.
+        end_turn_building(&mut guests[0], None);
+        end_turn_building(&mut host, None);
+        exchange_all(&mut host, &mut guests);
+        assert_eq!(guests[0].resolving_label(), "WAITING FOR GREEN");
+        // The host queues a Melee: its turn is taken back, and Red sees it.
+        let city = city_of(&host, HOST_SEAT);
+        host.open_city(city);
+        host.queue_selected_city_unit(BuildUnit::Melee);
+        host.update(0.0);
+        assert!(!host.waiting_for_peers(), "{}", host.notice);
+        exchange_all(&mut host, &mut guests);
+        assert_eq!(guests[0].notice, "BLUE IS CHANGING THEIR ORDERS");
+        assert_eq!(guests[0].resolving_label(), "WAITING FOR BLUE, GREEN");
+        // Green ends its turn: the turn still waits for the host's.
+        end_turn_building(&mut guests[1], None);
+        exchange_all(&mut host, &mut guests);
+        assert!(!host.is_playing_out());
+        assert_eq!(guests[1].resolving_label(), "WAITING FOR BLUE");
+        // The host ends it again, and every machine plays its new orders.
+        host.end_planning();
+        exchange_all(&mut host, &mut guests);
+        play_out(&mut host);
+        for guest in &mut guests {
+            play_out(guest);
+        }
+        exchange_all(&mut host, &mut guests);
+        for game in std::iter::once(&host).chain(&guests) {
+            assert_eq!(game.turn, 1);
+            assert_eq!(game.checksum(), host.checksum());
+            assert_eq!(game.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+        }
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+    }
+
+    #[test]
+    fn an_order_as_the_host_resolves_comes_too_late_and_the_turn_plays_out_as_sent() {
+        // Whether a frame passes between Red's order and the `Resolve`
+        // arriving (the take-back is sent first) or not (`receive` takes
+        // the turn back before it handles the `Resolve`).
+        for frame_between in [false, true] {
+            let (mut host, mut guest) = pair();
+            let _ = host.take_outbox();
+            end_turn_building(&mut guest, None);
+            for m in guest.take_outbox() {
+                host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+            }
+            // The host ends its turn: it has every plan, and resolves.
+            host.submit_plan();
+            assert!(host.is_playing_out());
+            // Red, before the `Resolve` reaches it, queues a Melee.
+            let city = city_of(&guest, GUEST_SEAT);
+            guest.open_city(city);
+            guest.queue_selected_city_unit(BuildUnit::Melee);
+            if frame_between {
+                guest.update(0.0);
+                assert!(!guest.waiting_for_peers());
+            }
+            for m in host.take_outbox() {
+                guest.receive(HOST_SEAT, roundtrip(&m)).unwrap();
+            }
+            // Too late: the turn plays out as sent, and says so.
+            assert!(guest.is_playing_out());
+            assert_eq!(
+                guest.notice,
+                "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"
+            );
+            // Once it plays out, orders are refused.
+            guest.selected_city = Some(city);
+            let queue = guest.cities[city].queue.clone();
+            guest.queue_selected_city_unit(BuildUnit::Ranged);
+            guest.clear_selected_city_queue();
+            assert_eq!(guest.cities[city].queue, queue);
+            guest.selected_city = None;
+            // The take-back reaches the host after it resolved: too late,
+            // but not hostile.
+            let late = guest.take_outbox();
+            assert!(
+                matches!(&late[..], [Message::Withdraw { turn: 1 }]),
+                "{late:?}"
+            );
+            play_out(&mut host);
+            for m in late {
+                host.receive(GUEST_SEAT, roundtrip(&m))
+                    .expect("too late, not hostile");
+            }
+            play_out(&mut guest);
+            exchange(&mut host, &mut guest);
+            assert_eq!((host.turn, guest.turn), (1, 1));
+            assert_eq!(host.checksum(), guest.checksum());
+            assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+            for game in [&host, &guest] {
+                assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn an_order_as_the_last_plan_arrives_holds_the_turn_for_the_new_one() {
+        let (mut host, mut guest) = pair();
+        end_turn_building(&mut host, None);
+        end_turn_building(&mut guest, None);
+        // The host queues a Melee just as Red's plan, the last it waited
+        // for, arrives: the order takes the host's turn back first, so the
+        // turn waits for the host's new plan.
+        let city = city_of(&host, HOST_SEAT);
+        host.open_city(city);
+        host.queue_selected_city_unit(BuildUnit::Melee);
+        for m in guest.take_outbox() {
+            host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
+        }
+        assert!(!host.is_playing_out() && !host.waiting_for_peers());
+        assert!(host.has_plan_from(GUEST_SEAT) && !host.has_plan_from(HOST_SEAT));
+        exchange(&mut host, &mut guest);
+        assert_eq!(guest.notice, "BLUE IS CHANGING THEIR ORDERS");
+        assert_eq!(guest.resolving_label(), "WAITING FOR BLUE");
+        // The host ends it again, and both play the new plan.
+        host.end_planning();
+        exchange(&mut host, &mut guest);
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!((host.turn, guest.turn), (1, 1));
+        assert_eq!(host.checksum(), guest.checksum());
+        for game in [&host, &guest] {
+            assert_eq!(game.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+        }
+    }
+
+    #[test]
+    fn a_guest_refuses_word_of_who_is_ready_that_couldnt_be() {
+        let (mut host, mut guests) = table(2);
+        exchange_all(&mut host, &mut guests);
+        let red = &guests[0];
+        let ready = |turn, sides: &[Team]| Message::Ready {
+            turn,
+            sides: sides.to_vec(),
+        };
+        let ok = red
+            .clone()
+            .receive(HOST_SEAT, ready(1, &[Team::Green, Team::Blue]));
+        assert_eq!(ok, Ok(()));
+        let ai = red.ai_teams()[0];
+        for (message, what) in [
+            (ready(0, &[Team::Blue]), "a turn played"),
+            (ready(2, &[Team::Blue]), "a turn not yet begun"),
+            (ready(1, &[ai]), "an AI side"),
+            (ready(1, &[Team::Wild]), "the animals"),
+            (ready(1, &[Team::Blue, Team::Blue]), "a side twice"),
+        ] {
+            let mut red = red.clone();
+            assert!(red.receive(HOST_SEAT, message).is_err(), "{what}");
+        }
+        // It goes only from the host.
+        assert!(
+            host.receive(Team::Red, ready(1, &[Team::Red])).is_err(),
+            "from a guest"
+        );
     }
 
     /// `team`'s first city, by index.

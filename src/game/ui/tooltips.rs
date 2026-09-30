@@ -26,10 +26,6 @@ use glam::Vec2;
 /// A tooltip's lines, each with its text size.
 pub(super) type TooltipLines = Vec<(u32, Line)>;
 
-/// Why a button that would change the plan is off while a network game
-/// waits for the others' plans.
-pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
-
 /// What a button's tooltip describes it for: the unit (a group's first
 /// member) and the city (or Barracks) of the panel the button is in. The
 /// selection's for the classic tray and ImGui's Selection panel
@@ -832,7 +828,7 @@ impl GameState {
                     "TAKE BACK END TURN".into(),
                     "CLICK".into(),
                     "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
-                     UNTIL EVERYONE HAS ENDED IT."
+                     UNTIL EVERYONE HAS ENDED IT. GIVING AN ORDER TAKES THEM BACK TOO."
                         .into(),
                     None,
                 ),

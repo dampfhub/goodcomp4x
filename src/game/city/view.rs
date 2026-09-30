@@ -263,20 +263,6 @@ impl GameState {
             self.open_city_interior(i);
             return true;
         }
-        // The plan is sent: citizens stay where they are, but another of the
-        // player's cities can be looked at.
-        if self.is_resolving() {
-            if let Some(other) = self
-                .cities
-                .iter()
-                .position(|c| c.pos == hex && c.team == self.local_team)
-            {
-                self.open_city(other);
-            } else {
-                self.notice = WAITING_NOTICE.into();
-            }
-            return true;
-        }
         // City management owns map clicks off a unit's token, so citizens
         // may be assigned onto a unit's tile. A tile never seen can't be
         // worked.

@@ -3,7 +3,6 @@
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
-use super::tooltips::PLAN_SENT;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
@@ -86,41 +85,6 @@ impl ButtonSpec {
             faded,
             min,
             max,
-        }
-    }
-}
-
-/// `PanelBuilder::freeze_plan` on `rows`, and on the rows of any scrolling
-/// list among them.
-fn freeze_rows(rows: &mut [Row]) {
-    let freeze = |spec: &mut ButtonSpec| {
-        if spec.target.changes_plan() {
-            spec.unavailable = Some(PLAN_SENT.into());
-            spec.armed = false;
-        }
-    };
-    for row in rows {
-        match row {
-            Row::Buttons(buttons, _)
-            | Row::Reorder(_, buttons)
-            | Row::LabeledButtons(_, buttons) => buttons.iter_mut().for_each(freeze),
-            Row::TitleWithButton(_, button) => freeze(button),
-            Row::BuildingCatalog(_, entries, ..) => {
-                for entry in entries {
-                    if let CatalogEntry::Card(button) = entry {
-                        freeze(button);
-                    }
-                }
-            }
-            Row::ScrollList(list) => freeze_rows(&mut list.entries),
-            Row::QueueItem(item) => item.locked = true,
-            Row::Text(..)
-            | Row::Gap(_)
-            | Row::Bar(_)
-            | Row::Roster(_)
-            | Row::Heading(_)
-            | Row::Setting(..)
-            | Row::Field(..) => {}
         }
     }
 }
@@ -471,14 +435,6 @@ impl PanelBuilder {
         self.rows.push(Row::Reorder(kind, buttons));
     }
 
-    /// For a plan that can't change (a network game waiting for the others'):
-    /// every button that would change it shows disabled, and queue rows
-    /// lock (no dragging, no X). Both presentations call it on the panels
-    /// they show, so looking stays open and ordering doesn't.
-    pub(super) fn freeze_plan(&mut self) {
-        freeze_rows(&mut self.rows);
-    }
-
     /// Button borders are drawn just outside their rows, so a row of buttons
     /// right under another needs a gap to keep them from overlapping.
     fn space_button_rows(&mut self) {
@@ -665,10 +621,8 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 waiting: item.waiting,
                 dragging: item.dragging,
                 drop_target: item.drop_target,
-                locked: item.locked,
             });
-            let remove = ButtonSpec::new(item.kind.remove_target(item.index), "X", "")
-                .unavailable(item.locked.then(|| PLAN_SENT.into()));
+            let remove = ButtonSpec::new(item.kind.remove_target(item.index), "X", "");
             layout
                 .buttons
                 .push(remove.place(Vec2::new(body_max_x, min.y), max, faded));
@@ -678,7 +632,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 min,
                 max,
                 body_max_x,
-                locked: item.locked,
+                locked: false,
             });
         }
         Row::Reorder(kind, buttons) => {

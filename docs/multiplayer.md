@@ -42,15 +42,20 @@ to reach the host's port: on a home network, forward it on the router and let th
 the host's firewall.
 
 Everyone plays their turn at once, as ever; the first turn waits until every seat is filled.
-Ending the turn sends your plan, and the End Turn button waits (the host's names who it's
-waiting for) until everyone has ended theirs; then the turn plays out on every machine. As in a
-game of one's own, ending the turn closes the city or Barracks view and lets go of the selected
-units. While you wait you can look around as you like: select units and cities, open city, Barracks and
-interior views, and read their panels and tooltips; everything that would change your orders
-is disabled, since they're sent. To change them, click the End Turn button while it waits (TAKE
-BACK): you plan on, and end the turn again. That works until the host has everyone's plan; a
-take-back that reaches it later is too late, and the turn plays out with the orders you sent
-(the top bar says so). Nobody can join once the first turn has played. A guest who leaves before it starts to play out frees
+Ending the turn sends your plan, and the End Turn button waits, naming who it's waiting for
+(`WAITING FOR RED, GREEN`), until everyone has ended theirs; then the turn plays out on every
+machine. As in a game of one's own, ending the turn closes the city or Barracks view and lets
+go of the selected units. While you wait you can look around as you like: select units and
+cities, open city, Barracks and interior views, and read their panels and tooltips; none of
+that takes anything back. To change your orders, just give one: a move, an attack, a hold, a
+build, a queue change, a citizen, a worker or a priority takes the turn back and stands
+(ORDERS CHANGED on the top bar), and you plan on and end the turn again, which sends your plan
+anew. Clicking the End Turn button while it waits (TAKE BACK) takes it back without an order.
+The others see you're no longer ready: the host's top bar says RED IS CHANGING THEIR ORDERS
+(a guest's, for another player), and their End Turn buttons name you again. That works until
+the host has everyone's plan; a take-back that reaches it later is too late, and the turn
+plays out with the orders you sent (the top bar says so). Once the turn plays out, orders wait
+for the next. Nobody can join once the first turn has played. A guest who leaves before it starts to play out frees
 their seat for someone else (the turn waits for them); one who leaves after hands their side to
 the AI, which plays it from the next turn on, and the rest play on. If the host leaves, the
 game can't go on. A guest the host drops for a message it refused sees why. Debug actions that
@@ -90,17 +95,28 @@ plays the same game: `cargo test plans_the_ai_makes -- --ignored`.
 Messages (`Message`): `Hello` (guest, with the protocol version), `Welcome` (host: the seat,
 the human sides, the world's seed and settings, the RNG seed and debug toggles) or `Refused`,
 `Plan`, `Resolve`, `SeatLeft`, `Checksum`, `Withdraw` (guest: its player took back ending the
-turn). The host also sends `Refused`, with the reason, to a guest it drops for a bad message.
+turn), `Ready` (host: the sides whose plans it holds for the turn being planned, sent whenever
+that changes and the turn doesn't resolve at once, and to a guest as it joins). The host also
+sends `Refused`, with the reason, to a guest it drops for a bad message.
 `PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, or the
 map a seed generates (`mapgen.rs`: each machine builds the world from the seed), so
 mismatched builds refuse each other.
 
 Taking a turn back (`take_back_turn`): a guest sends `Withdraw { turn }` and plans on; the host
-drops that side's plan and waits for its next `Plan`. The host takes its own back locally. The
-host alone decides the order of events: once it has every plan it resolves at once, so a
-`Withdraw` still on its way then has lost the race. The host ignores it, and the `Plan` the
-guest sends after it (`came_too_late`), and the guest, when the `Resolve` comes, plays the turn
-out with the plan the host had, as every machine does.
+drops that side's plan and waits for its next `Plan`. The host takes its own back locally. Either
+way the host tells the guests who is still ready (`Ready`). An order given while waiting takes
+the turn back the same way (`take_back_on_new_orders`): while a side waits, the methods that
+change its plan refuse only while a turn plays out (`is_playing_out`), and whenever this
+side's plan (`team_plan`) no longer matches the one it sent, the turn is taken back. That's
+checked every frame (`update`) and before any arriving message is handled (`receive`), so a
+`Resolve`, or on the host the last guest's `Plan`, never finds a changed plan still counted
+as sent. Looking around changes no plan, so it takes nothing back. The host alone decides the
+order of events: once it has every plan it resolves at once, so a `Withdraw` still on its way
+then has lost the race. The host ignores it, and the `Plan` the guest sends after it
+(`came_too_late`), and the guest, when the `Resolve` comes, plays the turn out with the plan
+the host had, as every machine does, its changed orders replaced by the turn as sent. If the
+host's own order comes just as the last guest's plan does, the order is handled first: the
+host's turn is taken back and the turn waits for its new plan.
 
 ## Transport
 
@@ -136,8 +152,9 @@ can watch or change what's sent. What's in place:
 - **Seats are the host's to give.** A guest's messages are tied to its seat: a plan for any other
   side drops it. A guest checks the host's `Welcome` (the host first among the human sides, its
   own seat among them, every one a side and never the animals' wild, a world with a side for each
-  and no more animals than the setting allows) and every `SeatLeft` (only another guest,
-  and only once).
+  and no more animals than the setting allows), every `SeatLeft` (only another guest,
+  and only once) and every `Ready` (only for the turn being planned, and only human sides, each
+  once; it only changes what the End Turn button and top bar say).
 - **Nothing arriving is trusted.** A frame over 1 MiB drops the peer before it's read, and so does
   a message that doesn't open or doesn't decode. The incoming queue is bounded. Every message is
   checked before it touches the game (`GameState::receive`): only the messages its role

@@ -86,7 +86,10 @@ pub(super) fn moves_before_attacking(unit_type: UnitType) -> bool {
 
 impl GameState {
     /// Whether the turn is out of the player's hands: resolving, or (in a
-    /// networked game) waiting for the other player's plan. Input waits.
+    /// networked game) waiting for the others' plans. Ending the turn waits
+    /// (`end_planning`); orders wait only while a turn plays out
+    /// (`is_playing_out`), since one given while the others' plans are
+    /// awaited takes the turn back (`take_back_on_new_orders`).
     pub fn is_resolving(&self) -> bool {
         !self.pending_steps.is_empty() || self.waiting_for_peers()
     }
@@ -127,6 +130,7 @@ impl GameState {
     /// Advances turn playback by `dt` seconds, playing the next step once
     /// `STEP_INTERVAL` has passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) {
+        self.take_back_on_new_orders();
         self.explore();
         self.camera.update(dt);
         self.age_effects(dt);

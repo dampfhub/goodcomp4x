@@ -10,7 +10,7 @@ pub(in crate::game) const MIN_CITY_DISTANCE: i32 = 6;
 
 impl GameState {
     pub fn found_city_selected(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(index) = self.selected else {

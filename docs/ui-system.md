@@ -227,8 +227,8 @@ Availability is decided only there, where the button is built (a unit's orders
 in `unit_action_unavailable`, a group's when no member can take one), so a
 button and its tooltip can't disagree; the tooltip adds only a caution on a
 button that's on (what the stockpile is short of for a build, which then waits).
-A plan sent in a network game makes a plan-changing button's reason
-`PLAN_SENT` (`freeze_plan`). A
+A plan sent in a network game leaves every button as it was: one that changes
+the plan takes the turn back (`docs/multiplayer.md`). A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
 `Layout::dock_panel(panel, Zone::BottomLeft)` places the measured panel and
 registers its render and hit-test geometry together. Available zones are

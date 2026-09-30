@@ -835,7 +835,6 @@ impl GameState {
                 dragging: drag.is_some_and(|drag| drag.source == index),
                 drop_target: drag
                     .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-                locked: false,
             }));
         }
         panel.scroll_list(QueueKind::Workers, list, city.worker_scroll);
