@@ -258,6 +258,24 @@ impl Command {
             .collect::<Vec<_>>()
             .join("+")
     }
+
+    /// `key` with the key spelled out in full where the UI shortens it
+    /// (DELETE for DEL, ESCAPE for ESC), for a sentence.
+    pub fn key_in_full(self) -> String {
+        match self.chord() {
+            Some(Chord {
+                key: Key::Delete,
+                ctrl: false,
+                shift: false,
+            }) => "DELETE".into(),
+            Some(Chord {
+                key: Key::Escape,
+                ctrl: false,
+                shift: false,
+            }) => "ESCAPE".into(),
+            _ => self.key(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -315,8 +333,9 @@ mod tests {
         assert_eq!(Command::ResetLayout.key(), "CTRL+SHIFT+R");
         assert_eq!(Command::ResetLayout.key_in_words(), "Ctrl+Shift+R");
         assert_eq!(Command::Playback.key_in_words(), "F8");
-        assert_eq!(Command::ResetLayout.key_in_words(), "Ctrl+Shift+R");
-        assert_eq!(Command::Playback.key_in_words(), "F8");
+        assert_eq!(Command::Disband.key_in_full(), "DELETE");
+        assert_eq!(Command::Back.key_in_full(), "ESCAPE");
+        assert_eq!(Command::Move.key_in_full(), "M");
         assert_eq!(Command::Disband.key(), "DEL");
         // The Naval scenario has no key.
         assert_eq!(Command::Scenario(Scenario::Naval).key(), "");

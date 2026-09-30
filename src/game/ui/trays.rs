@@ -15,7 +15,9 @@ use crate::game::city::{
     GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, SUPPLY_FULL_HINT, Stock, UNITS_PER_DEPOSIT,
     WORKERS_PER_MANAGER, manager_label, resource_icon, stock_icons, turns_icon,
 };
+use crate::game::keys::Command;
 use crate::game::orders::ClickMode;
+use crate::game::strings::text;
 use crate::game::terrain::Resource;
 use crate::game::workers::JobKind;
 
@@ -133,10 +135,11 @@ impl GameState {
         let defense = stats.defense * terrain.defense_multiplier();
         let role = self.unit_role(unit);
 
+        let side = format!("{:?}", unit.team).to_uppercase();
         panel.text(
             TITLE,
             vec![(
-                format!("{:?} {role}", unit.team).to_uppercase(),
+                text!("unit_title", side = side, unit = role),
                 unit.team.color(),
             )],
         );
@@ -149,17 +152,17 @@ impl GameState {
             BODY,
             stat_spans(&[
                 (
-                    "HP",
+                    text!("unit_stat_hp"),
                     format!("{:.0}/{:.0}", unit.hp.ceil(), unit.max_hp()),
                     hp_color,
                 ),
                 (
-                    "ATTACK",
+                    text!("unit_stat_attack"),
                     format!("{:.0}", stats.attack),
                     compare(stats.attack, base.attack),
                 ),
                 (
-                    "DEFENSE",
+                    text!("unit_stat_defense"),
                     format!("{defense:.0}"),
                     compare(defense, base.defense),
                 ),
@@ -169,10 +172,10 @@ impl GameState {
             panel.text(
                 SMALL,
                 vec![(
-                    format!(
-                        "INTERIOR HP {:.0}/{:.0}",
-                        unit.interior_hp.ceil(),
-                        unit.max_hp()
+                    text!(
+                        "unit_interior_hp",
+                        hp = format!("{:.0}", unit.interior_hp.ceil()),
+                        max = format!("{:.0}", unit.max_hp()),
                     ),
                     REDUCED_TEXT,
                 )],
@@ -180,23 +183,26 @@ impl GameState {
         }
         let (ability_name, _) = ability_text(unit);
         let (ability_status, ability_color) = if unit.ability_queued {
-            ("QUEUED".to_string(), GOLD_TEXT)
+            (text!("unit_ability_queued").to_string(), GOLD_TEXT)
         } else if unit.ability_cooldown > 0 {
             (
-                format!("IN {}", turns_text(unit.ability_cooldown)),
+                text!(
+                    "unit_ability_ready_in",
+                    turns = turns_text(unit.ability_cooldown)
+                ),
                 DIM_TEXT,
             )
         } else {
-            ("READY".to_string(), TEXT)
+            (text!("unit_ability_ready").to_string(), TEXT)
         };
         let mut second = stat_spans(&[
             (
-                "RANGE",
+                text!("unit_stat_range"),
                 stats.attack_range.to_string(),
                 compare(stats.attack_range as f32, base.attack_range as f32),
             ),
             (
-                "MOVE",
+                text!("unit_stat_move"),
                 stats.move_range.to_string(),
                 compare(stats.move_range as f32, base.move_range as f32),
             ),
@@ -210,65 +216,62 @@ impl GameState {
         let mut notes = Vec::new();
         if terrain.defense_multiplier() != 1.0 {
             let bonus = (terrain.defense_multiplier() - 1.0) * 100.0;
-            notes.push(format!("+{bonus:.0}% DEFENSE FROM TERRAIN"));
+            notes.push(text!("unit_terrain_defense", bonus = format!("{bonus:.0}")));
         }
         if unit.deployed {
-            notes.push("DEPLOYED".to_string());
+            notes.push(text!("unit_deployed").to_string());
         }
         // Instructions, and what a landing craft carries, are the player's
         // own units' alone.
         if self.is_player_controlled(idx) {
             if unit.unit_type == crate::game::unit::UnitType::LandingCraft {
-                notes.push(format!(
-                    "CARGO {}/4 - CLICK ADJACENT LAND TO UNLOAD",
-                    unit.cargo.len()
-                ));
+                notes.push(text!("unit_cargo", cargo = unit.cargo.len()));
             } else if !unit.is_naval() {
-                notes.push("CLICK AN ADJACENT LANDING CRAFT TO BOARD".to_string());
+                notes.push(text!("unit_board").to_string());
             }
         }
         if unit.lookout {
-            notes.push(format!(
-                "LOOKOUT: +{} SIGHT",
-                crate::game::fog::LOOKOUT_SIGHT
+            notes.push(text!(
+                "unit_lookout",
+                sight = crate::game::fog::LOOKOUT_SIGHT
             ));
         }
         match unit.training_upgrade {
             Some(crate::game::terrain::Resource::Iron) => {
-                notes.push("FORGED ARMOR: +20% HP, +15% DEFENSE".to_string());
+                notes.push(text!("unit_forged_armor").to_string());
             }
             Some(crate::game::terrain::Resource::Horses) => {
-                notes.push("STABLE TRAINING: +1 MOVE".to_string());
+                notes.push(text!("unit_stable_training").to_string());
             }
             None => {}
         }
         if self.rival_of(idx).is_some() {
-            notes.push("CONTESTED".to_string());
+            notes.push(text!("unit_contested").to_string());
         }
         if self.is_player_controlled(idx) {
             let mut orders = Vec::new();
             if unit.planned_move.is_some() {
-                orders.push("MOVE");
+                orders.push(text!("unit_move"));
             }
             if unit.planned_attack.is_some() {
-                orders.push("ATTACK");
+                orders.push(text!("unit_attack"));
             }
             if unit.holding {
-                orders.push("HOLD");
+                orders.push(text!("unit_hold"));
             }
             if unit.guarding {
-                orders.push("GUARD");
+                orders.push(text!("unit_guard"));
             }
             if unit.alert {
-                orders.push("ALERT");
+                orders.push(text!("unit_alert"));
             }
             if !orders.is_empty() {
-                notes.push(format!("ORDERS: {}", orders.join(", ")));
+                notes.push(text!("unit_orders", orders = orders.join(", ")));
             }
             if unit.has_queue() {
-                notes.push(format!(
-                    "QUEUED FOR {} - ANY OTHER ORDER CANCELS",
-                    turns_text(unit.plan_len() as u32)
+                notes.push(text!(
+                    "unit_queued_for",
+                    turns = turns_text(unit.plan_len() as u32)
                 ));
             }
         }
@@ -282,23 +285,27 @@ impl GameState {
     /// its members can (`group_action_unavailable`).
     pub(super) fn unit_action_unavailable(&self, action: UnitAction, idx: usize) -> Option<String> {
         let unit = &self.units[idx];
-        let locked =
-            (self.rival_of(idx).is_some()).then(|| "LOCKED IN A CONTESTED HEX".to_string());
+        let locked = (self.rival_of(idx).is_some()).then(|| text!("unit_locked").to_string());
         let cannot_move =
-            (unit.stats().move_range == 0).then(|| "CANNOT MOVE THIS TURN".to_string());
+            (unit.stats().move_range == 0).then(|| text!("unit_cannot_move").to_string());
         match action {
             UnitAction::Move => cannot_move,
-            UnitAction::Attack => locked
-                .or_else(|| (!unit.can_attack()).then(|| "BUSY WITH ITS ABILITY THIS TURN".into())),
+            UnitAction::Attack => locked.or_else(|| {
+                (!unit.can_attack()).then(|| text!("unit_busy_with_ability").to_string())
+            }),
             UnitAction::Swap => locked.or(cannot_move),
-            UnitAction::Ability => (unit.ability_cooldown > 0)
-                .then(|| format!("READY IN {}", turns_text(unit.ability_cooldown))),
+            UnitAction::Ability => (unit.ability_cooldown > 0).then(|| {
+                text!(
+                    "unit_ability_cooling_down",
+                    turns = turns_text(unit.ability_cooldown)
+                )
+            }),
             UnitAction::Alert if unit.alert || self.can_go_on_alert(idx) => None,
             UnitAction::Alert if unit.unit_type == crate::game::unit::UnitType::Siege => {
-                Some("SET IT UP FIRST".into())
+                Some(text!("unit_alert_set_up_first").into())
             }
-            UnitAction::Alert => Some("ONLY TROOPS THAT FIGHT ON LAND".into()),
-            UnitAction::ClearOrders => (!unit.has_orders()).then(|| "NO ORDERS TO CLEAR".into()),
+            UnitAction::Alert => Some(text!("unit_alert_land_troops_only").into()),
+            UnitAction::ClearOrders => (!unit.has_orders()).then(|| text!("unit_no_orders").into()),
             UnitAction::Hold | UnitAction::Guard | UnitAction::Settle | UnitAction::Disband => None,
         }
     }
@@ -322,8 +329,15 @@ impl GameState {
         Some(if same {
             first
         } else {
-            "NONE OF THEM CAN NOW".into()
+            text!("group_none_can").into()
         })
+    }
+
+    /// A unit order's button, labelled `label` and hinting `hint` (its key,
+    /// or its click). Orders are icons, in both presentations: no label
+    /// shows, so no hover text either.
+    fn order_button(action: UnitAction, label: &str, hint: String) -> ButtonSpec {
+        ButtonSpec::unit(action, label, &hint)
     }
 
     /// The selected unit's order buttons: what it can do depends on whether
@@ -333,43 +347,91 @@ impl GameState {
         let swapping = self.swap_partner(idx).is_some();
         let settler = self.settlers.contains(&unit.id);
         let armed = |mode| self.selected == Some(idx) && self.ui_click_mode == Some(mode);
-        let order = |action, label: &str, hint: &str| {
-            ButtonSpec::unit(action, label, hint)
+        let order = |action, label: &str, hint: String| {
+            Self::order_button(action, label, hint)
                 .unavailable(self.unit_action_unavailable(action, idx))
         };
 
         let mut buttons = vec![
-            order(UnitAction::Move, "MOVE", "M")
-                .queued(unit.planned_move.is_some() && !swapping)
-                .armed(armed(ClickMode::Move)),
-            order(UnitAction::Attack, "ATTACK", "X · RMB")
-                .queued(unit.planned_attack.is_some())
-                .armed(armed(ClickMode::Attack)),
-            order(UnitAction::Swap, "SWAP", "CTRL")
-                .queued(swapping)
-                .armed(armed(ClickMode::Swap)),
+            order(
+                UnitAction::Move,
+                order_label(UnitAction::Move),
+                Command::Move.key(),
+            )
+            .queued(unit.planned_move.is_some() && !swapping)
+            .armed(armed(ClickMode::Move)),
+            order(
+                UnitAction::Attack,
+                order_label(UnitAction::Attack),
+                text!("unit_attack_hint", key = Command::Attack.key()),
+            )
+            .queued(unit.planned_attack.is_some())
+            .armed(armed(ClickMode::Attack)),
+            order(
+                UnitAction::Swap,
+                order_label(UnitAction::Swap),
+                text!("unit_swap_hint").into(),
+            )
+            .queued(swapping)
+            .armed(armed(ClickMode::Swap)),
         ];
         if settler {
-            buttons.push(order(UnitAction::Settle, "FOUND CITY", "F"));
+            buttons.push(order(
+                UnitAction::Settle,
+                order_label(UnitAction::Settle),
+                Command::FoundCity.key(),
+            ));
         } else {
             let (name, _) = ability_text(unit);
             let label = match unit.ability_cooldown {
                 0 => name.to_string(),
                 turns => format!("{name} ({turns})"),
             };
-            buttons.push(order(UnitAction::Ability, &label, "Q").queued(unit.ability_queued));
+            buttons.push(
+                order(UnitAction::Ability, &label, Command::Ability.key())
+                    .queued(unit.ability_queued),
+            );
         }
-        buttons.push(order(UnitAction::Hold, "HOLD", "SPACE").queued(unit.holding));
-        buttons.push(order(UnitAction::Guard, "GUARD", "G").queued(unit.guarding));
+        buttons.push(
+            order(
+                UnitAction::Hold,
+                order_label(UnitAction::Hold),
+                Command::HoldOrEndTurn.key(),
+            )
+            .queued(unit.holding),
+        );
+        buttons.push(
+            order(
+                UnitAction::Guard,
+                order_label(UnitAction::Guard),
+                Command::Guard.key(),
+            )
+            .queued(unit.guarding),
+        );
         // Only for troops that could ever go on alert; a siege not set up
         // shows it unavailable.
         if !settler && unit.unit_type.takes_alert() {
-            buttons.push(order(UnitAction::Alert, "ALERT", "E").queued(unit.alert));
+            buttons.push(
+                order(
+                    UnitAction::Alert,
+                    order_label(UnitAction::Alert),
+                    Command::Alert.key(),
+                )
+                .queued(unit.alert),
+            );
         }
-        buttons.push(order(UnitAction::ClearOrders, "CLEAR ORDERS", "CTRL-RMB"));
+        buttons.push(order(
+            UnitAction::ClearOrders,
+            order_label(UnitAction::ClearOrders),
+            text!("unit_clear_orders_hint").into(),
+        ));
         let confirming = self.disband_armed == Some(unit.id);
-        let disband = if confirming { "CONFIRM?" } else { "DISBAND" };
-        buttons.push(order(UnitAction::Disband, disband, "DEL").armed(confirming));
+        let disband = if confirming {
+            text!("unit_disband_confirm")
+        } else {
+            order_label(UnitAction::Disband)
+        };
+        buttons.push(order(UnitAction::Disband, disband, Command::Disband.key()).armed(confirming));
         buttons
     }
 
@@ -393,19 +455,19 @@ impl GameState {
         }
         let summary: Vec<String> = kinds
             .into_iter()
-            .map(|(kind, count)| format!("{count} {kind}"))
+            .map(|(kind, count)| text!("group_member_count", count = count, unit = kind))
             .collect();
 
         panel.text(
             TITLE,
-            vec![(format!("{} UNITS SELECTED", group.len()), TEXT)],
+            vec![(text!("group_title", count = group.len()), TEXT)],
         );
         panel.text(BODY, vec![(summary.join(", "), DIM_TEXT)]);
         for help in [
-            "CLICK A HEX: EACH MOVES AS CLOSE TO IT AS IT CAN",
-            "RIGHT-CLICK A HEX: EVERY UNIT IN RANGE ATTACKS IT",
-            "SHIFT: QUEUE THE MOVE OR ATTACK FOR LATER TURNS FOR ALL",
-            "CLICK ONE UNIT TO SELECT JUST IT · SHIFT-CLICK ADDS · CTRL-CLICK REMOVES",
+            text!("group_help_move"),
+            text!("group_help_attack"),
+            text!("group_help_queue"),
+            text!("group_help_select"),
         ] {
             panel.text(SMALL, vec![(help.into(), LABEL_TEXT)]);
         }
@@ -419,17 +481,45 @@ impl GameState {
             .collect();
         let all_alert = !alert_able.is_empty() && alert_able.iter().all(|&i| self.units[i].alert);
         // Each order is off only when no member can take it.
-        let order = |action, label: &str, hint: &str| {
-            ButtonSpec::unit(action, label, hint)
+        let order = |action, label: &str, hint: String| {
+            Self::order_button(action, label, hint)
                 .unavailable(self.group_action_unavailable(action, group))
         };
         panel.action_toolbar(vec![
-            order(UnitAction::Move, "MOVE", "M").armed(armed(ClickMode::Move)),
-            order(UnitAction::Attack, "ATTACK", "X · RMB").armed(armed(ClickMode::Attack)),
-            order(UnitAction::Hold, "HOLD", "SPACE"),
-            order(UnitAction::Guard, "GUARD", "G").queued(all_guarding),
-            order(UnitAction::Alert, "ALERT", "E").queued(all_alert),
-            order(UnitAction::ClearOrders, "CLEAR ORDERS", "CTRL-RMB"),
+            order(
+                UnitAction::Move,
+                order_label(UnitAction::Move),
+                Command::Move.key(),
+            )
+            .armed(armed(ClickMode::Move)),
+            order(
+                UnitAction::Attack,
+                order_label(UnitAction::Attack),
+                text!("unit_attack_hint", key = Command::Attack.key()),
+            )
+            .armed(armed(ClickMode::Attack)),
+            order(
+                UnitAction::Hold,
+                order_label(UnitAction::Hold),
+                Command::HoldOrEndTurn.key(),
+            ),
+            order(
+                UnitAction::Guard,
+                order_label(UnitAction::Guard),
+                Command::Guard.key(),
+            )
+            .queued(all_guarding),
+            order(
+                UnitAction::Alert,
+                order_label(UnitAction::Alert),
+                Command::Alert.key(),
+            )
+            .queued(all_alert),
+            order(
+                UnitAction::ClearOrders,
+                order_label(UnitAction::ClearOrders),
+                text!("unit_clear_orders_hint").into(),
+            ),
         ]);
     }
 
@@ -982,5 +1072,23 @@ impl GameState {
                 .collect(),
         );
         panel.buttons(vec![ButtonSpec::new(Target::OpenCity, "OPEN CITY", "")]);
+    }
+}
+
+/// A unit order's button label, from the order's entry
+/// (`text/units.ini`). The ability's label is its name (`ability_text`),
+/// not an order's: it has none here.
+pub(super) fn order_label(action: UnitAction) -> &'static str {
+    match action {
+        UnitAction::Move => text!("unit_move"),
+        UnitAction::Attack => text!("unit_attack"),
+        UnitAction::Swap => text!("unit_swap"),
+        UnitAction::Settle => text!("unit_found_city"),
+        UnitAction::Hold => text!("unit_hold"),
+        UnitAction::Guard => text!("unit_guard"),
+        UnitAction::Alert => text!("unit_alert"),
+        UnitAction::ClearOrders => text!("unit_clear_orders"),
+        UnitAction::Disband => text!("unit_disband"),
+        UnitAction::Ability => "",
     }
 }

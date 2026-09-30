@@ -5,6 +5,7 @@ use super::builder::PanelBuilder;
 use super::paint::draw_shape;
 use super::queue::{queue_place, wait_text};
 use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
+use super::trays::order_label;
 use super::{
     BODY, BORDER, Button, DIM_TEXT, FOOD_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
     METAL_TEXT, QueueKind, REDUCED_TEXT, SMALL, TEXT, TILE_TOOLTIP_OFFSET, TOOLTIP_GAP,
@@ -511,7 +512,7 @@ impl GameState {
                         return Vec::new();
                     };
                     let (title, shortcut, description) = self.unit_action_text(action, idx);
-                    (title, shortcut.into(), description, None)
+                    (title, shortcut, description, None)
                 }
                 Target::Build(build) => (
                     build.name().into(),
@@ -913,57 +914,58 @@ impl GameState {
     }
 
     /// A unit order's title, shortcut and description, for unit `idx`.
-    fn unit_action_text(&self, action: UnitAction, idx: usize) -> (String, &'static str, String) {
+    fn unit_action_text(&self, action: UnitAction, idx: usize) -> (String, String, String) {
         let unit = &self.units[idx];
+        let title = order_label(action).to_string();
         match action {
             UnitAction::Move => (
-                "MOVE".into(),
-                "M OR CLICK",
-                "CLICK A GREEN HEX. SHIFT-CLICK QUEUES LATER TURNS.".into(),
+                title,
+                text!("unit_move_keys", key = Command::Move.key()),
+                tooltip!("unit_move").into(),
             ),
             UnitAction::Attack => (
-                "ATTACK".into(),
-                "X OR RIGHT-CLICK",
-                "CLICK A HEX IN RANGE OF WHERE IT ENDS ITS MOVE.".into(),
+                title,
+                text!("unit_attack_keys", key = Command::Attack.key()),
+                tooltip!("unit_attack").into(),
             ),
             UnitAction::Swap => (
-                "SWAP".into(),
-                "CTRL-CLICK",
-                "CLICK AN ADJACENT ALLY.".into(),
+                title,
+                text!("unit_swap_keys").into(),
+                tooltip!("unit_swap").into(),
             ),
             UnitAction::Ability => {
-                let (name, description) = ability_text(unit);
+                let (name, does) = ability_text(unit);
                 let description = match unit.ability().cooldown() {
-                    0 => format!("{description}."),
-                    turns => format!("{description}. COOLDOWN {}", turns_text(turns)),
+                    0 => text!("unit_ability_tip", does = does),
+                    turns => text!(
+                        "unit_ability_tip_cooldown",
+                        does = does,
+                        turns = turns_text(turns)
+                    ),
                 };
-                (name.into(), "Q", description)
+                (name.into(), Command::Ability.key(), description)
             }
-            UnitAction::Hold => ("HOLD".into(), "SPACE", "SKIP IT THIS TURN.".into()),
-            UnitAction::Guard => (
-                "GUARD".into(),
-                "G",
-                "SKIP IT UNTIL IT'S GIVEN AN ORDER.".into(),
+            UnitAction::Hold => (
+                title,
+                Command::HoldOrEndTurn.key(),
+                tooltip!("unit_hold").into(),
             ),
-            UnitAction::Alert => (
-                "ALERT".into(),
-                "E",
-                "STAYS PUT AND ATTACKS THE NEAREST ENEMY IN RANGE EACH TURN, UNTIL IT'S GIVEN \
-                 AN ORDER."
-                    .into(),
+            UnitAction::Guard => (title, Command::Guard.key(), tooltip!("unit_guard").into()),
+            UnitAction::Alert => (title, Command::Alert.key(), tooltip!("unit_alert").into()),
+            UnitAction::Disband => (
+                title,
+                Command::Disband.key(),
+                tooltip!("unit_disband").into(),
             ),
-            UnitAction::Disband => ("DISBAND".into(), "DEL", "REMOVES IT FOR GOOD.".into()),
             UnitAction::Settle => (
-                "FOUND CITY".into(),
-                "F",
-                format!(
-                    "HERE: OPEN LAND, NOT RUINS, {MIN_CITY_DISTANCE} OR MORE HEXES FROM ANY CITY."
-                ),
+                title,
+                Command::FoundCity.key(),
+                tooltip!("unit_found_city", distance = MIN_CITY_DISTANCE),
             ),
             UnitAction::ClearOrders => (
-                "CLEAR ORDERS".into(),
-                "CTRL-RIGHT-CLICK",
-                "DROPS ALL ITS ORDERS AND QUEUED TURNS.".into(),
+                title,
+                text!("unit_clear_orders_keys").into(),
+                tooltip!("unit_clear_orders").into(),
             ),
         }
     }

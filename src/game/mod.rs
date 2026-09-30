@@ -57,6 +57,7 @@ pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
 pub use sprites::atlas as sprite_atlas;
+use strings::text;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{
@@ -574,20 +575,20 @@ impl GameState {
     /// ordinary unit type.
     fn unit_role(&self, unit: &Unit) -> &'static str {
         if self.settlers.contains(&unit.id) {
-            "SETTLER"
+            text!("unit_settler")
         } else {
             match unit.unit_type {
-                UnitType::Melee => "MELEE",
-                UnitType::Ranged => "RANGED",
-                UnitType::Cavalry => "CAVALRY",
-                UnitType::Siege => "SIEGE",
-                UnitType::Scout => "SCOUT",
-                UnitType::Armored => "ARMORED",
-                UnitType::PatrolGalley => "PATROL GALLEY",
-                UnitType::LandingCraft => "LANDING CRAFT",
-                UnitType::BombardShip => "BOMBARD SHIP",
-                UnitType::Wolf => "WOLF PACK",
-                UnitType::Bear => "BEAR",
+                UnitType::Melee => text!("unit_melee"),
+                UnitType::Ranged => text!("unit_ranged"),
+                UnitType::Cavalry => text!("unit_cavalry"),
+                UnitType::Siege => text!("unit_siege"),
+                UnitType::Scout => text!("unit_scout"),
+                UnitType::Armored => text!("unit_armored"),
+                UnitType::PatrolGalley => text!("unit_patrol_galley"),
+                UnitType::LandingCraft => text!("unit_landing_craft"),
+                UnitType::BombardShip => text!("unit_bombard_ship"),
+                UnitType::Wolf => text!("unit_wolf_pack"),
+                UnitType::Bear => text!("unit_bear"),
             }
         }
     }

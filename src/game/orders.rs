@@ -5,13 +5,18 @@ use glam::Vec2;
 use super::GameState;
 use super::fog::Fog;
 use super::hex::Hex;
+use super::keys::Command;
+use super::strings::text;
 
 /// Why a land troop that isn't ranged or siege can't attack a water hex.
-pub(super) const SHIPS_NOTICE: &str = "ONLY RANGED AND SIEGE LAND TROOPS CAN ATTACK SHIPS";
+pub(super) fn ships_notice() -> &'static str {
+    text!("order_ships_who")
+}
 
 /// Why a unit can't go on alert.
-pub(super) const ALERT_NOTICE: &str =
-    "ONLY MELEE, CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT";
+pub(super) fn alert_notice() -> &'static str {
+    text!("order_alert_who")
+}
 
 /// A click that would replace the selection's multi-turn queue, remembered
 /// until it's repeated: which hex, whether it was an attack, for which
@@ -50,17 +55,17 @@ pub enum ClickMode {
 impl GameState {
     /// M or the Move button: the next map click only moves.
     pub fn choose_move_action(&mut self) {
-        self.toggle_ui_click_mode(ClickMode::Move, "MOVE: CLICK A GREEN HEX");
+        self.toggle_ui_click_mode(ClickMode::Move, text!("order_move_armed"));
     }
 
     /// X or the Attack button: the next map click attacks that hex.
     pub fn choose_attack_action(&mut self) {
-        self.toggle_ui_click_mode(ClickMode::Attack, "ATTACK: CLICK A TARGET HEX");
+        self.toggle_ui_click_mode(ClickMode::Attack, text!("order_attack_armed"));
     }
 
     /// The Swap button: the next map click swaps with that adjacent ally.
     pub fn choose_swap_action(&mut self) {
-        self.toggle_ui_click_mode(ClickMode::Swap, "SWAP: CLICK AN ADJACENT ALLY");
+        self.toggle_ui_click_mode(ClickMode::Swap, text!("order_swap_armed"));
     }
 
     /// Arms `mode` for the next map click, or disarms it if it's already armed.
@@ -250,8 +255,8 @@ impl GameState {
     /// repeated to replace a queue, while one is, or else the latest notice.
     pub(super) fn shown_notice(&self) -> &str {
         match self.queue_replace_hex() {
-            Some(_) if self.group.is_empty() => "CLICK AGAIN TO REPLACE ITS QUEUE",
-            Some(_) => "CLICK AGAIN TO REPLACE THEIR QUEUES",
+            Some(_) if self.group.is_empty() => text!("order_replace_queue"),
+            Some(_) => text!("order_replace_queues"),
             None => &self.notice,
         }
     }
@@ -314,7 +319,7 @@ impl GameState {
             && self.units[idx].holding
         {
             self.units[idx].holding = false;
-            self.notice = "NO LONGER HOLDING - GIVE IT ORDERS".into();
+            self.notice = text!("order_hold_ended").into();
             return;
         }
         if let Some(idx) = self.selected {
@@ -365,7 +370,7 @@ impl GameState {
             return;
         }
         if !self.can_go_on_alert(idx) {
-            self.notice = ALERT_NOTICE.into();
+            self.notice = alert_notice().into();
             return;
         }
         self.go_on_alert(idx);
@@ -405,14 +410,11 @@ impl GameState {
         let id = self.units[idx].id;
         if self.disband_armed != Some(id) {
             self.disband_armed = Some(id);
+            let key = Command::Disband.key_in_full();
             self.notice = match self.units[idx].cargo.len() {
-                0 => "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS UNIT".into(),
-                1 => {
-                    "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS PASSENGER".into()
-                }
-                n => format!(
-                    "PRESS DISBAND (OR DELETE) AGAIN TO REMOVE THIS CRAFT AND ITS {n} PASSENGERS"
-                ),
+                0 => text!("order_disband_ask", key = key),
+                1 => text!("order_disband_ask_passenger", key = key),
+                n => text!("order_disband_ask_passengers", key = key, passengers = n),
             };
             return;
         }
@@ -427,7 +429,7 @@ impl GameState {
             log::info!("{passenger} disbanded with its landing craft");
         }
         log::info!("{unit} disbanded");
-        self.notice = format!("{} DISBANDED", self.unit_role(&unit));
+        self.notice = text!("order_disbanded", unit = self.unit_role(&unit));
         // Indices after it shifted down, so nothing else stays selected.
         self.selected = None;
         self.group.clear();
@@ -630,7 +632,7 @@ impl GameState {
     /// its hex plans a move.
     pub(super) fn queue_order_at(&mut self, idx: usize, hex: Hex) {
         if self.known_enemy_target_at(hex, self.units[idx].team, &self.fog()) {
-            self.notice = "RIGHT-CLICK TO ATTACK".into();
+            self.notice = text!("order_right_click_to_attack").into();
         } else {
             self.try_queue_move(idx, hex);
         }
@@ -727,12 +729,12 @@ impl GameState {
             && self.grid.terrain(target).is_water()
             && !self.units[idx].attacks_water()
         {
-            self.notice = SHIPS_NOTICE.into();
+            self.notice = ships_notice().into();
             return;
         }
         let fog = self.fog();
         if self.known_empty_city_target(target, self.units[idx].team, &fog) {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = text!("order_city_center").into();
             return;
         }
         if !self.known_attack_target_legal(idx, target, false, &fog) {
@@ -763,7 +765,7 @@ impl GameState {
             .filter(|u| u.id != troop_id && u.planned_board == Some(craft_id))
             .count();
         if self.units[craft].cargo.len() + reserved >= 4 {
-            self.notice = "LANDING CRAFT FULL (4 TROOPS)".into();
+            self.notice = text!("order_landing_craft_full").into();
             return;
         }
         self.cancel_swap(idx);
@@ -773,7 +775,7 @@ impl GameState {
         unit.planned_attack = None;
         unit.cancel_queue();
         unit.planned_board = Some(craft_id);
-        self.notice = "BOARDING LANDING CRAFT AFTER COMBAT".into();
+        self.notice = text!("order_boarding").into();
     }
 
     /// Plans landing craft `craft` landing its first passenger on the
@@ -794,7 +796,7 @@ impl GameState {
         unit.planned_attack = None;
         unit.cancel_queue();
         unit.planned_unload = Some(hex);
-        self.notice = "LANDING FIRST PASSENGER AFTER COMBAT".into();
+        self.notice = text!("order_landing").into();
     }
 
     /// Toggles a swap between `idx` and the adjacent ally `ally`: each moves
@@ -1093,7 +1095,7 @@ mod tests {
             let mut g = alert_field(unit_type);
             g.toggle_alert();
             assert!(!g.units[0].alert, "{unit_type:?}");
-            assert_eq!(g.notice, ALERT_NOTICE);
+            assert_eq!(g.notice, alert_notice());
         }
         // A settler (a melee body) can't.
         let mut g = alert_field(UnitType::Melee);

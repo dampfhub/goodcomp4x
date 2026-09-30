@@ -117,7 +117,7 @@ impl GameState {
         if let Some(&first) = self.group.first()
             && self.known_empty_city_target(target, self.units[first].team, &fog)
         {
-            self.notice = "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR".into();
+            self.notice = super::strings::text!("order_city_center").into();
             return;
         }
         for &i in &self.group {
@@ -237,7 +237,7 @@ impl GameState {
             .filter(|&i| self.units[i].alert || self.can_go_on_alert(i))
             .collect();
         if able.is_empty() {
-            self.notice = super::orders::ALERT_NOTICE.into();
+            self.notice = super::orders::alert_notice().into();
             return;
         }
         let all_alert = able.iter().all(|&i| self.units[i].alert);

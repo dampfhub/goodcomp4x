@@ -6,7 +6,7 @@ use super::{
 };
 use crate::game::ability::Ability;
 use crate::game::city::{Stock, resource_icon, stock_icons, turns_icon};
-use crate::game::strings::text;
+use crate::game::strings::{text, tooltip};
 use crate::game::unit::Unit;
 
 /// A price in short form for a build card's hint: each resource's icon and
@@ -187,11 +187,14 @@ pub(super) fn wrap(text: &str, max_chars: usize) -> Vec<String> {
 /// The ability's name and a short description of what it does.
 pub(super) fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
     match unit.ability() {
-        Ability::ShieldWall => ("SHIELD WALL", "+50% DEFENSE THIS TURN, NO MOVING"),
-        Ability::Volley => ("VOLLEY", "ALSO HITS ENEMIES NEXT TO THE TARGET, ALL AT 60%"),
-        Ability::Charge => ("CHARGE", "+1 MOVE AND +50% ATTACK THIS TURN"),
-        Ability::Deploy if unit.deployed => ("PACK UP", "A TURN PACKING UP, THEN IT CAN MOVE"),
-        Ability::Deploy => ("DEPLOY", "A TURN SETTING UP, THEN +1 RANGE BUT NO MOVING"),
-        Ability::Lookout => ("LOOKOUT", "NO MOVING THIS TURN, +2 SIGHT NEXT TURN"),
+        Ability::ShieldWall => (
+            text!("ability_shield_wall"),
+            tooltip!("ability_shield_wall"),
+        ),
+        Ability::Volley => (text!("ability_volley"), tooltip!("ability_volley")),
+        Ability::Charge => (text!("ability_charge"), tooltip!("ability_charge")),
+        Ability::Deploy if unit.deployed => (text!("ability_pack_up"), tooltip!("ability_pack_up")),
+        Ability::Deploy => (text!("ability_deploy"), tooltip!("ability_deploy")),
+        Ability::Lookout => (text!("ability_lookout"), tooltip!("ability_lookout")),
     }
 }
