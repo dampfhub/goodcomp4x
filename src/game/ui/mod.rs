@@ -135,15 +135,15 @@ const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
 /// A build card the stockpile can't pay for yet (`ButtonSpec::short`): a
-/// red rim, a dark red ground and its price in `SHORT_PRICE`, still bright
+/// muted red rim, a faintly red ground and its price in `SHORT_PRICE`, bright
 /// enough to read and press, unlike a disabled card's grey.
-const SHORT_BORDER_COLOR: Color = [0.85, 0.18, 0.12, 1.0];
-const SHORT_BG: Color = [0.06, 0.012, 0.01, 0.95];
-const SHORT_HOVER_BG: Color = [0.11, 0.025, 0.02, 0.95];
-const SHORT_PRICE: Color = [1.0, 0.22, 0.15, 1.0];
+const SHORT_BORDER_COLOR: Color = [0.46, 0.23, 0.20, 1.0];
+const SHORT_BG: Color = [0.06, 0.038, 0.036, 0.95];
+const SHORT_HOVER_BG: Color = [0.10, 0.065, 0.06, 0.95];
+const SHORT_PRICE: Color = [0.82, 0.44, 0.38, 1.0];
 /// A short card that's also queued keeps its gold ground: its price in a
 /// dark red that reads on gold.
-const SHORT_QUEUED_PRICE: Color = [0.45, 0.04, 0.02, 1.0];
+const SHORT_QUEUED_PRICE: Color = [0.42, 0.14, 0.10, 1.0];
 /// The stockpile's resources, wherever they're named.
 const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
 const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
