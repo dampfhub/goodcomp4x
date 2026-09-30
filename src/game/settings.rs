@@ -1,12 +1,16 @@
 //! Player-adjustable options (`Settings`) and the settings menu that Escape
 //! opens. The menu's content is `ui/settings_menu.rs`; it has a row for every
-//! entry of `Setting::ALL`, so adding a setting touches only this file:
+//! entry of `Setting::ALL`, so adding a setting touches only this file and
+//! the menu's text file:
 //!
 //! 1. a field in `Settings`, and its value in `Settings::default`;
 //! 2. a `Setting` variant, listed in `Setting::ALL` (under its heading);
 //! 3. its arms in `Setting::key` (its name in the saved file), `name`,
 //!    `group`, `control`, `description`, `range` and `value_text`,
-//!    and in `Settings::get` and `Settings::set`.
+//!    and in `Settings::get` and `Settings::set`;
+//! 4. its name and description (the entry's text and tooltip), and any
+//!    named values, as entries in `text/menus.ini` (`docs/text.md`),
+//!    which `name`, `description` and `value_text` ask for by tag.
 //!
 //! Every setting is an integer in its `range` (a switch is `0..=1`). Its
 //! `control` says how the menu changes it: a checkbox, a slider or a choice
@@ -24,6 +28,7 @@
 use std::ops::RangeInclusive;
 
 use super::GameState;
+use super::strings::{text, tooltip};
 
 /// The player's options. See the module comment for adding one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,25 +147,29 @@ impl Setting {
         }
     }
 
-    /// Its label in the menu.
+    /// Its label in the menu (`text/menus.ini`).
     pub fn name(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => "INSTANT PLAYBACK",
-            Setting::TurnTransition => "TURN TRANSITION",
-            Setting::MaxQueuedTurns => "QUEUE LIMIT",
-            Setting::FogStyle => "FOG",
-            Setting::WorldAi => "AI PLAYERS",
-            Setting::WorldStart => "START WITH",
-            Setting::WorldAnimals => "ANIMALS",
+            Setting::TurnPlayback => text!("setting_turn_playback"),
+            Setting::TurnTransition => text!("setting_turn_transition"),
+            Setting::MaxQueuedTurns => text!("setting_queue_limit"),
+            Setting::FogStyle => text!("setting_fog"),
+            Setting::WorldAi => text!("setting_world_ai"),
+            Setting::WorldStart => text!("setting_world_start"),
+            Setting::WorldAnimals => text!("setting_world_animals"),
         }
     }
 
     /// The heading it's listed under in the menu.
     pub fn group(self) -> &'static str {
         match self {
-            Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => "TURNS",
-            Setting::FogStyle => "MAP",
-            Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => "NEXT WORLD (F4)",
+            Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => {
+                text!("settings_group_turns")
+            }
+            Setting::FogStyle => text!("settings_group_map"),
+            Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
+                text!("settings_group_next_world")
+            }
         }
     }
 
@@ -175,18 +184,16 @@ impl Setting {
         }
     }
 
-    /// What it does, for its tooltip.
+    /// What it does, for its tooltip: its entry's tooltip.
     pub fn description(self) -> &'static str {
         match self {
-            Setting::TurnPlayback => "PLAY EACH TURN OUT AT ONCE (F8).",
-            Setting::TurnTransition => {
-                "UNITS GLIDE TO THEIR NEW HEXES AND THE NEW TURN FLASHES AS A TURN RESOLVES."
-            }
-            Setting::MaxQueuedTurns => "THE MOST TURNS A UNIT CAN QUEUE.",
-            Setting::FogStyle => "CLOUDS OR FLAT GREY OVER UNEXPLORED LAND.",
-            Setting::WorldAi => "AI PLAYERS IN THE NEXT WORLD (F4).",
-            Setting::WorldStart => "START THE NEXT WORLD (F4) WITH A CITY OR A SETTLER.",
-            Setting::WorldAnimals => "ANIMAL DENS IN THE NEXT WORLD (F4): NONE, ONE OR TWO A SIDE.",
+            Setting::TurnPlayback => tooltip!("setting_turn_playback"),
+            Setting::TurnTransition => tooltip!("setting_turn_transition"),
+            Setting::MaxQueuedTurns => tooltip!("setting_queue_limit"),
+            Setting::FogStyle => tooltip!("setting_fog"),
+            Setting::WorldAi => tooltip!("setting_world_ai"),
+            Setting::WorldStart => tooltip!("setting_world_start"),
+            Setting::WorldAnimals => tooltip!("setting_world_animals"),
         }
     }
 
@@ -206,19 +213,34 @@ impl Setting {
     /// How the menu shows `value`.
     pub fn value_text(self, value: i32) -> String {
         match self {
-            Setting::TurnPlayback | Setting::TurnTransition => {
-                if value == 1 { "ON" } else { "OFF" }.into()
+            Setting::TurnPlayback | Setting::TurnTransition => if value == 1 {
+                text!("setting_on")
+            } else {
+                text!("setting_off")
             }
-            Setting::MaxQueuedTurns if value == 1 => "1 TURN".into(),
-            Setting::MaxQueuedTurns => format!("{value} TURNS"),
-            Setting::FogStyle => if value == 1 { "CLOUDS" } else { "SOLID GREY" }.into(),
-            Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => "4-6 BY MAP".into(),
+            .into(),
+            Setting::MaxQueuedTurns if value == 1 => text!("setting_queue_limit_one").into(),
+            Setting::MaxQueuedTurns => text!("setting_queue_limit_many", turns = value),
+            Setting::FogStyle => if value == 1 {
+                text!("setting_fog_clouds")
+            } else {
+                text!("setting_fog_grey")
+            }
+            .into(),
+            Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => {
+                text!("setting_world_ai_by_map").into()
+            }
             Setting::WorldAi => value.to_string(),
-            Setting::WorldStart => if value == 1 { "CITY" } else { "SETTLER" }.into(),
+            Setting::WorldStart => if value == 1 {
+                text!("setting_world_start_city")
+            } else {
+                text!("setting_world_start_settler")
+            }
+            .into(),
             Setting::WorldAnimals => match value as usize {
-                ANIMALS_OFF => "OFF",
-                ANIMALS_FEW => "FEW",
-                _ => "MANY",
+                ANIMALS_OFF => text!("setting_world_animals_off"),
+                ANIMALS_FEW => text!("setting_world_animals_few"),
+                _ => text!("setting_world_animals_many"),
             }
             .into(),
         }
@@ -337,7 +359,11 @@ impl GameState {
     pub(super) fn set_setting(&mut self, setting: Setting, value: i32) {
         if self.settings.change(setting, value) {
             let value = self.settings.get(setting);
-            self.notice = format!("{}: {}", setting.name(), setting.value_text(value));
+            self.notice = text!(
+                "setting_changed_notice",
+                setting = setting.name(),
+                value = setting.value_text(value)
+            );
         }
     }
 }

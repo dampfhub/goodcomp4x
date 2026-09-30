@@ -103,8 +103,16 @@ the row's end: one per value (OFF / ON for a switch), or < and > beside
 the value for a slider or long list.
 Every control acts through `Target::SetSetting(setting, value)`, which
 clamps to the range. A new setting therefore needs no UI code: add it in
-`game/settings.rs` as its module comment describes, and both presentations
-show it with its control.
+`game/settings.rs` as its module comment describes (its name, tooltip and
+values are entries in `text/menus.ini`), and both presentations show it
+with its control.
+**Text files.** The settings menu's words come from `text/menus.ini`
+through `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
+the UI's text is still in the code and moves to `text/` area by area
+(#341). In an area that has moved, new text is an entry in its file, not a
+literal: `docs/text.md` has the format and the tests that check it. Both
+presentations take the same strings from the shared content, so an entry
+changes both.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.
@@ -227,6 +235,11 @@ Availability is decided only there, where the button is built (a unit's orders
 in `unit_action_unavailable`, a group's when no member can take one), so a
 button and its tooltip can't disagree; the tooltip adds only a caution on a
 button that's on (what the stockpile is short of for a build, which then waits).
+A build card the stockpile can't pay for this turn is `.short(true)`
+(`GameState::build_shortfall`, the one test, which the tooltip's caution uses
+too): still pressable, it's drawn with a red rim, a dark red ground (gold kept
+when queued) and its price in red, in classic (`paint::draw_button`) and ImGui
+(`short_style`, `short_price`); a disabled button is never drawn short.
 A plan sent in a network game leaves every button as it was: one that changes
 the plan takes the turn back (`docs/multiplayer.md`). A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
