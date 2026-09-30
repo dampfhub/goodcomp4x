@@ -32,16 +32,17 @@ behavior.
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues (clearing one takes each item off through `take_queue_item` / `take_barracks_item`), Harbor naval spawning, the rules of a building's site (`ai_site_issue`), resource support from Forge/Stable, prices and turns of every build, the Grow build, the city-queue-only Settler and Scout (`city_build_issue`: population 3, one Scout at a time, and supply for any troop, ship or Scout; `waits_for_citizens`), `complete_builds` (buildings with a site are built by workers, `workers.rs`) |
 | `city/founding.rs` | settlers founding cities: the founding rules (`founding_issue`, `MIN_CITY_DISTANCE`) and a new city (`found_city`, a worker only for a side's first) |
 | `workers.rs` | workers: each city's pool and job list (everything the city places on the map, buildings with a site included: `JobKind`, placed from the open city's production list with `arm_worker_job`, paid when placed with `try_queue_job` and refunded if taken off or dropped), the Workshop speedup (`job_turns`), Work Camp bases, the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
-| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click_at`: a click on one of the player's unit tokens, hit as `draw.rs` draws it (`unit_token_contains`), selects the unit and closes the view; anywhere else is `city_click`), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
+| `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click_at`: a click on one of the player's unit tokens, hit as `draw.rs` draws it (`unit_token_contains`), selects the unit and closes the view; anywhere else is `city_click`, where one of the player's cities or Barracks opens its view, from any view), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture (pushing units of other sides off the center: `push_off_city_center`) |
 | `city/tests.rs` | the city tests |
 | `hex.rs`, `terrain.rs` | axial hex math, `HexGrid` (shape, and tiles, rivers, resources and specials in flat arrays over the shape's bounding box); `Tile` = ground + hills + feature, with yields, route cost, defense |
 | `fast_hash.rs` | the `HashMap` and `HashSet` the game uses: std's, with a fast fixed hasher (rustc's) for its small keys |
-| `perf.rs` | tests only: `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
+| `perf.rs` | tests only: `a_frame_stays_within_its_vertex_budget` caps one frame's vertices on the biggest world with everything shown at every zoom (fog off, Alt, a selection; #332), counting each layer with `draw.rs`'s `scene_stages`; `perf_report` (ignored; run with `--release -- --ignored --nocapture`) times a frame's and a turn's stages on a busy world |
 | `mapgen.rs`, `mapgen/` | seeded world generation for the F4 scenario (own RNG: a seed always rebuilds the same map, on every machine), a function per stage (its module comment lists them): land and sea, mountain ranges, hills, lakes, passes, rivers, climate; then balanced starts for any number of sides, horses and iron by each start, special tiles and ruins on contested ground, and animal dens away from every start. `mapgen/tests.rs` holds its tests (a golden hash pins two seeds' maps); `mapgen/preview.rs` (tests only) draws whole maps as PNGs and measures many (`map_previews`, `map_stats`, run by hand) |
 | `ruins.rs` | ruins: holding them for `RUIN_HOLD_TURNS` claims a reward (`resolve_ruins`, at each turn's end before the economy) |
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
+| `strings.rs` | the game's text from `text/*.ini` (`docs/text.md`): the parser, the `text!`, `tooltip!` and `hover_text!` macros that look an entry up by tag, and the tests that check the files against every call in the source |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and changes them: heading, control, range), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues and its cities queue ahead) in every scenario, board invariants checked each turn (and that every city spent the turn: worked its queue or gathered by itself, `play_out`), same seed replays the same game |
 | `simulation/economy.rs` | tests only: `economy_report` (ignored; run with `--release -- --ignored --nocapture`) measures the economy's tempo over many seeds (units by type and turn, growth, stockpiles, fights, build times, spread; its `REPORT_*` knobs are in its module comment, its numbers in `docs/rts-economy.md`) |
@@ -138,6 +139,11 @@ behavior.
 
 ## Recipes
 
+- **Text:** an area whose text has moved to `text/` (so far the settings menu) takes new
+  words as entries there, asked for with `text!("tag")` or `tooltip!("tag", name = value)`
+  (`strings.rs`, `docs/text.md`), the tag always a literal. The tests check each tag used
+  exists with its placeholders and each entry is used.
+
 - **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
   method (a key that acts on release or while held needs its own arm, like Escape), and a row in
   `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
@@ -146,9 +152,9 @@ behavior.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
   to players: `ability_text` in `ui/text.rs` (tooltips) and the tables in
   `docs/game-rules.md`. Grep for the old value.
-- **New player setting:** only `settings.rs`: a field in `Settings` (and its default), a
+- **New player setting:** `settings.rs`: a field in `Settings` (and its default), a
   `Setting` variant in `Setting::ALL`, and its arms in the `Setting` and `Settings` matches (the
-  module comment lists them). The settings menu shows it in both presentations with no UI
+  module comment lists them); its name, tooltip and values are entries in `text/menus.ini`. The settings menu shows it in both presentations with no UI
   change; game code reads the field (`self.settings.<field>`), and a row in the settings table
   of `docs/controls.md` describes it.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its

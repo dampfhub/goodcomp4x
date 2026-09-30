@@ -28,6 +28,7 @@ mod scenario;
 mod settings;
 #[cfg(test)]
 mod simulation;
+mod strings;
 mod terrain;
 mod transition;
 mod turn;

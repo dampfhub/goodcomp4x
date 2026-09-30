@@ -17,6 +17,7 @@ use glam::Vec2;
 use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
 use crate::game::GameState;
 use crate::game::settings::{Control, Setting};
+use crate::game::strings::text;
 
 impl GameState {
     /// The classic presentation's settings menu, while it's open: centered
@@ -41,7 +42,7 @@ impl GameState {
             return self.network_panel_content();
         }
         let mut panel = PanelBuilder::default();
-        panel.text(TITLE, vec![("SETTINGS".into(), TEXT)]);
+        panel.text(TITLE, vec![(text!("settings_title").into(), TEXT)]);
         let mut group = None;
         for setting in Setting::ALL {
             if group != Some(setting.group()) {
@@ -52,20 +53,27 @@ impl GameState {
             panel.setting(setting, self.settings.get(setting));
         }
         panel.gap(GAP);
-        panel.text(BODY, vec![("CITY OVERLAYS".into(), LABEL_TEXT)]);
+        panel.text(
+            BODY,
+            vec![(text!("settings_city_overlays").into(), LABEL_TEXT)],
+        );
         let yields = if self.show_yields {
-            "CITY YIELDS: ON"
+            text!("settings_city_yields_on")
         } else {
-            "CITY YIELDS: OFF"
+            text!("settings_city_yields_off")
         };
         panel.compact_buttons(vec![
             ButtonSpec::new(Target::ToggleYields, yields, "Y").queued(self.show_yields),
         ]);
         panel.gap(GAP);
         panel.compact_buttons(vec![
-            ButtonSpec::new(Target::OpenMultiplayer, "MULTIPLAYER", ""),
-            ButtonSpec::new(Target::CloseSettings, "CLOSE", "ESC"),
-            ButtonSpec::new(Target::Quit, "QUIT", ""),
+            ButtonSpec::new(
+                Target::OpenMultiplayer,
+                text!("settings_multiplayer_button"),
+                "",
+            ),
+            ButtonSpec::new(Target::CloseSettings, text!("settings_close_button"), "ESC"),
+            ButtonSpec::new(Target::Quit, text!("settings_quit_button"), ""),
         ]);
         panel
     }
@@ -88,15 +96,15 @@ pub(super) fn classic_setting_rows(setting: Setting, value: i32) -> Vec<Row> {
     let button =
         |to: i32, label: String| ButtonSpec::new(Target::SetSetting(setting, to), label, "");
     // A step past either end of the range: already there.
-    let at_end = |end: bool, which: &str| {
-        end.then(|| format!("ALREADY THE {which}: {}", setting.value_text(value)))
-    };
+    let now = setting.value_text(value);
+    let lowest = (value <= *range.start()).then(|| text!("settings_step_at_lowest", value = now));
+    let highest = (value >= *range.end()).then(|| text!("settings_step_at_highest", value = now));
     let mut label = vec![(format!("{}  ", setting.name()), LABEL_TEXT)];
     let buttons = if steps_in_classic(setting) {
         label.push((setting.value_text(value), GOLD_TEXT));
         vec![
-            button(value - 1, "<".into()).unavailable(at_end(value <= *range.start(), "LOWEST")),
-            button(value + 1, ">".into()).unavailable(at_end(value >= *range.end(), "HIGHEST")),
+            button(value - 1, "<".into()).unavailable(lowest),
+            button(value + 1, ">".into()).unavailable(highest),
         ]
     } else {
         range

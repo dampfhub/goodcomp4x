@@ -86,7 +86,8 @@ more citizens and everything else that eats it (troops, workers).
   icon with each resource's change a turn. The city tray shows what the city delivers and eats,
   the build worked with its turns left and what the first item waits for, a one-line Grow card,
   and cards whose hints are the price and turns in icons, never dimmed for the price (at a
-  Barracks, dimmed when locked); a card's tooltip says what the side is short of this turn.
+  Barracks, dimmed when locked) but drawn short, with a red rim and price, when the side can't
+  pay for them this turn; a card's tooltip says what the side is short of this turn.
   Queue rows show turns left, or, tinted red, what they wait for; a waiting city has a badge
   over its tower on the map with the missing resources' icons. Whether an item waits is judged
   on the stockpile as this turn's economy will find it (`forecast`: now, plus the turn's income,

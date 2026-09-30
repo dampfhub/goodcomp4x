@@ -1623,9 +1623,11 @@ fn no_citizen_works_a_city_center_or_a_building_tile() {
     assert!(!g.may_assign(0, center) && !g.may_assign(0, barracks));
     assert!(!g.may_be_manager(0, 0, barracks));
     g.open_city(0);
+    // A click on the Barracks from the city view opens it (#337); no
+    // citizen goes there.
     g.city_click(barracks);
     assert!(!g.cities[0].works(barracks));
-    assert_eq!(g.notice, "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+    assert_eq!(g.selected_barracks, Some(0));
     // A city center's yield comes in whoever works what.
     g.cities[0].clusters.clear();
     assert_eq!(g.income(0).food, 8, "2 food from the center alone");
@@ -2153,6 +2155,20 @@ fn click_at(g: &mut GameState, point: glam::Vec2, classic: bool) {
     }
 }
 
+/// `click_at`, once the camera has finished gliding to where the game put
+/// it (opening a view glides to it).
+fn click_settled(g: &mut GameState, point: glam::Vec2, classic: bool) {
+    g.camera.update(60.0);
+    click_at(g, point, classic);
+}
+
+/// `click_at` with `point` in the middle of the screen, clear of the
+/// classic panels.
+fn click_centered(g: &mut GameState, point: glam::Vec2, classic: bool) {
+    g.camera.focus_on(point);
+    click_settled(g, point, classic);
+}
+
 /// Off a full-size unit's token but on its hex (a flat-top hex reaches 1.0
 /// across and 0.87 up; the token about 0.39).
 const OFF_TOKEN: glam::Vec2 = glam::Vec2::new(0.6, 0.0);
@@ -2294,6 +2310,88 @@ fn placing_and_manager_clicks_are_not_taken_by_unit_tokens() {
     assert!(g.city_click_at(tile, tile.to_world()));
     assert_eq!(g.selected, None);
     assert_eq!(g.interior_view, Some(0));
+}
+
+/// #337: from the City view a click on its Barracks opens the Barracks, and
+/// from the Barracks view a click on the city opens the city, in both
+/// presentations, as they open from nothing selected.
+#[test]
+fn a_click_on_a_structure_opens_it_from_another_view() {
+    for classic in [false, true] {
+        let (mut g, _, _) = city_with_a_unit_on_a_workable_tile();
+        let barracks = Hex::new(-3, 1);
+        g.cities[0].barracks = Some(barracks);
+        let center = g.cities[0].pos;
+
+        click_settled(&mut g, barracks.to_world(), classic);
+        assert_eq!(g.selected_barracks, Some(0), "classic: {classic}");
+        assert_eq!(g.selected_city, None);
+
+        click_settled(&mut g, center.to_world(), classic);
+        assert_eq!(g.selected_city, Some(0), "classic: {classic}");
+        assert_eq!(g.selected_barracks, None);
+        assert_eq!(g.interior_view, None, "the city view opens, not its inside");
+
+        // Clicking the open city's own center still goes inside.
+        click_settled(&mut g, center.to_world(), classic);
+        assert_eq!(g.interior_view, Some(0), "classic: {classic}");
+    }
+}
+
+/// #337: another of the player's cities, and its Barracks, open from either
+/// view too; another side's don't.
+#[test]
+fn a_click_on_another_citys_structures_opens_them_from_a_view() {
+    for classic in [false, true] {
+        let (mut g, _, _) = city_with_a_unit_on_a_workable_tile();
+        g.cities[0].barracks = Some(Hex::new(-3, 1));
+        let other = g.cities.len();
+        let (other_pos, other_barracks) = (Hex::new(-2, 3), Hex::new(-1, 3));
+        g.cities.push(City::new(7, Team::Blue, other_pos));
+        g.cities[other].barracks = Some(other_barracks);
+
+        click_centered(&mut g, other_barracks.to_world(), classic);
+        assert_eq!(g.selected_barracks, Some(other), "classic: {classic}");
+        g.open_barracks(0);
+        click_centered(&mut g, other_pos.to_world(), classic);
+        assert_eq!(g.selected_city, Some(other), "classic: {classic}");
+
+        // Red's city is no structure of the player's: the city view keeps
+        // the click.
+        let red = g.cities[1].pos;
+        g.open_city(0);
+        click_centered(&mut g, red.to_world(), classic);
+        assert_eq!(g.selected_city, Some(0), "classic: {classic}");
+        assert_eq!(g.selected_barracks, None);
+    }
+}
+
+/// #337: moving a manager keeps every click, a structure's too; and a
+/// building with no view of its own (a Work Camp) stays the open view's
+/// click.
+#[test]
+fn moving_a_manager_or_a_work_camp_keeps_the_open_view() {
+    for classic in [false, true] {
+        let (mut g, _, _) = city_with_a_unit_on_a_workable_tile();
+        let barracks = Hex::new(-3, 1);
+        g.cities[0].barracks = Some(barracks);
+        g.moving_manager = Some((0, 0));
+        click_centered(&mut g, barracks.to_world(), classic);
+        assert_eq!(g.selected_city, Some(0), "classic: {classic}");
+        assert_eq!(g.selected_barracks, None);
+        assert_eq!(g.moving_manager, Some((0, 0)), "{}", g.notice);
+        g.moving_manager = None;
+
+        let camp = Hex::new(-3, -1);
+        g.cities[0].set_placed_site(Building::WorkCamp, camp);
+        click_centered(&mut g, camp.to_world(), classic);
+        assert_eq!(g.selected_city, Some(0), "classic: {classic}");
+        assert_eq!(g.notice, "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+        g.open_barracks(0);
+        click_centered(&mut g, camp.to_world(), classic);
+        assert_eq!(g.selected_barracks, Some(0), "classic: {classic}");
+        assert_eq!(g.notice, "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
+    }
 }
 
 /// Swaps a cluster's manager with its first worker.
