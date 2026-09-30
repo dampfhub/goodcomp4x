@@ -37,13 +37,11 @@ pub(in crate::game) const ROAD_STEP: i32 = 1;
 pub(in crate::game) const MAX_ROUTE_COST: i32 = 4 * HEX_STEP;
 
 /// The quarters of a tile's goods that reach the end of a route costing
-/// `cost`: all of them one hex away, 3/4 at two, 1/2 at three, 1/4 at four.
+/// `cost`: all of them through two hexes, 3/4 through four hexes.
 pub(in crate::game) fn delivered_share(cost: i32) -> i32 {
     match cost {
-        0..=2 => 4,
-        3..=4 => 3,
-        5..=6 => 2,
-        7..=8 => 1,
+        0..=4 => 4,
+        5..=8 => 3,
         _ => 0,
     }
 }

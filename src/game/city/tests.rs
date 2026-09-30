@@ -122,7 +122,7 @@ fn every_tile_beside_a_city_delivers_everything_whatever_its_terrain() {
     );
 }
 
-/// #198: shares fall off by hexes travelled, 100/75/50/25% at one to four
+/// Shares fall off by hexes travelled, 100% through two and 75% through four
 /// hexes, the same over rough ground as over open ground; five hexes out
 /// is beyond reach.
 #[test]
@@ -149,7 +149,7 @@ fn shares_fall_off_by_hexes_travelled_not_terrain() {
             .collect();
         assert_eq!(
             shares,
-            [Some(100), Some(75), Some(50), Some(25), None],
+            [Some(100), Some(100), Some(75), Some(75), None],
             "on {}",
             g.grid.tile(Hex::new(1, 0)).name()
         );
@@ -178,12 +178,12 @@ fn a_road_step_counts_as_half_a_hex() {
     };
     // Along the road: half a hex a step.
     assert_eq!(share(2, 0), Some(100));
-    assert_eq!(share(4, 0), Some(75));
+    assert_eq!(share(4, 0), Some(100));
     // Off its end, one hex more, and the road reaches past four hexes.
-    assert_eq!(share(5, 0), Some(50));
-    assert_eq!(share(6, 0), Some(25));
+    assert_eq!(share(5, 0), Some(75));
+    assert_eq!(share(6, 0), Some(75));
     // A tile beside the road: the road's steps, then one off-road hex.
-    assert_eq!(share(2, -1), Some(75));
+    assert_eq!(share(2, -1), Some(100));
 }
 
 #[test]
@@ -387,20 +387,20 @@ fn hill_watchpost_reveals_distant_hexes() {
     assert!(g.fog().sees(distant));
 }
 #[test]
-fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
+fn economy_ticks_once_into_the_stockpile_with_delivery_share() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.cities[0].clusters.clear();
     let tile = Hex::new(-1, 0);
     g.roads.clear();
     g.cities[0].clusters = one_cluster(&[tile]);
-    // The center's 2 food and 1 wood, and half of the plains' 2 food and
-    // 1 wood, which is a long haul away.
+    // The center's 2 food and 1 wood, and three quarters of the
+    // plains' 2 food and 1 wood, which is a long haul away.
     assert_eq!(
         g.income(0),
         Stock {
-            food: 12,
-            wood: 6,
+            food: 14,
+            wood: 7,
             metal: 0
         }
     );
@@ -424,8 +424,8 @@ fn economy_ticks_once_into_the_stockpile_and_preserves_quarters() {
     assert_eq!(
         g.stock(Team::Blue),
         Stock {
-            food: before.food + 12 - upkeep - price.food,
-            wood: before.wood + 6 - price.wood,
+            food: before.food + 14 - upkeep - price.food,
+            wood: before.wood + 7 - price.wood,
             metal: before.metal - price.metal
         }
     );
@@ -1190,7 +1190,7 @@ fn mill_restores_food_delivery_only_within_city_reach() {
     let food_before = g.income(0).food;
     let food_yield = g.tile_yield(worked).0;
     g.cities[0].mill = Some(Hex::new(-2, 0));
-    assert_eq!(g.income(0).food, food_before + food_yield * 2);
+    assert_eq!(g.income(0).food, food_before + food_yield);
 
     let out_of_reach = g
         .grid
