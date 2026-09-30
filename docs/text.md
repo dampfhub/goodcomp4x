@@ -4,12 +4,13 @@ The words the game shows live in plain-text files under `text/`, one file per ar
 can be read and changed without touching Rust. The files are built into the executable
 (`include_str!`), so after editing one, rebuild (`cargo build`, or `cargo run`) to see it.
 
-This is being done in stages (#341). So far only the settings menu reads its text from here
-(`text/menus.ini`); everything else is still written in the code, and moves over area by area.
+This is being done in stages (#341). So far the settings menu and its Multiplayer page read
+their text from here (`text/menus.ini`); everything else is still written in the code, and
+moves over area by area.
 
 | File | What it holds |
 |---|---|
-| `text/menus.ini` | The settings menu: its title, headings, each setting's name, tooltip and values, its buttons, and the notice when a setting changes |
+| `text/menus.ini` | The settings menu (its title, headings, each setting's name, tooltip and values, its buttons and their tooltips, and the notice when a setting changes) and its Multiplayer page (its rows, fields, buttons, tooltips and what it says when a field isn't filled in) |
 
 ## An entry
 
@@ -38,6 +39,11 @@ A field takes the rest of its line, spaces at the ends trimmed. A long value can
 the next lines: indent them, and each joins the one before with a space. To keep spaces at a
 value's ends, put it in double quotes: `text = "  NAME  "`.
 
+A tooltip is a title line, with the key that does the thing, over a description. For a button,
+the entry's `text` is its label and its `tooltip` the description, and the title is the label.
+Where the title isn't the label (the CLOSE button's tooltip says CLOSE SETTINGS), an entry
+whose tag ends in `_title` holds the title as its text, and the description as its tooltip.
+
 ## Placeholders and icons
 
 A name in braces, such as `{turns}` or `{food}`, is a **placeholder**: the code puts a number or
@@ -58,6 +64,21 @@ Other braces aren't allowed. Characters: printable ASCII, plus the few in
 `font::UI_PUNCTUATION` (`src/game/font.rs`: the middle dot, em dash, times sign and ellipsis),
 which both UI presentations' fonts carry.
 
+## Keys
+
+A text file never spells out a key. Where an entry names the key that does something, it has a
+placeholder, such as `{key}` (the key for the thing the entry is about) or `{world_key}`, and
+the game fills in that key's name from its key map (`src/game/keys.rs`), so the text always
+names the key the game really uses:
+
+```ini
+[setting_turn_playback]
+text = INSTANT PLAYBACK
+tooltip = PLAY EACH TURN OUT AT ONCE ({key}).
+```
+
+The game shows that tooltip as "PLAY EACH TURN OUT AT ONCE (F8)."
+
 ## Checking a change
 
 Run `cargo test`. It fails, saying the file and line, if a file doesn't read (a line that's
@@ -73,14 +94,17 @@ The game itself never stops over text: a tag it can't find shows as the tag.
 `text!`, `tooltip!` and `hover_text!`:
 
 ```rust
+use crate::game::keys::Command;
 use crate::game::strings::{text, tooltip};
 
 let title: &'static str = text!("settings_title");
 let limit: String = text!("setting_queue_limit_many", turns = value);
 let about: &'static str = tooltip!("setting_fog");
+let playback: String = tooltip!("setting_turn_playback", key = Command::Playback.key());
 ```
 
 The tag is always a string literal at the call, never built at runtime: the tests find every
 call by reading the source. To choose between entries, match and call the macro in each arm
 (`Setting::name`, `src/game/settings.rs`). A new file is a line in `FILES` (`strings.rs`) and a
-row in the table above.
+row in the table above. A key placeholder is filled with the key's name from the key map,
+`Command::key` (`src/game/keys.rs`), never with a literal.

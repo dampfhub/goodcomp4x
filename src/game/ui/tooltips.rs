@@ -17,8 +17,10 @@ use crate::game::city::{
     UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
+use crate::game::keys::Command;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
 use crate::game::scenario::Scenario;
+use crate::game::strings::{text, tooltip};
 use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
 use crate::renderer::Vertex;
@@ -760,83 +762,96 @@ impl GameState {
                         } else {
                             String::new()
                         },
-                        setting.description().into(),
-                        (value == current)
-                            .then(|| format!("ALREADY {}", setting.value_text(current))),
+                        setting.description(),
+                        (value == current).then(|| {
+                            text!("setting_already", value = setting.value_text(current))
+                        }),
                     )
                 }
                 Target::OpenSettings => (
-                    "SETTINGS".into(),
+                    text!("settings_open_title").into(),
                     String::new(),
-                    "GAME OPTIONS.".into(),
+                    tooltip!("settings_open_title").into(),
                     None,
                 ),
-                Target::CloseSettings => {
-                    ("CLOSE SETTINGS".into(), "ESC".into(), String::new(), None)
-                }
-                Target::Quit => ("QUIT".into(), String::new(), String::new(), None),
-                Target::OpenMultiplayer => (
-                    "MULTIPLAYER".into(),
+                Target::CloseSettings => (
+                    text!("settings_close_title").into(),
+                    Command::Back.key(),
                     String::new(),
-                    "HOST A GAME ON THE NETWORK, OR JOIN ONE.".into(),
+                    None,
+                ),
+                Target::Quit => (
+                    text!("settings_quit_button").into(),
+                    String::new(),
+                    String::new(),
+                    None,
+                ),
+                Target::OpenMultiplayer => (
+                    text!("settings_multiplayer_button").into(),
+                    String::new(),
+                    tooltip!("settings_multiplayer_button").into(),
                     None,
                 ),
                 Target::CloseMultiplayer => (
-                    "BACK".into(),
+                    text!("net_back_button").into(),
                     String::new(),
-                    "BACK TO THE SETTINGS.".into(),
+                    tooltip!("net_back_button").into(),
                     None,
                 ),
                 Target::NetPlayers(players) => (
-                    "PLAYERS".into(),
+                    text!("net_players").into(),
                     players.to_string(),
-                    "HOW MANY PEOPLE PLAY, YOU INCLUDED. THE AI PLAYS THE OTHER SIDES.".into(),
+                    tooltip!("net_players").into(),
                     None,
                 ),
                 Target::EditNetField(field) => (
                     field.name().into(),
-                    "CLICK".into(),
-                    "CLICK, THEN TYPE OR PASTE (CTRL+V). ENTER WHEN DONE.".into(),
+                    text!("net_field_typing").into(),
+                    tooltip!(
+                        "net_field_typing",
+                        paste_key = Command::Paste.key(),
+                        done_key = Command::StopTyping.key(),
+                    ),
                     None,
                 ),
                 Target::HostGame => (
-                    "HOST GAME".into(),
+                    text!("net_host_button").into(),
                     String::new(),
-                    "STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS THE JOIN CODE TO GIVE THEM. THEY NEED YOUR ADDRESS AND THE PORT OPEN.".into(),
+                    tooltip!("net_host_button").into(),
                     None,
                 ),
                 Target::JoinGame => (
-                    "JOIN GAME".into(),
+                    text!("net_join_button").into(),
                     String::new(),
-                    "JOINS THE GAME HOSTED AT THIS ADDRESS (HOST OR HOST:PORT) WITH THE CODE IT SHOWS.".into(),
+                    tooltip!("net_join_button").into(),
                     None,
                 ),
                 Target::LeaveGame => (
-                    "LEAVE GAME".into(),
+                    text!("net_leave_button").into(),
                     String::new(),
                     if self.join_code().is_some() {
-                        "ENDS THE GAME FOR EVERYONE AND STARTS A NEW ONE OF YOUR OWN.".into()
+                        text!("net_leave_as_host").into()
                     } else {
-                        "THE AI PLAYS YOUR SIDE; YOU START A NEW GAME OF YOUR OWN.".into()
+                        text!("net_leave_as_guest").into()
                     },
                     None,
                 ),
                 Target::CopyJoinCode => (
-                    "COPY JOIN CODE".into(),
+                    text!("net_copy_code_title").into(),
                     String::new(),
-                    "PUTS THE JOIN CODE ON THE CLIPBOARD, TO SEND TO THE OTHER PLAYERS.".into(),
+                    tooltip!("net_copy_code_title").into(),
                     None,
                 ),
                 Target::CopyHostAddress => (
-                    "COPY ADDRESS".into(),
+                    text!("net_copy_address_title").into(),
                     String::new(),
-                    "PUTS YOUR ADDRESS ON THE LOCAL NETWORK ON THE CLIPBOARD. PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP INSTEAD.".into(),
+                    tooltip!("net_copy_address_title").into(),
                     None,
                 ),
                 Target::ToggleYields => (
-                    "YIELDS".into(),
-                    "Y".into(),
-                    "TILE YIELDS AND DELIVERY SHARES.".into(),
+                    text!("settings_yields_title").into(),
+                    Command::Yields.key(),
+                    tooltip!("settings_yields_title").into(),
                     None,
                 ),
                 Target::EndTurn if self.waiting_for_peers() => (

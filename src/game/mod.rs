@@ -15,6 +15,7 @@ mod fog;
 mod font;
 mod group;
 mod hex;
+pub mod keys;
 mod map_icons;
 mod mapgen;
 mod mesh;
