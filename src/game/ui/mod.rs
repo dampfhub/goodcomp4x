@@ -137,10 +137,10 @@ const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
 /// A build card the stockpile can't pay for yet (`ButtonSpec::short`): a
 /// muted red rim, a faintly red ground and its price in `SHORT_PRICE`, bright
 /// enough to read and press, unlike a disabled card's grey.
-const SHORT_BORDER_COLOR: Color = [0.58, 0.28, 0.24, 1.0];
+const SHORT_BORDER_COLOR: Color = [0.46, 0.23, 0.20, 1.0];
 const SHORT_BG: Color = [0.06, 0.038, 0.036, 0.95];
 const SHORT_HOVER_BG: Color = [0.10, 0.065, 0.06, 0.95];
-const SHORT_PRICE: Color = [0.88, 0.48, 0.42, 1.0];
+const SHORT_PRICE: Color = [0.82, 0.44, 0.38, 1.0];
 /// A short card that's also queued keeps its gold ground: its price in a
 /// dark red that reads on gold.
 const SHORT_QUEUED_PRICE: Color = [0.42, 0.14, 0.10, 1.0];
