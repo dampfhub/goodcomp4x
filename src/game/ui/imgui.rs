@@ -2956,9 +2956,9 @@ fn short_price(spec: &ButtonSpec) -> Option<Color> {
 }
 
 /// A short button's ground in ImGui, whose buttons are lighter than
-/// classic's: a dull red, like a waiting queue row's, and brighter hovered.
-const IMGUI_SHORT_BG: Color = [0.10, 0.022, 0.018, 1.0];
-const IMGUI_SHORT_HOVER_BG: Color = [0.18, 0.04, 0.03, 1.0];
+/// classic's: a faint warm red, and a little brighter hovered.
+const IMGUI_SHORT_BG: Color = [0.068, 0.046, 0.046, 1.0];
+const IMGUI_SHORT_HOVER_BG: Color = [0.12, 0.08, 0.08, 1.0];
 
 /// The least room between a split button's text and its edges.
 const SPLIT_PAD: f32 = 6.0;
