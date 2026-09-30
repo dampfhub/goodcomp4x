@@ -4505,6 +4505,27 @@ fn ui_text_uses_only_the_shared_glyphs() {
             );
         }
     }
+    // The same goes for the text files (`text/`, read by `strings.rs`), and
+    // there no character outside printable ASCII is anything else.
+    let texts: Vec<_> = crate::game::strings::texts().entries().collect();
+    assert!(!texts.is_empty());
+    for (tag, entry) in texts {
+        let fields = [
+            Some(&entry.text),
+            entry.hover_text.as_ref(),
+            entry.tooltip.as_ref(),
+        ];
+        for ch in fields.into_iter().flatten().flat_map(|text| text.chars()) {
+            assert!(
+                (' '..='~').contains(&ch)
+                    || crate::game::font::UI_PUNCTUATION.contains(&ch)
+                    || crate::game::map_icons::inline_icon(ch).is_some(),
+                "[{tag}] in text/ uses {ch:?} (U+{:04X}): add it to UI_PUNCTUATION \
+                 (font.rs) or spell it in ASCII",
+                ch as u32
+            );
+        }
+    }
     // Every font ImGui is given has a glyph of its own for each of them,
     // with the system's UI font or without it.
     let mut screen = ImGuiScreen::styled(SCREEN);

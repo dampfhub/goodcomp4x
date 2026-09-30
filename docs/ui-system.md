@@ -103,8 +103,16 @@ the row's end: one per value (OFF / ON for a switch), or < and > beside
 the value for a slider or long list.
 Every control acts through `Target::SetSetting(setting, value)`, which
 clamps to the range. A new setting therefore needs no UI code: add it in
-`game/settings.rs` as its module comment describes, and both presentations
-show it with its control.
+`game/settings.rs` as its module comment describes (its name, tooltip and
+values are entries in `text/menus.ini`), and both presentations show it
+with its control.
+**Text files.** The settings menu's words come from `text/menus.ini`
+through `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
+the UI's text is still in the code and moves to `text/` area by area
+(#341). In an area that has moved, new text is an entry in its file, not a
+literal: `docs/text.md` has the format and the tests that check it. Both
+presentations take the same strings from the shared content, so an entry
+changes both.
 At the start of each frame, synchronize native ImGui dock state before planning
 floating positions: ImGui commits a highlighted drop in `NewFrame`, and using
 the previous frame's floating state can immediately undo that split.
