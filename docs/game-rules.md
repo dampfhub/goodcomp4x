@@ -57,7 +57,7 @@ the cap is applied is `Tile::yields` (`terrain.rs`).
 
 | Modifier | Effect on goods | Other |
 |---|---|---|
-| Forest | wood only: 2 wood and no food, whatever the ground | +15% defense |
+| Forest | wood only: 2 wood and no food, whatever the ground; workers can cut it for a lump of wood (Cut Forest, see Workers) | +15% defense |
 | Jungle (marsh only) | none: the marsh's 1 food and 1 wood | +15% defense |
 | Hills | 1 metal, plus 1 of the tile's main good (food on a tie; none on snow) | +25% defense, +1 sight |
 | Fresh water | +1 food, within the cap: it adds only where the tile has room | a farm can go only here |
@@ -924,9 +924,9 @@ only).
   workers at home. A connected Work Camp can be the departure and return point for nearby jobs;
   the worker returns to the same city pool.
 - **Placing** (`workers.rs`): everything a worker builds is placed from its city's production
-  list, under WORKS (Road, Improve, Wall, Gate, Outpost, Fort; R and I pick roads and
+  list, under WORKS (Road, Improve, Cut Forest, Wall, Gate, Outpost, Fort; R and I pick roads and
   improvements) and BUILDINGS (those with a site). A city needs a worker, at home or out, to place
-  anything, and its side must pay the price, taken when placed: Road 0/2/0, Improve 0/4/0, Wall
+  anything, and its side must pay the price, taken when placed: Road 0/2/0, Improve 0/4/0, Cut Forest 2/0/0, Wall
   0/3/0, Gate 0/3/2, Outpost 0/6/0, Fort 0/8/4 (food / wood / metal), and a building its own
   price. Picking one lights the tiles workers can reach and dims the rest; then click or drag
   over tiles, or along hex edges for walls and gates. A ring under the cursor shows where a tile
@@ -967,6 +967,7 @@ only).
   |---|---|---|
   | Road | 2 turns | a dirt road: goods count a step onto it as half a hex (see Logistics) |
   | Improve | 3 turns | a mine, lumber mill or farm (see Yields) |
+  | Cut Forest | 2 turns | on a forest with no improvement or building: +10 wood into the stockpile once, when done, and the forest is gone for good (plains + forest becomes plains: 2 food instead of 2 wood, and with fresh water a farm can follow) |
   | Wall | 2 turns | on an edge: no unit, worker or goods cross it, yours included |
   | Gate | 3 turns | on an edge: only your units, workers and goods cross it |
   | Outpost | 3 turns | you see 2 hexes around it |
@@ -1108,7 +1109,9 @@ within 2. Its queue otherwise grows the city. A city without a Barracks trains M
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
 pay. An idle AI Barracks trains Cavalry or Armored when its deposits allow and the side can pay,
 else Melee, or Ranged for every two Melee. An AI city with a worker at home and an empty list places one job it can
-pay for: an improvement on a tile it works, or else a road there. At a contested friendly city gate, AI
+pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
+ground); while its side has less wood than a Melee costs, cutting the nearest forest within
+workers' reach that no city works; an improvement on a tile it works; a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 

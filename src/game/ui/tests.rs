@@ -1,4 +1,4 @@
-use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
+use super::builder::{ButtonSpec, CatalogEntry, Row, classic_rows, flat_rows};
 use super::queue::{wait_text, waiting_line};
 use super::text::{
     end_turn_label, fit_text, price_hint, quantity, signed_quantity, stock_spans, wrap,
@@ -1907,6 +1907,54 @@ fn clicking_a_worker_job_or_a_worker_shows_it_on_the_map() {
     game.camera.update(10.0);
     assert!(game.camera.center.distance(worker.pos.to_world()) < 0.01);
     assert!(!game.field_workers[0].recalled, "showing isn't recalling");
+}
+
+/// The city's production list offers Cut Forest with the other works, and
+/// its row on the job list names it and the tile (#368).
+#[test]
+fn the_city_lists_cut_forest_and_names_its_job() {
+    use crate::game::terrain::{Feature, Tile};
+    let (mut game, hex) = empty_tile_near_blue_city();
+    let tile = game.grid.tile(hex);
+    let forest = Tile {
+        feature: Some(Feature::Forest),
+        ..tile
+    };
+    game.grid.set_tile(hex, forest);
+    open_city_zero(&mut game);
+    let mut panel = PanelBuilder::default();
+    game.city_tray(0, &mut panel);
+    let button = flat_rows(&panel.rows)
+        .into_iter()
+        .find_map(|row| match row {
+            Row::BuildingCatalog(_, entries, ..) => entries.iter().find_map(|entry| match entry {
+                CatalogEntry::Card(b) if b.target == Target::WorkerJob(JobKind::CutForest) => {
+                    Some(b.clone())
+                }
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("a Cut Forest card");
+    assert_eq!(button.label, "CUT FOREST");
+    assert_eq!(button.unavailable, None);
+
+    game.placing_job = Some(JobKind::CutForest);
+    assert!(game.place_job_at(hex, None));
+    game.placing_job = None;
+    let mut panel = PanelBuilder::default();
+    game.city_tray(0, &mut panel);
+    let labels: Vec<String> = flat_rows(&panel.rows)
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::QueueItem(item) => Some(item.label.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        [format!("CUT FOREST · {} · \u{E003}2", forest.name())]
+    );
 }
 
 #[test]

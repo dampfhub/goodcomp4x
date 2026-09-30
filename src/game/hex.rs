@@ -316,6 +316,14 @@ impl HexGrid {
         self.index(hex).and_then(|i| self.resources[i])
     }
 
+    /// Takes the feature off `hex`: a forest cut (`JobKind::CutForest`),
+    /// the one way the ground changes during a game.
+    pub fn clear_feature(&mut self, hex: Hex) {
+        if let Some(i) = self.index(hex) {
+            self.tiles[i].feature = None;
+        }
+    }
+
     /// Replaces the tile at `hex` (tests only).
     #[cfg(test)]
     pub fn set_tile(&mut self, hex: Hex, tile: impl Into<Tile>) {
