@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 use super::GameState;
 use super::ability::{Ability, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE};
-use super::animals::TERRITORY_RADIUS;
+use super::animals::MAX_TERRITORY;
 use super::city::{Build, BuildUnit, Building, Lane, MIN_CITY_DISTANCE, Stock};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
@@ -58,11 +58,11 @@ struct Flood {
 
 impl Knowledge {
     /// Whether `hex` is within the territory of a den the side knows of
-    /// (`animals.rs`), where its animal would attack.
+    /// (`animals.rs`), the widest any animal roams (`MAX_TERRITORY`).
     fn in_den_territory(&self, hex: Hex) -> bool {
         self.dens
             .iter()
-            .any(|den| den.distance(hex) <= TERRITORY_RADIUS)
+            .any(|den| den.distance(hex) <= MAX_TERRITORY)
     }
 }
 
@@ -1167,12 +1167,12 @@ mod tests {
         assert_eq!(attack, Some(blue));
     }
 
-    /// `lone_red`, with a wolf den at (5, 0) seen by Red and its wolf dead,
+    /// `lone_red`, with a wolf den at (6, 0) seen by Red and its wolf dead,
     /// so the den stands empty.
     fn red_knows_an_empty_den() -> GameState {
         let mut game = lone_red();
         red_explores_the_rest(&mut game);
-        game.make_dens(&[Hex::new(5, 0)]);
+        game.make_dens(&[Hex::new(6, 0)], 1);
         game.units.retain(|u| !u.is_animal());
         red_glances_from(&mut game, Hex::new(4, 0));
         game
@@ -1184,10 +1184,10 @@ mod tests {
         let (dest, _) = replan(&mut game);
         assert_eq!(dest, Some(Hex::new(1, 0)), "toward it");
         // Once there, it stands on the den, and its side clears it.
-        game.units[0].pos = Hex::new(4, 0);
-        let (dest, _) = replan(&mut game);
-        assert_eq!(dest, Some(Hex::new(5, 0)));
         game.units[0].pos = Hex::new(5, 0);
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest, Some(Hex::new(6, 0)));
+        game.units[0].pos = Hex::new(6, 0);
         game.resolve_dens();
         assert!(game.dens.is_empty());
     }

@@ -54,14 +54,16 @@ pub struct Settings {
     /// rather than a settler to found it with.
     pub world_start_city: bool,
     /// Animal dens in the next world (`animals.rs`): `ANIMALS_OFF`, one a
-    /// side (`ANIMALS_FEW`) or two a side (`ANIMALS_MANY`).
+    /// side (`ANIMALS_FEW`) or two a side (`ANIMALS_MANY`), each keeping up
+    /// to `animals::den_cap` of them.
     pub world_animals: usize,
 }
 
 /// `Settings::world_ai` for 4 to 6 AI players, picked by the map's seed.
 pub const WORLD_AI_BY_SEED: usize = 0;
 
-/// `Settings::world_animals`: no animals, one den a side, or two.
+/// `Settings::world_animals`: no animals, one den a side, or two (and
+/// dens keeping more animals, `animals::den_cap`).
 pub const ANIMALS_OFF: usize = 0;
 pub const ANIMALS_FEW: usize = 1;
 pub const ANIMALS_MANY: usize = 2;

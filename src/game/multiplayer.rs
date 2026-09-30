@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -1644,7 +1644,7 @@ impl GameState {
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
         for den in &self.dens {
-            den.pos.hash(&mut h);
+            (den.pos, den.cap, den.next_in).hash(&mut h);
         }
         for memory in &self.side_memory {
             memory.len().hash(&mut h);
