@@ -190,6 +190,36 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
     });
 }
 
+/// `icon` as a flat silhouette of one or two triangles, `scale` times its
+/// usual size, for when it's drawn a few pixels tall: the yield icons (food,
+/// wood and metal) on a zoomed-out map, whose full meshes (over 300 vertices
+/// for food) would cost millions of vertices there for detail nobody can
+/// see. Other icons draw in full.
+pub(super) fn push_map_icon_silhouette(
+    center: Vec2,
+    icon: MapIcon,
+    scale: f32,
+    out: &mut Vec<Vertex>,
+) {
+    let unit = scale * HEX_SIZE / DESIGN_HEX_RADIUS;
+    let at = |x: f32, y: f32| center + Vec2::new(x, -y) * unit;
+    match icon {
+        // The ear, stem to tip, as a diamond.
+        MapIcon::Food => mesh::convex_polygon(
+            &[at(0.0, 9.5), at(5.0, -3.0), at(0.0, -11.4), at(-5.0, -3.0)],
+            WHEAT,
+            out,
+        ),
+        MapIcon::Wood => mesh::segment(at(-3.5, 6.0), at(3.5, -6.0), 6.2 * unit, FRESH_WOOD, out),
+        MapIcon::Metal => mesh::convex_polygon(
+            &[at(-8.5, 4.5), at(-6.0, -3.5), at(6.0, -3.5), at(8.5, 4.5)],
+            METAL,
+            out,
+        ),
+        _ => push_map_icon_scaled(center, icon, scale, out),
+    }
+}
+
 /// `icon`'s triangles, centered on the origin at its usual size.
 pub(super) fn build_map_icon(icon: MapIcon, out: &mut Vec<Vertex>) {
     let mut pen = Pen {

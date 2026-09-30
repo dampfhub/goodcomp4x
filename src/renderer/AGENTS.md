@@ -47,8 +47,15 @@ needs no build change; using it needs a pipeline change here.
 
 Each frame slot keeps its vertex buffer mapped until growth or teardown. Writes wait
 for that slot's fence. Vertex memory prefers host-visible coherent device-local
-memory, falling back to host-visible coherent memory. Readback prefers host-cached
-memory and invalidates noncoherent mappings after the GPU finishes.
+memory, falling back to host-visible coherent memory. The fallback is also taken when
+the preferred type is out of room (`create_buffer_preferred` tries every type with the
+required flags; without Resizable BAR the device-local one is a 256 MiB heap). Readback
+prefers host-cached memory and invalidates noncoherent mappings after the GPU finishes.
+
+A vertex buffer grows to the next power of two, freeing the old one first. Growth never
+fails a frame: a size that can't be allocated is halved until one can (`vertex_limit`
+remembers the largest worth trying), and a frame too big for the buffer draws what fits
+(`fit_ranges`: later batches whole, the first cut short), logging a warning when it starts.
 
 ## Invariants and gotchas
 

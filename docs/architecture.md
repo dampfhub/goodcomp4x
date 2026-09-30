@@ -85,7 +85,8 @@ their existing vector path. The raster uses 2x2 supersampling, 224 pixels across
 mip generation and filtering; the shader converts back to straight alpha for blending.
 The renderer accepts one-channel font and four-channel sprite atlases without game knowledge.
 
-Yield-row layouts and their small meshes are cached by the food/wood/metal tuple, bounded to
+Yield-row layouts and their small meshes are cached by the food/wood/metal tuple and zoom
+detail mode, bounded to
 256 entries. This caches artwork, not game state: fog memory and current yields are still
 queried every frame. World culling uses the actual viewport aspect, with a margin for artwork
 extending beyond hex centers; headless callers keep a conservative default.

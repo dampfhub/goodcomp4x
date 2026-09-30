@@ -1,5 +1,7 @@
-//! Tests only: a timing report of the frame's and the turn's stages on a busy
-//! generated world. Ignored by default; run it optimized:
+//! Tests only: a vertex budget for one frame on the biggest world
+//! (`a_frame_stays_within_its_vertex_budget`), and a timing report of the
+//! frame's and the turn's stages on a busy generated world. The report is
+//! ignored by default; run it optimized:
 //! `cargo test --release perf_report -- --ignored --nocapture`.
 use std::time::{Duration, Instant};
 
@@ -156,4 +158,38 @@ fn perf_report() {
     frame_report(&mut game, "turn 40, home");
     game.camera.half_height = super::camera::MAX_HALF_HEIGHT;
     frame_report(&mut game, "turn 40, zoomed all the way out");
+}
+
+/// The most vertices one frame's world and classic UI may take on the
+/// biggest world, whatever the player shows. A frame once took over 3
+/// million (Alt's yield chips on a revealed map, zoomed out), and growing
+/// the vertex buffer for it ran the GPU out of memory (#332). The worst case
+/// below is about 700k: Alt held with the fog off, zoomed out to the last
+/// level that draws yields in full (`YIELD_DETAIL_MAX_HALF_HEIGHT`).
+const VERTEX_BUDGET: usize = 1_000_000;
+
+#[test]
+fn a_frame_stays_within_its_vertex_budget() {
+    let mut game = busy_world(2, 10);
+    game.age_transition(1.0);
+    // `busy_world` has six AI sides and the player: the biggest world.
+    // Everything that adds to the map at once: a city's labor and yields,
+    // a unit's moves, a job being placed, and Alt's details.
+    game.selected_city = game.cities.iter().position(|c| c.team == PLAYER_TEAM);
+    game.selected = game.units.iter().position(|u| u.team == PLAYER_TEAM);
+    game.placing_job = Some(workers::JobKind::Road);
+    game.set_details(true);
+    for fog in [true, false] {
+        game.fog_of_war = fog;
+        for half_height in [6.0, 9.0, 12.0, 18.0, 27.0, super::camera::MAX_HALF_HEIGHT] {
+            game.camera.half_height = half_height;
+            let stages = game.scene_stages();
+            let world: usize = stages.iter().map(|(_, count)| count).sum();
+            let total = world + game.build_ui(SCREEN, None).len();
+            assert!(
+                total <= VERTEX_BUDGET,
+                "{total} vertices with fog {fog}, zoomed to {half_height}: {stages:?}"
+            );
+        }
+    }
 }
