@@ -73,9 +73,11 @@ behavior.
   Anything else a player's machine does (opening a view, looking inside a city) must not change
   the game in a network game (`is_networked`): plans are checked and applied against the game
   as the turn began, the same on every machine.
-  Once a network game's plan is sent it waits for the others' (`waiting_for_peers`): a method
-  that changes the plan refuses while `is_resolving` (true then, and while a turn plays out),
-  and one that only looks (selecting, opening a view) refuses only while `is_playing_out`.
+  Once a network game's plan is sent it waits for the others' (`waiting_for_peers`), and
+  `is_resolving` holds. Methods that change the plan and ones that only look (selecting,
+  opening a view) alike refuse only while `is_playing_out`: a change to the plan while waiting
+  takes the turn back (`take_back_on_new_orders`, which compares `team_plan` with the plan
+  sent), and looking must leave `team_plan` as it was.
 
 - `Team::Wild` owns the animals (`animals.rs`) and is no side: it isn't in `Team::ALL`, has no
   seat, stockpile, fog or plan, and `Team::index` must never be asked of it (arrays by side are

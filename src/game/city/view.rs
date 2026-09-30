@@ -282,12 +282,6 @@ impl GameState {
         let Some(i) = self.selected_city else {
             return false;
         };
-        // The plan is sent: citizens stay where they are, but another of the
-        // player's cities can still be looked at (above).
-        if self.is_resolving() {
-            self.notice = WAITING_NOTICE.into();
-            return true;
-        }
         // City management owns map clicks off a unit's token, so citizens
         // may be assigned onto a unit's tile. A tile never seen can't be
         // worked.

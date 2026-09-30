@@ -11,7 +11,7 @@ use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
 use super::text::fit_text;
-use super::tooltips::{PLAN_SENT, Subject};
+use super::tooltips::Subject;
 use super::*;
 use crate::game::settings::{Control, Setting};
 use crate::game::{font, map_icons};
@@ -3600,7 +3600,7 @@ impl GameState {
             }
             if let Some(kind) = reorder
                 && !disabled
-                && !self.is_resolving()
+                && !self.is_playing_out()
             {
                 // Scoped to the panel, so one city's chips can't reorder
                 // another's.
@@ -3652,17 +3652,6 @@ impl GameState {
         subject: Subject,
         actions: &mut Vec<Action>,
     ) {
-        // With the plan sent, what would change it shows disabled, as the
-        // classic panels do (`Layout::dock_panel`).
-        let frozen;
-        let panel = if self.plan_frozen() {
-            let mut copy = panel.clone();
-            copy.freeze_plan();
-            frozen = copy;
-            &frozen
-        } else {
-            panel
-        };
         let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in flat_rows(&panel.rows) {
             match row {
@@ -3863,7 +3852,7 @@ impl GameState {
                     }
                     drop(_background);
                     drop(_align);
-                    if !item.locked && !self.is_resolving() {
+                    if !self.is_playing_out() {
                         let name = match item.kind {
                             QueueKind::City => "city-queue",
                             QueueKind::Barracks => "barracks-queue",
@@ -3895,19 +3884,14 @@ impl GameState {
                     ui.same_line();
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
-                    let _disabled = ui.begin_disabled(item.locked);
                     let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
                         actions.push(Action::Button(scope, remove));
                     }
                     note_button_label(ui, "X");
                     note_drawn_button(ui, remove);
-                    if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                        let locked = item.locked.then_some(PLAN_SENT);
-                        show_tooltip(
-                            ui,
-                            &self.subject_tooltip_lines(remove, "X", locked, subject),
-                        );
+                    if ui.is_item_hovered() {
+                        show_tooltip(ui, &self.subject_tooltip_lines(remove, "X", None, subject));
                     }
                 }
             }

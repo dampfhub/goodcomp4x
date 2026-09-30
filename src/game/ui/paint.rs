@@ -52,7 +52,6 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             waiting,
             dragging,
             drop_target,
-            locked,
         } => {
             let bg = if *dragging {
                 BUTTON_HOVER_BG
@@ -77,9 +76,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             face.push(
                 origin,
                 label,
-                if *locked {
-                    DIM_TEXT
-                } else if *active {
+                if *active {
                     GOLD_TEXT
                 } else if *waiting {
                     REDUCED_TEXT

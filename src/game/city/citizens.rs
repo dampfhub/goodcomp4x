@@ -40,7 +40,7 @@ impl GameState {
     /// The open city's priority order changes (a chip dragged, or clicked
     /// to put first): its citizens are reassigned by it.
     pub fn set_selected_city_priorities(&mut self, priorities: Priorities) {
-        if self.is_resolving() || !priorities.is_order() {
+        if self.is_playing_out() || !priorities.is_order() {
             return;
         }
         if let Some(city) = self.selected_city {
@@ -358,7 +358,7 @@ impl GameState {
     }
 
     pub fn auto_assign_selected_city(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if let Some(city) = self.selected_city {

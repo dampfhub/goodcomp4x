@@ -271,70 +271,6 @@ enum Target {
     CopyHostAddress,
 }
 
-impl Target {
-    /// Whether what the button does changes the player's plan for the turn
-    /// (an order, a build, a citizen or worker), which a network game can't
-    /// once the plan is sent: while it waits for the others', these show
-    /// disabled (`PanelBuilder::freeze_plan`). Looking (opening views,
-    /// selecting, the camera) and the settings don't. End Turn has its own
-    /// state.
-    fn changes_plan(self) -> bool {
-        match self {
-            Target::Unit(_)
-            | Target::Build(_)
-            | Target::Building(_)
-            | Target::BarracksBuild(_)
-            | Target::InteriorClear
-            | Target::CityQueueRemove(_)
-            | Target::BarracksQueueRemove(_)
-            | Target::ClearCityQueue
-            | Target::ClearBarracksQueue
-            | Target::BuildWorker
-            | Target::BuildScout
-            | Target::BuildSettler
-            | Target::Grow
-            | Target::Gather
-            | Target::WorkerJob(_)
-            | Target::CancelPlacing
-            | Target::WorkerJobRemove(_)
-            | Target::RecallWorker(_)
-            | Target::ReleaseWorker
-            | Target::Priority(_) => true,
-            Target::ToggleYields
-            | Target::OpenSettings
-            | Target::OpenBarracks
-            | Target::OpenCity
-            | Target::OpenInterior
-            | Target::ShowWorker(_)
-            | Target::QueueItem(..)
-            | Target::RosterSelect(_)
-            | Target::RosterAdd(_)
-            | Target::RosterRemove(_)
-            | Target::EndTurn
-            | Target::Scenario(_)
-            | Target::SaveState
-            | Target::LoadState
-            | Target::CompleteProduction
-            | Target::TogglePlayback
-            | Target::ToggleFog
-            | Target::ToggleProductionSpeedup
-            | Target::ToggleLifetimeCap
-            | Target::SetSetting(..)
-            | Target::CloseSettings
-            | Target::Quit
-            | Target::OpenMultiplayer
-            | Target::CloseMultiplayer
-            | Target::NetPlayers(_)
-            | Target::EditNetField(_)
-            | Target::HostGame
-            | Target::JoinGame
-            | Target::LeaveGame
-            | Target::CopyJoinCode
-            | Target::CopyHostAddress => false,
-        }
-    }
-}
-
 /// An order for the selected unit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UnitAction {
@@ -440,7 +376,6 @@ enum Shape {
         waiting: bool,
         dragging: bool,
         drop_target: bool,
-        locked: bool,
     },
     /// A unit's token in the unit strip, framed while it's selected.
     UnitChip {
@@ -511,9 +446,6 @@ struct QueueItemSpec {
     waiting: bool,
     dragging: bool,
     drop_target: bool,
-    /// Can't be dragged or taken off: shown dim, its X disabled (a plan
-    /// that can't change, `PanelBuilder::freeze_plan`).
-    locked: bool,
 }
 
 struct QueueItemRegion {
@@ -522,6 +454,7 @@ struct QueueItemRegion {
     min: Vec2,
     max: Vec2,
     body_max_x: f32,
+    /// Can't be dragged: a priority chip whose button is off.
     locked: bool,
 }
 
@@ -558,9 +491,6 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
-    /// The player's plan can't change (a network game waiting for the
-    /// others'): docked panels show what would change it disabled.
-    plan_frozen: bool,
     /// Where the settings menu's shapes and buttons start, while it's open:
     /// `build_ui` draws them after everything before them, buttons
     /// included, so no other panel's buttons show through it.
@@ -582,10 +512,7 @@ impl Layout {
 
     /// Place a measured panel in a screen zone. All docked panels compose with
     /// one another and keep their rendering and hit boxes at the same rect.
-    fn dock_panel(&mut self, mut panel: PanelBuilder, zone: Zone) -> Option<Rect> {
-        if self.plan_frozen {
-            panel.freeze_plan();
-        }
+    fn dock_panel(&mut self, panel: PanelBuilder, zone: Zone) -> Option<Rect> {
         let rect = self.dock.as_mut()?.place(panel.size(), zone)?;
         panel.place_bottom_left(rect.min, self);
         Some(rect)
@@ -904,20 +831,12 @@ impl GameState {
             cursor.and_then(|c| self.job_target_at(self.camera.screen_to_world(c, screen_size)));
     }
 
-    /// While a network game waits for the others' plans: this side's is
-    /// sent, so the panels show everything that would change it disabled,
-    /// though they still show and open what there is to look at.
-    fn plan_frozen(&self) -> bool {
-        self.waiting_for_peers()
-    }
-
     pub fn set_ui_notice(&mut self, notice: &str) {
         self.notice = notice.into();
     }
 
     fn layout(&self, screen_size: Vec2) -> Layout {
         let mut layout = Layout::for_screen(screen_size);
-        layout.plan_frozen = self.plan_frozen();
         self.top_bar(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();

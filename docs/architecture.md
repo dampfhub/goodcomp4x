@@ -88,11 +88,11 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    step of `RESOLUTION_ORDER` is
    queued as a `Step::Units`, followed by `Step::Workers`.
    In a network game `end_planning` sends the side's plan instead (`submit_plan`,
-   `docs/multiplayer.md`). While it waits for the others' plans, `is_resolving` refuses every
-   change to the plan, but looking (selecting, opening views) waits only for `is_playing_out`,
-   and the panels show the controls that would change the plan disabled
-   (`PanelBuilder::freeze_plan`). The End Turn button then takes the plan back
-   (`take_back_turn`) until the host resolves the turn.
+   `docs/multiplayer.md`). While it waits for the others' plans (`is_resolving` holds, so the
+   End Turn button waits), orders and looking alike wait only for `is_playing_out`; an order
+   that changes the plan takes the turn back (`take_back_on_new_orders`, checked each frame in
+   `update` and before each message in `receive`), as the End Turn button does
+   (`take_back_turn`), until the host resolves the turn.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; an animal step (`animals.rs`) first decides where the wild's animals of that

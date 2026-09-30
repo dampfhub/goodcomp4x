@@ -103,13 +103,16 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Space with nothing left to do | End the turn |
 | End Turn button | Hold every unfinished unit, then end the turn, closing the city or Barracks view (or open a city that still needs a build) |
 | End Turn button while it waits (network game: WAITING FOR ..., TAKE BACK) | Take the turn back, to change your orders and end it again; too late once the host has every plan |
+| Any order while it waits (network game) | Takes the turn back too, and the order stands: end the turn again to send the new plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
 PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
-plays out. In a network game, once you have ended the turn and wait for the others' plans,
-you can still look around: clicks and C, Tab and V select units and open city, Barracks and
-interior views (a click only selects, never orders), and every control that would change your
-orders shows disabled.
+plays out. In a network game, once you have ended the turn and wait for the others' plans
+(the button names whose), you can still look around: clicks and C, Tab and V select units and
+open city, Barracks and interior views, and none of that takes the turn back. Every control
+works as while planning, and one that changes your orders (a move, an attack, a hold or
+guard, a build or queue change, a citizen, a worker, the priority order) takes the turn back
+and stands (`multiplayer.md`).
 
 ## Cities
 

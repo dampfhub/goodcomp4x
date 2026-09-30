@@ -240,8 +240,8 @@ A build card the stockpile can't pay for this turn is `.short(true)`
 too): still pressable, it's drawn with a red rim, a dark red ground (gold kept
 when queued) and its price in red, in classic (`paint::draw_button`) and ImGui
 (`short_style`, `short_price`); a disabled button is never drawn short.
-A plan sent in a network game makes a plan-changing button's reason
-`PLAN_SENT` (`freeze_plan`). A
+A plan sent in a network game leaves every button as it was: one that changes
+the plan takes the turn back (`docs/multiplayer.md`). A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
 `Layout::dock_panel(panel, Zone::BottomLeft)` places the measured panel and
 registers its render and hit-test geometry together. Available zones are

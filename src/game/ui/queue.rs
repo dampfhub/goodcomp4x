@@ -143,7 +143,7 @@ impl GameState {
 
     /// Capture a queue row body. Its separate X button remains an ordinary click.
     pub fn start_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return false;
         }
         let point = to_ui(cursor, screen_size);
@@ -220,7 +220,7 @@ impl GameState {
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
-        if source == target || self.is_resolving() {
+        if source == target || self.is_playing_out() {
             return;
         }
         let city = match kind {
@@ -275,7 +275,7 @@ impl GameState {
         panel.title_with_button(
             vec![(title.into(), LABEL_TEXT)],
             ButtonSpec::new(clear, "CLEAR", "").unavailable(
-                self.is_resolving()
+                self.is_playing_out()
                     .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
             ),
         );
@@ -407,7 +407,6 @@ impl GameState {
             dragging: drag.is_some_and(|drag| drag.source == index),
             drop_target: drag
                 .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-            locked: false,
         }
     }
 
