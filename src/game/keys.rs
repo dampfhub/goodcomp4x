@@ -244,6 +244,20 @@ impl Command {
             .map(|chord| chord.to_string())
             .unwrap_or_default()
     }
+
+    /// `key` for text in lower case, each part capitalized: `Ctrl+Shift+R`.
+    pub fn key_in_words(self) -> String {
+        self.key()
+            .split('+')
+            .map(|part| {
+                let mut chars = part.chars();
+                chars.next().map_or_else(String::new, |first| {
+                    first.to_string() + &chars.as_str().to_lowercase()
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("+")
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +313,10 @@ mod tests {
         assert_eq!(Command::Paste.key(), "CTRL+V");
         assert_eq!(Command::StopTyping.key(), "ENTER");
         assert_eq!(Command::ResetLayout.key(), "CTRL+SHIFT+R");
+        assert_eq!(Command::ResetLayout.key_in_words(), "Ctrl+Shift+R");
+        assert_eq!(Command::Playback.key_in_words(), "F8");
+        assert_eq!(Command::ResetLayout.key_in_words(), "Ctrl+Shift+R");
+        assert_eq!(Command::Playback.key_in_words(), "F8");
         assert_eq!(Command::Disband.key(), "DEL");
         // The Naval scenario has no key.
         assert_eq!(Command::Scenario(Scenario::Naval).key(), "");

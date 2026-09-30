@@ -19,7 +19,6 @@ use crate::game::city::{
 use crate::game::hex::Hex;
 use crate::game::keys::Command;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
-use crate::game::scenario::Scenario;
 use crate::game::strings::{text, tooltip};
 use crate::game::unit::Unit;
 use crate::game::workers::JobKind;
@@ -516,7 +515,9 @@ impl GameState {
                 }
                 Target::Build(build) => (
                     build.name().into(),
-                    build.shortcut().map_or_else(|| "CLICK".into(), String::from),
+                    build
+                        .shortcut()
+                        .map_or_else(|| "CLICK".into(), String::from),
                     format!(
                         "{}. {}{}",
                         build.description(),
@@ -583,7 +584,8 @@ impl GameState {
                 Target::ClearCityQueue | Target::ClearBarracksQueue => (
                     "CLEAR QUEUE".into(),
                     "CLICK".into(),
-                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST.".into(),
+                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST."
+                        .into(),
                     None,
                 ),
                 Target::WorkerJobRemove(_) => {
@@ -659,7 +661,10 @@ impl GameState {
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
-                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, false, city)),
+                    format!(
+                        "ONE MORE CITIZEN. {}",
+                        self.price_text(Build::Grow, false, city)
+                    ),
                     self.shortfall_text(Build::Grow, city),
                 ),
                 Target::Gather => (
@@ -706,56 +711,51 @@ impl GameState {
                     None,
                 ),
                 Target::Scenario(scenario) => (
-                    scenario.name().into(),
-                    scenario.key().into(),
-                    match scenario {
-                        Scenario::Combat => "FOUR UNITS A SIDE ACROSS A MOUNTAIN PASS.",
-                        Scenario::Cities => "TWO ESTABLISHED CITIES WITH ARMIES.",
-                        Scenario::Frontier => "A SETTLER AND A SCOUT EACH. BOTH SCOUTS ARE YOURS.",
-                        Scenario::World => "A NEW RANDOM WORLD EVERY PRESS.",
-                        Scenario::Siege => "A FIGHT ALREADY INSIDE A CITY.",
-                        Scenario::Naval => "COASTAL CITIES, SHIPS AND BATTERIES.",
-                    }
-                    .into(),
+                    scenario.title().into(),
+                    scenario.key(),
+                    scenario.description().into(),
                     None,
                 ),
                 Target::SaveState => (
-                    "SAVE".into(),
-                    "F6".into(),
-                    "SNAPSHOTS THE GAME.".into(),
+                    text!("debug_save").into(),
+                    Command::Save.key(),
+                    tooltip!("debug_save").into(),
                     None,
                 ),
                 Target::LoadState => (
-                    "LOAD".into(),
-                    "F7".into(),
+                    text!("debug_load").into(),
+                    Command::Load.key(),
                     self.saved_summary().unwrap_or_default(),
                     None,
                 ),
                 Target::CompleteProduction => (
-                    "FINISH BUILD".into(),
-                    "F9".into(),
-                    "FINISHES THE CURRENT BUILD NOW.".into(),
+                    text!("debug_finish_build").into(),
+                    Command::FinishBuild.key(),
+                    tooltip!("debug_finish_build").into(),
                     None,
                 ),
                 Target::TogglePlayback => (
-                    "PLAYBACK".into(),
-                    "F8".into(),
-                    "STEP BY STEP OR ALL AT ONCE.".into(),
+                    text!("debug_playback_title").into(),
+                    Command::Playback.key(),
+                    tooltip!("debug_playback_title").into(),
                     None,
                 ),
-                Target::ToggleFog => ("FOG OF WAR".into(), "F10".into(), String::new(), None),
+                Target::ToggleFog => (
+                    text!("debug_fog_title").into(),
+                    Command::Fog.key(),
+                    String::new(),
+                    None,
+                ),
                 Target::ToggleProductionSpeedup => (
-                    "PRODUCTION SPEEDS BUILDS".into(),
-                    "DEBUG".into(),
-                    "ON: A CITY'S WOOD AND METAL INCOME SPEEDS ITS QUEUE.".into(),
+                    text!("debug_speedup_title").into(),
+                    text!("debug_no_key").into(),
+                    tooltip!("debug_speedup_title").into(),
                     None,
                 ),
                 Target::ToggleLifetimeCap => (
-                    "CAVALRY AND ARMORED CAP".into(),
-                    "DEBUG".into(),
-                    format!(
-                        "{UNITS_PER_DEPOSIT} PER DEPOSIT. ALIVE: COUNTS LIVING ONES. EVER: COUNTS ALL TRAINED."
-                    ),
+                    text!("debug_unit_cap_title").into(),
+                    text!("debug_no_key").into(),
+                    tooltip!("debug_unit_cap_title", units = UNITS_PER_DEPOSIT),
                     None,
                 ),
                 // The current value's button says so.
@@ -770,9 +770,8 @@ impl GameState {
                             String::new()
                         },
                         setting.description(),
-                        (value == current).then(|| {
-                            text!("setting_already", value = setting.value_text(current))
-                        }),
+                        (value == current)
+                            .then(|| text!("setting_already", value = setting.value_text(current))),
                     )
                 }
                 Target::OpenSettings => (
@@ -862,11 +861,9 @@ impl GameState {
                     None,
                 ),
                 Target::EndTurn if self.waiting_for_peers() => (
-                    "TAKE BACK END TURN".into(),
-                    "CLICK".into(),
-                    "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
-                     UNTIL EVERYONE HAS ENDED IT. GIVING AN ORDER TAKES THEM BACK TOO."
-                        .into(),
+                    text!("end_turn_take_back_title").into(),
+                    text!("click").into(),
+                    tooltip!("end_turn_take_back_title").into(),
                     None,
                 ),
                 Target::EndTurn => {
@@ -874,20 +871,30 @@ impl GameState {
                     // its first item waits for (`idle_queues`).
                     let idle = self.idle_queues();
                     let mut description = if pending_text(self.pending()).is_some() {
-                        "SELECTS WHAT STILL NEEDS ORDERS.".to_string()
+                        text!("end_turn_selects").to_string()
                     } else {
-                        "RESOLVES EVERYONE'S ORDERS.".to_string()
+                        text!("end_turn_resolves").to_string()
                     };
                     for wait in &idle {
                         let place = queue_place(self.cities[wait.city].id, wait.lane);
-                        description.push_str(&format!(" {place}: {}.", wait_text(wait)));
+                        description.push(' ');
+                        description.push_str(&text!(
+                            "end_turn_idle_queue",
+                            queue = place,
+                            waits_for = wait_text(wait),
+                        ));
                     }
                     let caution = match idle.len() {
                         0 => None,
-                        1 => Some("1 QUEUE WORKS NOTHING THIS TURN".to_string()),
-                        n => Some(format!("{n} QUEUES WORK NOTHING THIS TURN")),
+                        1 => Some(text!("end_turn_one_queue_idle").to_string()),
+                        n => Some(text!("end_turn_queues_idle_caution", queues = n)),
                     };
-                    ("END TURN".into(), "SPACE".into(), description, caution)
+                    (
+                        text!("end_turn_button").into(),
+                        Command::HoldOrEndTurn.key(),
+                        description,
+                        caution,
+                    )
                 }
             };
         let mut lines = vec![(

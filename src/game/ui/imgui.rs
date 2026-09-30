@@ -13,7 +13,9 @@ use super::network_menu::NetField;
 use super::text::fit_text;
 use super::tooltips::Subject;
 use super::*;
+use crate::game::keys::Command;
 use crate::game::settings::{Control, Setting};
+use crate::game::strings::{hover_text, text, tooltip};
 use crate::game::{font, map_icons};
 
 /// How many of the punctuation characters game text uses
@@ -135,9 +137,9 @@ enum ViewScope {
 impl ViewScope {
     fn label(self) -> &'static str {
         match self {
-            Self::Default => "DEFAULT",
-            Self::City => "CITY / BUILDING",
-            Self::Troop => "TROOP",
+            Self::Default => text!("view_default"),
+            Self::City => text!("view_city"),
+            Self::Troop => text!("view_troop"),
         }
     }
 }
@@ -183,6 +185,17 @@ enum BoxScope {
     View(ViewScope),
 }
 
+impl BoxScope {
+    /// The title of its box `number`: OUTER BOX 2, TROOP BOX 3.
+    fn box_name(self, number: u32) -> String {
+        let view = match self {
+            BoxScope::Outer => text!("view_outer"),
+            BoxScope::View(view) => view.label(),
+        };
+        text!("view_box", view = view, number = number)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum PinnedKind {
     City,
@@ -202,22 +215,32 @@ struct PinnedPanel {
 impl PinnedPanel {
     fn title(self) -> String {
         match self.kind {
-            PinnedKind::City => format!("City {}###PinnedCity-{}", self.city_id + 1, self.city_id),
-            PinnedKind::Barracks => format!(
-                "Barracks {}###PinnedBarracks-{}",
-                self.city_id + 1,
+            PinnedKind::City => format!(
+                "{}###PinnedCity-{}",
+                text!("window_city", city = self.city_id + 1),
                 self.city_id
             ),
-            PinnedKind::Unit => format!("Unit {}###PinnedUnit-{}", self.city_id, self.city_id),
-            PinnedKind::Group => format!("Group###PinnedGroup-{}", self.city_id),
+            PinnedKind::Barracks => format!(
+                "{}###PinnedBarracks-{}",
+                text!("window_barracks", city = self.city_id + 1),
+                self.city_id
+            ),
+            PinnedKind::Unit => format!(
+                "{}###PinnedUnit-{}",
+                text!("window_unit", unit = self.city_id),
+                self.city_id
+            ),
+            PinnedKind::Group => {
+                format!("{}###PinnedGroup-{}", text!("window_group"), self.city_id)
+            }
             PinnedKind::CityQueue => format!(
-                "City {} Queue###PinnedCityQueue-{}",
-                self.city_id + 1,
+                "{}###PinnedCityQueue-{}",
+                text!("window_city_queue", city = self.city_id + 1),
                 self.city_id
             ),
             PinnedKind::BarracksQueue => format!(
-                "Barracks {} Queue###PinnedBarracksQueue-{}",
-                self.city_id + 1,
+                "{}###PinnedBarracksQueue-{}",
+                text!("window_barracks_queue", city = self.city_id + 1),
                 self.city_id
             ),
         }
@@ -246,11 +269,7 @@ struct OuterBox {
 
 impl OuterBox {
     fn title(self) -> String {
-        let label = match self.scope {
-            BoxScope::Outer => "OUTER",
-            BoxScope::View(view) => view.label(),
-        };
-        format!("{label} BOX {}###OuterBox-{}", self.id, self.id)
+        format!("{}###OuterBox-{}", self.scope.box_name(self.id), self.id)
     }
 }
 
@@ -289,17 +308,21 @@ const DEBUG: usize = 2;
 const INSPECT: usize = 3;
 const UNITS: usize = 4;
 const SETTINGS: usize = 5;
-/// Each slot's native window title, by slot. A new panel that isn't static
-/// chrome (like the status bar) gets a slot here, so it can be dragged,
-/// docked, resized and put in a box like the rest.
-const SLOT_TITLES: [&str; SLOT_COUNT] = [
-    "Selection",
-    "Production Queue",
-    "Debug",
-    "Inspect",
-    "Units",
-    "Settings",
-];
+/// Each slot's native window title, by slot (`text/ui.ini`). A new panel
+/// that isn't static chrome (like the status bar) gets a slot here, so it
+/// can be dragged, docked, resized and put in a box like the rest. ImGui
+/// knows a window by its title: code names a slot's window with this, never
+/// its words.
+fn slot_titles() -> [&'static str; SLOT_COUNT] {
+    [
+        text!("window_selection"),
+        text!("window_queue"),
+        text!("window_debug"),
+        text!("window_inspect"),
+        text!("window_units"),
+        text!("window_settings"),
+    ]
+}
 /// The order `plan` places automatic panels in: earlier ones get the space
 /// nearest their zone's corner. The settings menu isn't docked: it's centered.
 const PLAN_ORDER: [usize; SLOT_COUNT] = [SELECTION, QUEUE, SETTINGS, DEBUG, INSPECT, UNITS];
@@ -319,7 +342,7 @@ fn native_window(title: &str) -> *mut ::imgui::sys::ImGuiWindow {
 }
 
 fn queue_dock_relation(dockspace: u32) -> Option<QueueDockRelation> {
-    dock_relation("Selection", "Production Queue", dockspace)
+    dock_relation(slot_titles()[SELECTION], slot_titles()[QUEUE], dockspace)
 }
 
 /// Where `other` is docked beside `anchor`, when the two share a dock
@@ -829,7 +852,7 @@ fn game_dock_nodes(
 fn game_dock_tree(dockspace: u32) -> Option<DockTree> {
     let (root, central) = game_dock_nodes(dockspace)?;
     // Where each panel is docked, or goes back to.
-    let homes: Vec<(u32, usize)> = SLOT_TITLES
+    let homes: Vec<(u32, usize)> = slot_titles()
         .iter()
         .enumerate()
         .map(|(slot, title)| (panel_dock_id(title), slot))
@@ -910,7 +933,7 @@ fn build_game_dock(dockspace: u32, tree: &DockTree) -> bool {
             ::imgui::sys::igSetWindowDock(window, 0, always);
         }
         // Panels not shown yet: what the saved settings say.
-        for title in SLOT_TITLES {
+        for title in slot_titles() {
             if !native_window(title).is_null() {
                 continue;
             }
@@ -944,7 +967,7 @@ unsafe fn build_dock_node(id: u32, tree: &DockTree) {
         DockTree::Map => {}
         DockTree::Panels(slots) => {
             for &slot in slots {
-                let name = std::ffi::CString::new(SLOT_TITLES[slot]).expect("ImGui window title");
+                let name = std::ffi::CString::new(slot_titles()[slot]).expect("ImGui window title");
                 unsafe { ::imgui::sys::igDockBuilderDockWindow(name.as_ptr(), id) };
             }
         }
@@ -1289,7 +1312,7 @@ impl ImGuiLayoutState {
                 window.manual = true;
                 window.pos = default.floating_pos;
                 window.floating_pos = default.floating_pos;
-                set_native_geometry(SLOT_TITLES[slot], Some(default.floating_pos), None);
+                set_native_geometry(slot_titles()[slot], Some(default.floating_pos), None);
             }
             None => window.manual = false,
         }
@@ -1313,7 +1336,7 @@ impl ImGuiLayoutState {
                 window.sized = true;
                 window.size = default.floating_size;
                 window.floating_size = default.floating_size;
-                set_native_geometry(SLOT_TITLES[slot], None, Some(default.floating_size));
+                set_native_geometry(slot_titles()[slot], None, Some(default.floating_size));
             }
             None => window.sized = false,
         }
@@ -1421,7 +1444,7 @@ impl ImGuiLayoutState {
     /// panel out of a box.
     fn docking_to_build(&self, view: ViewScope) -> DockTree {
         let mut docking = self.docking_for_view(view);
-        for (slot, title) in SLOT_TITLES.iter().enumerate() {
+        for (slot, title) in slot_titles().iter().enumerate() {
             let boxed = self.in_box_of_view(title, view)
                 || (slot == DEBUG
                     && !self.editing_outer
@@ -1449,7 +1472,7 @@ impl ImGuiLayoutState {
         }
         // Docked in the game window: dragged out later, a panel stays where
         // it's dropped.
-        for (slot, title) in SLOT_TITLES.iter().enumerate() {
+        for (slot, title) in slot_titles().iter().enumerate() {
             let window = native_window(title);
             if !window.is_null() && unsafe { in_dockspace(&*window, dockspace) } {
                 self.reposition[slot] = false;
@@ -1567,14 +1590,15 @@ impl ImGuiLayoutState {
     /// with `keep_shared`, a box every view shares. Returns whether it
     /// stays docked in the game window.
     fn release_debug_for_view(&self, keep_shared: bool) -> bool {
-        if in_game_dock("Debug", self.game_dock_id) {
+        if in_game_dock(slot_titles()[DEBUG], self.game_dock_id) {
             return true;
         }
         let shared = keep_shared
             && self.outer_boxes.iter().any(|b| {
-                b.scope == BoxScope::Outer && Some(b.id) == self.outer_box_for_window("Debug")
+                b.scope == BoxScope::Outer
+                    && Some(b.id) == self.outer_box_for_window(slot_titles()[DEBUG])
             });
-        let debug = native_window("Debug");
+        let debug = native_window(slot_titles()[DEBUG]);
         if !shared && !debug.is_null() && unsafe { !(*debug).DockNode.is_null() } {
             unsafe {
                 ::imgui::sys::igDockContextQueueUndockWindow(
@@ -1661,7 +1685,7 @@ impl ImGuiLayoutState {
     }
 
     fn remove_outer_box(&mut self, box_id: u32) {
-        for title in SLOT_TITLES {
+        for title in slot_titles() {
             if self.outer_box_for_window(title) == Some(box_id) {
                 let window = native_window(title);
                 if !window.is_null() {
@@ -1672,10 +1696,10 @@ impl ImGuiLayoutState {
                         )
                     };
                 }
-                if title == "Debug" {
+                if title == slot_titles()[DEBUG] {
                     self.reposition[DEBUG] = true;
                 }
-                if title == "Inspect" {
+                if title == slot_titles()[INSPECT] {
                     self.inspector_snapshot = None;
                 }
             }
@@ -1739,7 +1763,7 @@ impl ImGuiLayoutState {
                 };
             }
         }
-        for title in ["Selection", "Production Queue"] {
+        for title in [slot_titles()[SELECTION], slot_titles()[QUEUE]] {
             if self.outer_box_for_window(title).is_some() {
                 let window = native_window(title);
                 if !window.is_null() {
@@ -1823,11 +1847,11 @@ impl ImGuiLayoutState {
 
     fn switch_layout_scope(&mut self, view: ViewScope) {
         let previous_view = self.active_view;
-        let old_debug_box = self.outer_box_for_window("Debug");
+        let old_debug_box = self.outer_box_for_window(slot_titles()[DEBUG]);
         let old_scope = self.debug_layout_scope;
         let desired = if self.editing_outer
             || self
-                .outer_box_for_window("Debug")
+                .outer_box_for_window(slot_titles()[DEBUG])
                 .and_then(|id| self.outer_boxes.iter().find(|b| b.id == id))
                 .is_some_and(|b| b.scope == BoxScope::Outer)
         {
@@ -1958,7 +1982,7 @@ impl ImGuiLayoutState {
     }
 
     fn release_debug_from_context(&mut self) {
-        let debug = native_window("Debug");
+        let debug = native_window(slot_titles()[DEBUG]);
         if debug.is_null() || unsafe { (*debug).DockNode.is_null() } {
             return;
         }
@@ -1988,7 +2012,7 @@ impl ImGuiLayoutState {
     }
 
     fn maintain_debug_scope(&mut self, context: Option<SelectionKind>) {
-        if self.outer_box_for_window("Debug").is_some() {
+        if self.outer_box_for_window(slot_titles()[DEBUG]).is_some() {
             self.debug_context_relations.clear();
             self.debug_context = context;
             self.debug_attached = false;
@@ -2008,12 +2032,16 @@ impl ImGuiLayoutState {
         }
         let Some(context) = context else {
             self.debug_outer_relation = self.pinned.iter().find_map(|pin| {
-                dock_relation(&pin.title(), "Debug", self.game_dock_id)
+                dock_relation(&pin.title(), slot_titles()[DEBUG], self.game_dock_id)
                     .map(|relation| (*pin, relation))
             });
             return;
         };
-        if let Some(relation) = dock_relation("Selection", "Debug", self.game_dock_id) {
+        if let Some(relation) = dock_relation(
+            slot_titles()[SELECTION],
+            slot_titles()[DEBUG],
+            self.game_dock_id,
+        ) {
             self.debug_context_relations.insert(context, relation);
             self.debug_restore_attempts = 0;
             self.debug_attached = true;
@@ -2033,17 +2061,17 @@ impl ImGuiLayoutState {
                 let window = native_window(title);
                 !window.is_null() && in_dockspace(unsafe { &*window }, self.game_dock_id)
             };
-            if in_game_window("Debug") || in_game_window("Selection") {
+            if in_game_window(slot_titles()[DEBUG]) || in_game_window(slot_titles()[SELECTION]) {
                 self.debug_restore_attempts = 0;
                 return;
             }
-            let selection = native_window("Selection");
-            let debug = native_window("Debug");
+            let selection = native_window(slot_titles()[SELECTION]);
+            let debug = native_window(slot_titles()[DEBUG]);
             if !selection.is_null() && !debug.is_null() {
                 unsafe {
                     let mut target_node = (*selection).DockNode;
                     if relation.anchor_group {
-                        let queue = native_window("Production Queue");
+                        let queue = native_window(slot_titles()[QUEUE]);
                         if !queue.is_null() && !(*queue).DockNode.is_null() {
                             target_node = shared_dock_node(target_node, (*queue).DockNode);
                         }
@@ -2090,8 +2118,8 @@ impl ImGuiLayoutState {
         let Some(relation) = self.queue_dock_relation else {
             return;
         };
-        let selection = native_window("Selection");
-        let queue = native_window("Production Queue");
+        let selection = native_window(slot_titles()[SELECTION]);
+        let queue = native_window(slot_titles()[QUEUE]);
         if selection.is_null() || queue.is_null() {
             return;
         }
@@ -3604,14 +3632,17 @@ fn note_shown_notice(_notice: &str, _min: [f32; 2], _max: [f32; 2], _limit: f32)
     SHOWN_NOTICE.set((_notice.to_string(), _min, _max, _limit));
 }
 
-/// Tests only: notes the status bar control just drawn; Menu, the first,
-/// starts the list again.
+/// Tests only: the status bar's controls are drawn again from the first
+/// (Menu).
+fn clear_status_controls() {
+    #[cfg(test)]
+    STATUS_CONTROLS.with_borrow_mut(Vec::clear);
+}
+
+/// Tests only: notes the status bar control just drawn.
 fn note_status_control(_ui: &Ui, _text: &str) {
     #[cfg(test)]
     STATUS_CONTROLS.with_borrow_mut(|drawn| {
-        if _text == "MENU" {
-            drawn.clear();
-        }
         drawn.push((_text.to_string(), _ui.item_rect_min(), _ui.item_rect_max()));
     });
 }
@@ -3731,6 +3762,33 @@ fn note_button_label(_ui: &Ui, _text: &str) {
 /// or from the left with `left` set.
 fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
     rich_button_hinted(ui, id, lines, size, left, None)
+}
+
+/// Whether the item ImGui knows by `id` (a `###` name, as the buttons'
+/// labels end: `LABEL###id`) had the cursor on it last frame. A label that
+/// changes on hover is chosen before its button is drawn, when ImGui can't
+/// yet say whether it's hovered this frame.
+fn hovered_last_frame(id: &str) -> bool {
+    let Ok(name) = std::ffi::CString::new(format!("###{id}")) else {
+        return false;
+    };
+    unsafe {
+        let context = ::imgui::sys::igGetCurrentContext();
+        let id = ::imgui::sys::igGetID_Str(name.as_ptr());
+        !context.is_null() && id != 0 && (*context).HoveredIdPreviousFrame == id
+    }
+}
+
+/// `spec` as drawn now: with its hover text for its label while the cursor
+/// is on it (`ButtonSpec::hover_text`), or `None` to draw it as it is.
+/// ImGui knows it as `id`.
+fn hovered_spec(spec: &ButtonSpec, id: &str) -> Option<ButtonSpec> {
+    let hover = spec.hover_label.as_ref()?;
+    hovered_last_frame(id).then(|| ButtonSpec {
+        label: hover.clone(),
+        hover_label: None,
+        ..spec.clone()
+    })
 }
 
 /// `rich_button`, with its lines from the first of `hint` on (a card's
@@ -3987,14 +4045,7 @@ fn draw_outer_boxes(
                 );
         }
         window.build(|| {
-            ui.text(format!(
-                "{} BOX {}",
-                match outer.scope {
-                    BoxScope::Outer => "OUTER",
-                    BoxScope::View(view) => view.label(),
-                },
-                outer.id
-            ));
+            ui.text(outer.scope.box_name(outer.id));
             ui.same_line();
             if ui.small_button(format!("X##outer-{}", outer.id)) {
                 actions.push(Action::RemoveOuterBox(outer.id));
@@ -4519,8 +4570,20 @@ impl GameState {
             let disabled = spec.unavailable.is_some();
             let _disabled = ui.begin_disabled(disabled);
             let id = format!("{:?}", spec.target);
-            let hint = grid.hint_from[index].zip(short_price(spec));
-            if rich_button_hinted(ui, &id, &grid.lines[index], size, false, hint) {
+            // Hovered, its hover text, laid out in the button as it is.
+            let hovered = hovered_spec(spec, &id).filter(|_| !icons).map(|shown| {
+                let one = button_grid(ui, &[shown], compact, panel.faded, grid.width);
+                (
+                    one.lines.into_iter().next().unwrap_or_default(),
+                    one.hint_from[0],
+                )
+            });
+            let (lines, hint_from) = match &hovered {
+                Some((lines, hint_from)) => (lines, *hint_from),
+                None => (&grid.lines[index], grid.hint_from[index]),
+            };
+            let hint = hint_from.zip(short_price(spec));
+            if rich_button_hinted(ui, &id, lines, size, false, hint) {
                 actions.push(Action::Button(scope, spec.target));
             }
             note_drawn_button(ui, spec.target);
@@ -4705,6 +4768,9 @@ impl GameState {
                     }
                     let _disabled = ui.begin_disabled(spec.unavailable.is_some());
                     let id = format!("{:?}", spec.target);
+                    // Hovered, its hover text, in the button as it is.
+                    let label = hovered_spec(spec, &id)
+                        .map_or(label, |shown| title_button_label(&shown, panel.faded));
                     if rich_button(ui, &id, &[label], [width, 0.0], false) {
                         actions.push(Action::Button(scope, spec.target));
                     }
@@ -4866,7 +4932,7 @@ impl GameState {
         // Dear ImGui applies a dock drop in NewFrame, before these windows are
         // submitted. Observe that new dock state now; otherwise our cached
         // floating geometry can undo a valid split on its first frame.
-        for (slot, title) in SLOT_TITLES.into_iter().enumerate() {
+        for (slot, title) in slot_titles().into_iter().enumerate() {
             layout.sync_native_window(slot, title);
         }
         layout.switch_layout_scope(self.layout_view());
@@ -4914,7 +4980,7 @@ impl GameState {
                 let end_x = (viewport.x - end_width).max(8.0);
                 let limit = end_x - NOTICE_GAP;
                 let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
-                rich_text(ui, &format!("TURN {turn}"), turn_color);
+                rich_text(ui, &text!("status_turn", turn = turn), turn_color);
                 let mut first_bottom = ui.item_rect_max()[1];
                 // The player's stockpile and supply, as much as fits (all
                 // of it in any window the game allows), then the notice in
@@ -4971,31 +5037,54 @@ impl GameState {
                 let spacing = ui.clone_style().item_spacing[0];
                 let pad = ui.clone_style().frame_padding[0];
                 let button_width = |label: &str| ui.calc_text_size(label)[0] + 2.0 * pad;
-                let layer = if layout.editing_outer {
-                    "EDIT OUTER"
-                } else {
-                    "EDIT VIEW"
-                };
-                let reset = layout.active_view != ViewScope::Default && !layout.editing_outer;
-                let mut controls = STATUS_MENU_X + button_width("MENU") + STATUS_MENU_GAP;
-                controls += button_width(layer) + spacing + button_width("+ BOX");
-                if reset {
-                    controls += spacing + button_width("RESET");
-                }
                 let name = layout.active_view.label();
-                let view = [format!("VIEW: {name}"), name.to_string()]
+                let (layer, layer_hover, layer_tip) = if layout.editing_outer {
+                    (
+                        text!("view_edit_outer"),
+                        hover_text!("view_edit_outer"),
+                        tooltip!("view_edit_outer", view = name),
+                    )
+                } else {
+                    (
+                        text!("view_edit_view"),
+                        hover_text!("view_edit_view"),
+                        tooltip!("view_edit_view", view = name),
+                    )
+                };
+                let (add_box, reset_label) = (text!("view_add_box"), text!("view_reset"));
+                let menu = self.menu_button();
+                let reset = layout.active_view != ViewScope::Default && !layout.editing_outer;
+                let mut controls = STATUS_MENU_X + button_width(&menu.label) + STATUS_MENU_GAP;
+                controls += button_width(layer) + spacing + button_width(add_box);
+                if reset {
+                    controls += spacing + button_width(reset_label);
+                }
+                let view = [text!("view_name", view = name), name.to_string()]
                     .into_iter()
                     .find(|view| controls + ui.calc_text_size(view)[0] + spacing <= limit);
+                // A control's label: its hover text while the cursor is on
+                // it, if a text file gives it one; ImGui knows it by `id`.
+                let shown = |label: &'static str, hover: Option<&'static str>, id: &str| {
+                    let shown = hover.filter(|_| hovered_last_frame(id)).unwrap_or(label);
+                    (shown, format!("{shown}###{id}"))
+                };
                 let second_line = (first_bottom - ui.window_pos()[1] + 2.0).ceil();
                 ui.set_cursor_pos([STATUS_MENU_X, second_line]);
-                if ui.small_button("MENU") {
+                let menu_shown =
+                    hovered_spec(&menu, "Menu").map_or(menu.label.clone(), |s| s.label);
+                clear_status_controls();
+                if ui.small_button(format!("{menu_shown}###Menu")) {
                     actions.push(Action::Button(None, Target::OpenSettings));
                 }
-                note_status_control(ui, "MENU");
+                note_status_control(ui, &menu_shown);
                 note_drawn_button(ui, Target::OpenSettings);
                 if ui.is_item_hovered() {
-                    let lines =
-                        self.subject_tooltip_lines(Target::OpenSettings, "MENU", None, no_subject);
+                    let lines = self.subject_tooltip_lines(
+                        Target::OpenSettings,
+                        &menu.label,
+                        None,
+                        no_subject,
+                    );
                     show_tooltip(ui, &lines);
                 }
                 ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
@@ -5004,36 +5093,31 @@ impl GameState {
                     note_status_control(ui, view);
                     ui.same_line();
                 }
-                if ui.small_button(layer) {
+                let (layer_shown, layer_id) = shown(layer, layer_hover, "Layer");
+                if ui.small_button(layer_id) {
                     actions.push(Action::ToggleLayoutLayer);
                 }
-                note_status_control(ui, layer);
+                note_status_control(ui, layer_shown);
                 if ui.is_item_hovered() {
-                    ui.tooltip_text(if layout.editing_outer {
-                        format!(
-                            "Arranging the boxes every view shares. Click: arrange the {name} view"
-                        )
-                    } else {
-                        format!(
-                            "Arranging the {name} view. Click: arrange the boxes every view shares"
-                        )
-                    });
+                    ui.tooltip_text(layer_tip);
                 }
                 ui.same_line();
-                if ui.small_button("+ BOX") {
+                let (box_shown, box_id) = shown(add_box, hover_text!("view_add_box"), "AddBox");
+                if ui.small_button(box_id) {
                     actions.push(Action::CreateBox);
                 }
-                note_status_control(ui, "+ BOX");
+                note_status_control(ui, box_shown);
                 if reset {
                     ui.same_line();
-                    if ui.small_button("RESET") {
+                    let (reset_shown, reset_id) =
+                        shown(reset_label, hover_text!("view_reset"), "Reset");
+                    if ui.small_button(reset_id) {
                         layout.request_reset_active_view();
                     }
-                    note_status_control(ui, "RESET");
+                    note_status_control(ui, reset_shown);
                     if ui.is_item_hovered() {
-                        ui.tooltip_text(
-                            "Ctrl+Shift+R: Restore this view's Debug placement and docking from Default",
-                        );
+                        let key = Command::ResetLayout.key_in_words();
+                        ui.tooltip_text(tooltip!("view_reset", key = key));
                     }
                 }
                 ui.set_cursor_pos([end_x, 7.0]);
@@ -5041,7 +5125,9 @@ impl GameState {
                 let end_turn = self.end_turn_button();
                 let _disabled = ui.begin_disabled(end_turn.unavailable.is_some());
                 let end_size = [end_width - 15.0, 29.0];
-                if ui.button_with_size(format!("{}###EndTurn", end_turn.label), end_size) {
+                let end_shown =
+                    hovered_spec(&end_turn, "EndTurn").map_or(end_turn.label.clone(), |s| s.label);
+                if ui.button_with_size(format!("{end_shown}###EndTurn"), end_size) {
                     actions.push(Action::Button(None, Target::EndTurn));
                 }
                 note_drawn_button(ui, Target::EndTurn);
@@ -5112,7 +5198,10 @@ impl GameState {
         }
         if !hover.rows.is_empty() {
             layout.inspector_snapshot = Some(hover.clone());
-        } else if layout.outer_box_for_window("Inspect").is_some() {
+        } else if layout
+            .outer_box_for_window(slot_titles()[INSPECT])
+            .is_some()
+        {
             hover = layout.inspector_snapshot.clone().unwrap_or_default();
         } else {
             layout.inspector_snapshot = None;
@@ -5194,7 +5283,7 @@ impl GameState {
                 ui,
                 layout,
                 SELECTION,
-                "Selection",
+                slot_titles()[SELECTION],
                 position,
                 size,
                 viewport,
@@ -5210,7 +5299,7 @@ impl GameState {
                 ui,
                 layout,
                 QUEUE,
-                "Production Queue",
+                slot_titles()[QUEUE],
                 position,
                 size,
                 viewport,
@@ -5226,7 +5315,7 @@ impl GameState {
                 ui,
                 layout,
                 DEBUG,
-                "Debug",
+                slot_titles()[DEBUG],
                 position,
                 size,
                 viewport,
@@ -5242,7 +5331,7 @@ impl GameState {
                 ui,
                 layout,
                 INSPECT,
-                "Inspect",
+                slot_titles()[INSPECT],
                 position,
                 size,
                 viewport,
@@ -5260,7 +5349,7 @@ impl GameState {
                 ui,
                 layout,
                 UNITS,
-                SLOT_TITLES[UNITS],
+                slot_titles()[UNITS],
                 position,
                 size,
                 viewport,
@@ -5278,7 +5367,7 @@ impl GameState {
                 ui,
                 layout,
                 SETTINGS,
-                SLOT_TITLES[SETTINGS],
+                slot_titles()[SETTINGS],
                 position,
                 size,
                 viewport,
@@ -5295,7 +5384,7 @@ impl GameState {
         }
         layout.note_floating(&positions);
         layout.track_captured_panels();
-        let selection_box = layout.outer_box_for_window("Selection");
+        let selection_box = layout.outer_box_for_window(slot_titles()[SELECTION]);
         if selection_box != layout.last_selection_outer_box
             && !selection_is_pinned
             && !tray.rows.is_empty()
@@ -5307,17 +5396,17 @@ impl GameState {
                     self.group.iter().map(|&i| self.units[i].id).collect(),
                 );
             }
-            layout.capture_panel(pin, box_id, "Selection");
+            layout.capture_panel(pin, box_id, slot_titles()[SELECTION]);
         }
         layout.last_selection_outer_box = selection_box;
-        let queue_box = layout.outer_box_for_window("Production Queue");
+        let queue_box = layout.outer_box_for_window(slot_titles()[QUEUE]);
         if queue_box != layout.last_queue_outer_box
             && !selection_is_pinned
             && !queue_is_pinned
             && !queue.rows.is_empty()
             && let (Some(pin), Some(box_id)) = (selected_queue_pin, queue_box)
         {
-            layout.capture_panel(pin, box_id, "Production Queue");
+            layout.capture_panel(pin, box_id, slot_titles()[QUEUE]);
         }
         layout.last_queue_outer_box = queue_box;
         for action in actions {
@@ -5364,7 +5453,7 @@ impl ImGuiLayoutState {
                 game.group.iter().map(|&i| game.units[i].id).collect(),
             );
         }
-        self.capture_panel(pin, box_id, "Selection");
+        self.capture_panel(pin, box_id, slot_titles()[SELECTION]);
     }
 
     /// Tests only: how many panels are captured.
@@ -5375,7 +5464,7 @@ impl ImGuiLayoutState {
     /// Tests only: the player resizing the panel titled `title` to `size`,
     /// as dragging its grip does. The panel must have been drawn.
     pub(super) fn resize_panel(&mut self, title: &str, size: Vec2) {
-        let slot = SLOT_TITLES
+        let slot = slot_titles()
             .iter()
             .position(|slot| *slot == title)
             .expect("a panel's title");
@@ -5396,7 +5485,7 @@ impl ImGuiLayoutState {
     /// Tests only: whether the panel titled `title` is placed by the player,
     /// and whether it's sized by them.
     pub(super) fn chosen_by_player(&self, title: &str) -> (bool, bool) {
-        let slot = SLOT_TITLES
+        let slot = slot_titles()
             .iter()
             .position(|slot| *slot == title)
             .expect("a panel's title");
@@ -5414,7 +5503,7 @@ impl ImGuiLayoutState {
     /// window in the layout's `view` ("default", "city", "troop"), as saved.
     pub(super) fn edge_saved(&self, view: &str, title: &str) -> Option<&'static str> {
         let view = view_from_text(view).expect("a view");
-        let slot = SLOT_TITLES
+        let slot = slot_titles()
             .iter()
             .position(|slot| *slot == title)
             .expect("a panel's title");

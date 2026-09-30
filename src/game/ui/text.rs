@@ -6,6 +6,7 @@ use super::{
 };
 use crate::game::ability::Ability;
 use crate::game::city::{Stock, resource_icon, stock_icons, turns_icon};
+use crate::game::strings::text;
 use crate::game::unit::Unit;
 
 /// A price in short form for a build card's hint: each resource's icon and
@@ -100,12 +101,12 @@ pub(super) fn signed_quantity(quarters: i32) -> String {
 /// the player's queues sit idle this turn (`idle`, from `idle_queues`).
 pub(super) fn end_turn_label((units, cities): (usize, usize), idle: usize) -> String {
     match (units, cities) {
-        (_, 1) => "CHOOSE PRODUCTION".into(),
-        (_, cities) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
-        (0, _) if idle > 0 => format!("END TURN · {idle} WAITING"),
-        (0, _) => "END TURN".into(),
-        (1, _) => "UNIT NEEDS ORDERS".into(),
-        (units, _) => format!("{units} UNITS NEED ORDERS"),
+        (_, 1) => text!("end_turn_choose_production").into(),
+        (_, cities) if cities > 1 => text!("end_turn_cities_need_production", cities = cities),
+        (0, _) if idle > 0 => text!("end_turn_queues_idle", queues = idle),
+        (0, _) => text!("end_turn_button").into(),
+        (1, _) => text!("end_turn_unit_needs_orders").into(),
+        (units, _) => text!("end_turn_units_need_orders", units = units),
     }
 }
 
