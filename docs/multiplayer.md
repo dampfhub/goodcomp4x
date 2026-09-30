@@ -99,8 +99,8 @@ turn), `Ready` (host: the sides whose plans it holds for the turn being planned,
 that changes and the turn doesn't resolve at once, and to a guest as it joins). The host also
 sends `Refused`, with the reason, to a guest it drops for a bad message.
 `PROTOCOL_VERSION` changes whenever one changes shape, or the rules a turn plays out by, or the
-map a seed generates (`mapgen.rs`: each machine builds the world from the seed), so
-mismatched builds refuse each other.
+map a seed generates (`mapgen.rs`: each machine builds the world from the seed), or how the AI
+plans (`ai.rs`: each machine plans the AI sides itself), so mismatched builds refuse each other.
 
 Taking a turn back (`take_back_turn`): a guest sends `Withdraw { turn }` and plans on; the host
 drops that side's plan and waits for its next `Plan`. The host takes its own back locally. Either
