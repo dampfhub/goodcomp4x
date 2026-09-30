@@ -776,6 +776,43 @@ The other games, before → after:
   citizen) and the 2 food a citizen eats were set against tiles of 3-4 food. With tiles of 2,
   population at turn 40 is 4.0 instead of 6.2.
 
+### Then: cutting forests
+
+The user's second decision in #368: a worker can cut a forest (Cut Forest, `JobKind::CutForest`)
+for a lump of wood into the stockpile, once, and the tile loses its forest: plains + forest becomes
+plains with 2 food, where a farm can follow if there's fresh water. It gives `CUT_FOREST_WOOD` (10)
+wood after `CUT_FOREST_TURNS` (2) turns of work, for `CUT_FOREST_PRICE` (2 food), all first
+guesses. The AI cuts a forest it works where a farm could then go, and, while its side has less
+wood than a Melee costs, the nearest forest no city works (`plan_ai_workers`).
+
+Measured the same way, on top of the capped yields (World with 4 AI sides, per side; world5 and
+world6 are within 0.6 of these):
+
+| | before (9632e16) | capped yields | and cutting |
+|---|---|---|---|
+| First troop | 9 | 9 | 9 |
+| Army at turn 20 / 40 / 60 | 3.5 / 5.8 / 10.2 | 2.7 / 4.4 / 5.0 | 3.4 / 4.9 / 5.5 |
+| Trained by turn 20 / 40 / 60 | 3.5 / 7.5 / 16.1 | 2.6 / 5.6 / 8.8 | 3.3 / 6.2 / 9.8 |
+| Population at turn 20 / 40 / 60 | 3.8 / 6.2 / 12.2 | 2.8 / 4.0 / 4.8 | 2.4 / 3.7 / 5.0 |
+| Second city (never) | 39 (7%) | 51 (66%) | 51 (47%) |
+| First city at population 5 (never) | 30 (11%) | 39 (64%) | 48 (76%) |
+| Stockpile f / w / m at turn 20 | 21 / 10 / 18 | 12 / 7 / 4 | 15 / 12 / 5 |
+| Stockpile f / w / m at turn 40 | 28 / 33 / 70 | 18 / 13 / 10 | 18 / 20 / 10 |
+| Stockpile f / w / m at turn 60 | 34 / 60 / 165 | 22 / 26 / 22 | 19 / 22 / 17 |
+| Barracks idle (of those, short of wood) | 17% (52%) | 44% (62%) | 40% (36%) |
+| Worker jobs: improve / road / cut forest | 789 / 390 / - | 245 / 456 / - | 242 / 355 / 318 |
+
+- **The wood comes back early.** The army at turn 20 is 3.4 again (3.5 before the cap), and a
+  Barracks lacks wood in 36% of its idle turns rather than 62%. After turn 20 the army still
+  grows at about the capped rate: once the forests near its cities are cut, a side has only its
+  center's wood and Gather's.
+- **More sides expand:** 47% never found a second city by turn 60, against 66%.
+- **Growth is slower still:** population at turn 20 is 2.4 against 2.8. The wood goes on troops,
+  and troops cost food that Grow would have had. Cut forests only feed a city once a citizen works
+  the bared plains (2 food, break-even) or a farm goes on them.
+- The World with 1 AI side moves the same way: army at turn 20 2.6 → 3.5, second city never 67% →
+  31%, population at turn 20 2.9 → 2.3. The Cities map has no forests, so nothing changes there.
+
 Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release simulation` and
 `cargo test --release plans_the_ai_makes -- --ignored`. The simulations' default seeds are
 now 1, 2, 4 and 8: with smaller armies no side cleared a den in 40 turns on seeds 1-4, which
