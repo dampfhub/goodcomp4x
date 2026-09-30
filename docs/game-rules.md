@@ -574,37 +574,46 @@ only).
   from a scout, and a bear's about 41 from a melee troop. Each den keeps one kind: a wolf den
   or a bear den, marked with a dark brown rim and a paw print in the hex's bottom-left corner.
   Out of sight, dens show as last seen, and the tile tooltip names the den.
-- **Territory:** an animal never leaves the hexes around its den: within 4 for a wolf pack,
-  within 3 for a bear.
+- **Territory:** an animal of a den never leaves the hexes around it: within 4 for a wolf pack,
+  within 3 for a bear. A stray (see Dens breed) has no den and goes anywhere.
 - **Hunting:** as its move step begins (wolves after cavalry, bears after melee; see Turn
   resolution), an animal goes for the nearest unit or worker out on the map within its hunting
-  range of it (4 hexes for a wolf pack, 3 for a bear) that it could strike from its territory
-  (within its territory plus one of its den), as close as its move and its territory allow;
-  ties go to staying put, then the lowest hex (q, then r).
+  range of it (4 hexes for a wolf pack, 3 for a bear, 2 more for a stray) that it could strike
+  from its territory (within its territory plus one of its den; anywhere for a stray), as close
+  as its move and its territory allow; ties go to staying put, then the lowest hex (q, then r).
 - **Roaming:** with nobody to hunt, it roams: it moves every turn it can, to a hex it can reach
-  in its territory picked by a hash of the turn, the animal and the hex. That looks random but
-  is the same on every machine, and draws nothing from the game's random numbers.
+  in its territory picked by a hash of the turn, the animal and the hex (a stray: of the hexes
+  as far as it can go, so it ranges wide). That looks random but is the same on every machine,
+  and draws nothing from the game's random numbers.
 - **Attacking:** as its attack step begins, it attacks whoever is in its reach, in its territory
   or not: the nearest unit, then the weakest, then the lowest hex (q, then r); with no unit, a
   worker. It decides on the real board as its step begins, the same on every machine.
-- **Never cities:** an animal never enters or attacks a city center or anyone standing on one,
-  never goes into a city's interior, and never captures anything: it doesn't step onto a worker
-  (it attacks it), a worker that shares its hex is killed, and it never holds ruins (a side's
-  count pauses while one stands on them). No city can be founded on a den.
-- **Dens breed:** a den starts with one animal and keeps up to two (three with many animals;
-  see How many). While it has fewer, it adds another every 8 turns, on the den itself, or as
-  soon after as nothing stands on the den; a den whose animals die fills up again the same way.
-  The tile tooltip says how many it keeps, how far they roam and hunt, what clearing it gives,
-  and when the next comes.
-- **Hunting pays:** the side that kills an animal gets +3 food (a wolf pack) or +5 food (a
-  bear) for its stockpile at once; if several sides' blows land in the step that kills it, the
-  one that dealt the most damage that step gets it (the earliest in `Team::ALL` on a tie).
+- **Never cities:** an animal, of a den or a stray, never enters or attacks a city center or
+  anyone standing on one, never goes into a city's interior, and never captures anything: it
+  doesn't step onto a worker (it attacks it), a worker that shares its hex is killed, and it
+  never holds ruins (a side's count pauses while one stands on them). No city can be founded on
+  a den.
+- **Dens breed:** a den starts with one animal and keeps up to two of its own (three with many
+  animals; see How many). Every 8 turns it adds another, on the den itself, or as soon after as
+  it can: once nothing stands on the den. Below its cap the new animal is its own; at its cap it
+  leaves as a **stray**, with no den, as long as the world has fewer strays than its limit: one
+  for each side and each den a side (so one a side with few animals, two with many). At the
+  limit, a full den waits until a stray dies. A den whose own animals die fills up again the
+  same way. The tile tooltip says how many it keeps, how far they roam and hunt, what clearing
+  it gives, when the next comes and whether it leaves as a stray, and how far strays hunt and
+  how many the world keeps.
+- **Hunting pays:** the side that kills an animal, of a den or a stray, gets +3 food (a wolf
+  pack) or +5 food (a bear) for its stockpile at once; if several sides' blows land in the step
+  that kills it, the one that dealt the most damage that step gets it (the earliest in
+  `Team::ALL` on a tie).
 - **Clearing a den:** a side that ends a turn with a unit (anything but a settler; scouts count)
   on a den clears it, for +6 food and 2 metal, before the turn's economy. The den is gone for
-  good and adds no more animals; those alive still roam and hunt around where it was.
+  good and adds no more animals, strays included; its own animals alive still roam and hunt
+  around where it was. Its land is free to settle: from the next planning phase a city may be
+  founded on its hex (see Founding), and the notice says so.
 - **How many:** the Animals setting (Next World; see `controls.md`) gives the next world none,
   one den a side keeping up to two animals each (the default), or two dens a side keeping up to
-  three each.
+  three each, with the stray limit above.
 - Animals are seen like any enemy unit (and not remembered, as they move), attacked like one,
   and fired on by units on alert. A player can't select or order them, and a network plan that
   names one is refused.
@@ -654,10 +663,11 @@ only).
 ## Cities (`city/`)
 
 - **Founding** (`city/founding.rs`): F with a selected settler founds a city where it stands:
-  only on passable land (not water), not on ruins, not in a hex an enemy contests (it would be
-  left on the new city's center), and at least 6 hexes (`MIN_CITY_DISTANCE`)
-  from every other city, any side's, whether you have seen it or not (the refusal says why). The
-  new city starts at population 1 with nothing built, auto-assigns and opens. A side's first city
+  only on passable land (not water), not on ruins or a den (a cleared den's hex is open), not
+  in a hex an enemy contests (it would be left on the new city's center), and at least 6 hexes
+  (`MIN_CITY_DISTANCE`) from every other city, any side's, whether you have seen it or not (the
+  refusal says why). The new city starts at population 1 with nothing built, auto-assigns and
+  opens. A side's first city
   comes with a worker at home, as a starting city does; any other city starts without one.
   Settlers come from the start (World, Start With: settler; Frontier) or from a city's queue
   (Settler, below).
@@ -1102,15 +1112,18 @@ more than it loses. For each den its side knows of (in sight or as last seen) it
 animals of the den's kind it sees within their territory of it, as they are, and unless it sees
 the whole territory, more at full health up to as many as the den can have by then (one to start
 and one more every 8 turns, up to the world's cap). Animals it sees that belong to no den it knows
-of (their den unseen, or cleared) make bands: those within 3 hexes of one another. Against each
-den or band it plays the fight out by the combat formula, which has no random spread: each round
+of (their den unseen or cleared, or strays) make bands: those within 3 hexes of one another.
+Against each den or band it plays the fight out by the combat formula, which has no random spread: each round
 the animals strike first, each at the weakest troop, then each troop at the weakest animal left,
 and a melee blow draws one back from a defender it doesn't kill; the animals under the cover of
 the den's tile (a band's first animal's), its troops on open ground. Of its troops within 12 hexes
 (not scouts, settlers or ships, nor units in a contested hex or holding ruins), it sends the
-nearest few, up to 4, that kill them all within 6 rounds for the most gain: the den's spoils and
-the animals' bounties, less the HP its troops lose (a dead troop's all), a troop's full health
-worth its price (food, wood and metal alike); the fewest on a tie, and none if no force gains.
+nearest few, up to 4, that kill them all within 6 rounds for the most gain: the den's spoils,
+the strays it would send out if left alone (a worker's price for each of the 2 it would in 16
+turns, in a world that keeps strays), its land if the side has a city within 10 hexes of it (a
+quarter of a settler's price), and the animals' bounties, less the HP its troops lose (a dead
+troop's all), a troop's full health worth its price (food, wood and metal alike); the fewest on
+a tie, and none if no force gains.
 The force gathers just outside the animals' reach (within 2 hexes of it), goes in together once
 all of it is there or some of it is already in, fights the animals it sees, and steps onto the
 den to clear it. A den or band it sends no force to it leaves alone: its other land units walk
@@ -1120,7 +1133,8 @@ gets out, or as far out as it can. Its scouts count that reach as threatened, an
 den only if they expect no animal at it. Its side keeps clear of the territory of every den it
 knows of (the hexes within 4 of it, as far as any animal roams): its settlers step around it
 where they can, and it picks no city site in it; its workers take no job in it, nor in the reach
-of animals it expects.
+of animals it expects. Once it sees a den gone (cleared), it forgets it: its land is open to
+its sites and workers again.
 
 ## Open questions
 

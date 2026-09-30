@@ -15,7 +15,7 @@ mod supply;
 mod tests;
 mod view;
 
-use super::animals::den_cap;
+use super::animals::{den_cap, stray_limit};
 use super::hex::{Hex, HexGrid};
 use super::mapgen::{generate, start_units};
 use super::ruins::{Ruin, RuinReward};
@@ -492,6 +492,7 @@ impl GameState {
         // animal: one a side, or two.
         let dens = map.dens.len().min(settings.world_animals * (1 + ai));
         self.make_dens(&map.dens[..dens], den_cap(settings.world_animals));
+        self.stray_limit = stray_limit(1 + ai, settings.world_animals);
         let founding = if settings.world_start_city {
             "C OPENS YOUR CITY"
         } else {

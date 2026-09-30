@@ -6,12 +6,16 @@
 //! `mapgen.rs` places the dens of a world (on forest, jungle and hills, away
 //! from every start). A den starts with one animal, a wolf pack or a bear
 //! (`UnitType::Wolf`, `UnitType::Bear`), and adds another every
-//! `DEN_BREED_TURNS` turns while it has fewer than its cap (`den_cap`, by the
-//! Animals setting). An animal never leaves its territory, the hexes within
-//! `territory(kind)` of its den (`Unit::home`). As its own move step begins
-//! it goes for the nearest unit or worker out on the map within its
-//! `hunting_range` that it can reach from its territory; with none, it roams
-//! to a hex of its territory picked by `roam_key`. As its attack step begins
+//! `DEN_BREED_TURNS` turns: one of its own while it has fewer than its cap
+//! (`den_cap`, by the Animals setting), and past that a stray, which leaves
+//! it for good, while the world has fewer strays than its limit
+//! (`stray_limit`). An animal of a den never leaves its territory, the hexes
+//! within `territory(kind)` of its den (`Unit::home`); a stray has no den
+//! and goes anywhere. As its own move step begins an animal goes for the
+//! nearest unit or worker out on the map within its hunting range
+//! (`hunting_range`, wider for a stray) that it can reach from its
+//! territory; with none, it roams to a hex it can reach (of its territory)
+//! picked by `roam_key`. As its attack step begins
 //! it attacks whoever is in reach. It never attacks or enters a city, and
 //! never captures anything (a worker it reaches, it kills). It decides on
 //! the real board as the step begins, the same on every machine: its "plan"
@@ -20,9 +24,10 @@
 //!
 //! Hunting pays: the side that kills an animal gets food (`bounty`), and a
 //! side that stands a unit (not a settler) on a den at a turn's end clears
-//! it for food and metal (`DEN_SPOILS`), and it adds no more animals
-//! (`resolve_dens`). How many dens a world has, and how many animals each
-//! keeps, is the Animals setting (`world_animals`).
+//! it for food and metal (`DEN_SPOILS`): it adds no more animals, and its
+//! land is open to a city (`resolve_dens`). How many dens a world has, how
+//! many animals each keeps and how many strays roam, is the Animals setting
+//! (`world_animals`).
 
 use super::GameState;
 use super::city::{Stock, stock_words};
@@ -51,8 +56,35 @@ pub fn hunting_range(kind: UnitType) -> i32 {
     }
 }
 
-/// Turns between a den's new animals while it keeps fewer than its cap.
+/// How much farther than an animal of its kind with a den a stray notices
+/// a unit or worker and goes for it.
+pub const STRAY_EXTRA_HUNTING: i32 = 2;
+
+/// How far from itself `animal` notices a unit or worker: its kind's
+/// `hunting_range`, `STRAY_EXTRA_HUNTING` more for a stray.
+pub fn hunts_within(animal: &Unit) -> i32 {
+    let extra = if animal.is_stray() {
+        STRAY_EXTRA_HUNTING
+    } else {
+        0
+    };
+    hunting_range(animal.unit_type) + extra
+}
+
+/// Turns between a den's new animals: its own while it keeps fewer than
+/// its cap, strays past that.
 pub const DEN_BREED_TURNS: u32 = 8;
+
+/// Strays the wild keeps at most for each side and each step of the
+/// Animals setting (`stray_limit`).
+pub const STRAYS_PER_SIDE: usize = 1;
+
+/// How many strays a world of `sides` sides with the Animals setting
+/// `world_animals` keeps at most (`STRAYS_PER_SIDE` for each side and each
+/// den a side it has): a den at its cap adds one only while fewer roam.
+pub fn stray_limit(sides: usize, world_animals: usize) -> usize {
+    STRAYS_PER_SIDE * sides * world_animals
+}
 /// What clearing a den gives the side that clears it.
 pub const DEN_SPOILS: Stock = Stock::whole(6, 0, 2);
 
@@ -79,10 +111,10 @@ pub struct Den {
     pub kind: UnitType,
     /// The most animals of its own it keeps at once (`den_cap`).
     pub cap: usize,
-    /// With fewer than `cap` of its animals alive: the turn ends until it
-    /// adds another (at 1, the next; at 0, as soon as nothing stands on the
-    /// den). `None` while it has all of them.
-    pub next_in: Option<u32>,
+    /// The turn ends until it adds another animal (at 1, the next; at 0, as
+    /// soon as it can: once nothing stands on the den and, at its cap, the
+    /// world has room for a stray).
+    pub next_in: u32,
 }
 
 impl Den {
@@ -168,14 +200,23 @@ impl GameState {
                 "END A TURN ON IT WITH A UNIT TO CLEAR IT: +{} FOR THE STOCKPILE",
                 stock_words(DEN_SPOILS)
             ),
+            "CLEARED, ITS LAND IS FREE TO SETTLE".into(),
         ];
-        if let Some(turns) = den.next_in {
-            notes.push(format!(
-                "ANOTHER {} IN {} TURNS",
-                animal_name(kind),
-                turns.max(1)
-            ));
-        }
+        let turns = den.next_in.max(1);
+        let full = self.den_animals_at(hex) >= den.cap;
+        notes.push(if full {
+            format!(
+                "FULL: ANOTHER {} LEAVES IT AS A STRAY IN {turns} TURNS",
+                animal_name(kind)
+            )
+        } else {
+            format!("ANOTHER {} IN {turns} TURNS", animal_name(kind))
+        });
+        notes.push(format!(
+            "STRAYS ROAM ANYWHERE, HUNTING WITHIN {} HEXES: UP TO {} IN THE WORLD",
+            hunting_range(kind) + STRAY_EXTRA_HUNTING,
+            self.stray_limit
+        ));
         notes
     }
 
@@ -192,25 +233,28 @@ impl GameState {
                 pos,
                 kind,
                 cap,
-                next_in: None,
+                next_in: DEN_BREED_TURNS,
             });
-            let d = self.dens.len() - 1;
-            self.spawn_animal(d);
-            self.dens[d].next_in = (self.den_animals(d) < cap).then_some(DEN_BREED_TURNS);
+            self.spawn_animal(self.dens.len() - 1, false);
         }
     }
 
-    /// How many of den `den`'s animals are alive, wherever they are.
-    fn den_animals(&self, den: usize) -> usize {
-        let pos = self.dens[den].pos;
+    /// How many animals of the den on `pos` are alive, wherever they are.
+    fn den_animals_at(&self, pos: Hex) -> usize {
         self.units.iter().filter(|u| u.home == Some(pos)).count()
+    }
+
+    /// How many strays are alive (`Unit::is_stray`).
+    pub(super) fn strays(&self) -> usize {
+        self.units.iter().filter(|u| u.is_stray()).count()
     }
 
     /// At a turn's end, before the economy: a den with a side's unit (not a
     /// settler) on it is cleared, and gone, and the side gets
-    /// `DEN_SPOILS`; its animals, if alive, keep to its territory. A den
-    /// with fewer than its cap of animals counts down `DEN_BREED_TURNS` and
-    /// then adds another, once nothing stands on it.
+    /// `DEN_SPOILS`; its animals, if alive, keep to its territory, and a
+    /// city may stand on its hex from now on. Every other den counts down
+    /// `DEN_BREED_TURNS` and then adds another animal once nothing stands
+    /// on it (`breed`).
     pub(super) fn resolve_dens(&mut self) {
         let mut d = 0;
         while d < self.dens.len() {
@@ -223,7 +267,10 @@ impl GameState {
             if let Some(team) = clearer {
                 let den = self.dens.remove(d);
                 *self.stock_mut(team) += DEN_SPOILS;
-                let what = format!("+{} FOR THE STOCKPILE", stock_words(DEN_SPOILS));
+                let what = format!(
+                    "+{} FOR THE STOCKPILE - ITS LAND IS FREE TO SETTLE",
+                    stock_words(DEN_SPOILS)
+                );
                 log::info!("{team:?} clears the {} at {pos:?}: {what}", den.name());
                 if team == self.local_team {
                     self.notice = format!("{} CLEARED: {what}", den.name());
@@ -231,16 +278,12 @@ impl GameState {
                 continue;
             }
             let counting = self.dens[d].next_in;
-            let next_in = match counting {
-                _ if self.den_animals(d) >= self.dens[d].cap => None,
-                None => Some(DEN_BREED_TURNS),
-                Some(turns) if turns > 1 => Some(turns - 1),
-                // Due: one more, or wait for whoever stands on the den to go.
-                Some(_) if self.spawn_animal(d) => Some(DEN_BREED_TURNS),
-                Some(_) => Some(0),
+            self.dens[d].next_in = match counting {
+                turns if turns > 1 => turns - 1,
+                // Due: one more, or wait until it can.
+                _ if self.breed(d) => DEN_BREED_TURNS,
+                _ => 0,
             };
-            let full = self.den_animals(d) >= self.dens[d].cap;
-            self.dens[d].next_in = next_in.filter(|_| !full);
             d += 1;
         }
     }
@@ -291,8 +334,20 @@ impl GameState {
         }
     }
 
-    /// A new animal of den `den` appears on it, if nothing stands there.
-    fn spawn_animal(&mut self, den: usize) -> bool {
+    /// Den `den`'s next animal, due now: one of its own below its cap,
+    /// else a stray while the world has fewer than `stray_limit`. Whether
+    /// it came (`spawn_animal`).
+    fn breed(&mut self, den: usize) -> bool {
+        let stray = self.den_animals_at(self.dens[den].pos) >= self.dens[den].cap;
+        if stray && self.strays() >= self.stray_limit {
+            return false;
+        }
+        self.spawn_animal(den, stray)
+    }
+
+    /// A new animal of den `den` appears on it, if nothing stands there:
+    /// one of its own, or a `stray` with no den. Whether it came.
+    fn spawn_animal(&mut self, den: usize, stray: bool) -> bool {
         let Den { pos, kind, .. } = self.dens[den];
         if self.is_occupied(pos) || self.field_workers.iter().any(|w| w.pos == pos) {
             return false;
@@ -300,16 +355,17 @@ impl GameState {
         let id = self.next_unit_id;
         self.next_unit_id += 1;
         let mut animal = Unit::new(id, pos, Team::Wild, kind);
-        animal.home = Some(pos);
+        animal.home = (!stray).then_some(pos);
         self.units.push(animal);
         true
     }
 
     /// Whether `hex` is in the territory of animal `idx` (within
-    /// `territory` of its den).
+    /// `territory` of its den); anywhere for a stray.
     fn in_territory(&self, idx: usize, hex: Hex) -> bool {
         let unit = &self.units[idx];
-        unit.home.unwrap_or(unit.pos).distance(hex) <= territory(unit.unit_type)
+        unit.home
+            .is_none_or(|home| home.distance(hex) <= territory(unit.unit_type))
     }
 
     /// Whether an animal may attack whoever stands on `hex`: never on a
@@ -321,20 +377,21 @@ impl GameState {
     }
 
     /// The unit or worker animal `idx` hunts as its move step begins: the
-    /// nearest it may attack (`animal_may_attack`) within its
-    /// `hunting_range`, and near enough its den to strike from its
-    /// territory; the lowest (q, r) of those as near.
+    /// nearest it may attack (`animal_may_attack`) within its hunting range
+    /// (`hunts_within`), and near enough its den to strike from its
+    /// territory (a stray has none to keep to); the lowest (q, r) of those
+    /// as near.
     fn animal_prey(&self, idx: usize) -> Option<Hex> {
         let unit = &self.units[idx];
-        let (pos, kind) = (unit.pos, unit.unit_type);
-        let home = unit.home.unwrap_or(pos);
-        let reach = territory(kind) + unit.stats().attack_range;
+        let (pos, range) = (unit.pos, hunts_within(unit));
+        let reach = territory(unit.unit_type) + unit.stats().attack_range;
+        let from_territory = |h: Hex| unit.home.is_none_or(|home| h.distance(home) <= reach);
         self.units
             .iter()
             .filter(|u| !u.is_animal())
             .map(|u| u.pos)
             .chain(self.field_workers.iter().map(|w| w.pos))
-            .filter(|&h| h.distance(pos) <= hunting_range(kind) && h.distance(home) <= reach)
+            .filter(|&h| h.distance(pos) <= range && from_territory(h))
             .filter(|&h| self.animal_may_attack(h))
             .min_by_key(|h| (h.distance(pos), h.q, h.r))
     }
@@ -343,7 +400,8 @@ impl GameState {
     /// its prey (`animal_prey`), as close as it can get within its
     /// territory, staying put on a tie, then the lowest (q, r); with no
     /// prey, it roams: to the hex it can reach with the lowest `roam_key`,
-    /// anywhere in its territory but where it stands. It won't step onto a
+    /// anywhere in its territory but where it stands (a stray: of those as
+    /// far from it as it can go). It won't step onto a
     /// worker (it kills them, it doesn't capture them), a city, or a hex
     /// another animal is heading for this step.
     pub(super) fn plan_animal_moves(&mut self, kind: UnitType) {
@@ -352,7 +410,7 @@ impl GameState {
             if !unit.is_animal() || unit.unit_type != kind || self.rival_of(idx).is_some() {
                 continue;
             }
-            let (pos, id) = (unit.pos, unit.id);
+            let (pos, id, stray) = (unit.pos, unit.id, unit.is_stray());
             let claimed = |hex: Hex| {
                 self.units
                     .iter()
@@ -373,10 +431,15 @@ impl GameState {
                 Some(prey) => options
                     .into_iter()
                     .min_by_key(|&h| (h.distance(prey), h != pos, h.q, h.r)),
-                None => options
-                    .into_iter()
-                    .filter(|&h| h != pos)
-                    .min_by_key(|&h| roam_key(self.turn, id, h)),
+                None => {
+                    // A stray ranges wide: only as far as it can go.
+                    let farthest = options.iter().map(|h| h.distance(pos)).max();
+                    options
+                        .into_iter()
+                        .filter(|&h| h != pos)
+                        .filter(|h| !stray || Some(h.distance(pos)) == farthest)
+                        .min_by_key(|&h| roam_key(self.turn, id, h))
+                }
             }
             .unwrap_or(pos);
             self.units[idx].planned_move = (dest != pos).then_some(dest);
@@ -485,7 +548,11 @@ mod tests {
             (Hex::new(0, 0), Some(Hex::new(0, 0)))
         );
         assert_eq!(game.den_at(Hex::new(0, 0)).map(Den::name), Some("WOLF DEN"));
-        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().next_in, None, "full");
+        assert_eq!(
+            game.den_at(Hex::new(0, 0)).unwrap().next_in,
+            DEN_BREED_TURNS
+        );
+        assert!(!wolf.is_stray());
         assert!(!game.ai_teams().contains(&Team::Wild));
     }
 
@@ -657,6 +724,7 @@ mod tests {
         game.resolve_dens();
         assert_eq!(game.dens.len(), 1);
         assert_eq!(game.stock(Team::Blue), before);
+        assert!(game.founding_issue(Hex::new(0, 0)).is_some(), "nor found");
         // A scout does, and the wolf keeps to its old territory.
         game.settlers.clear();
         game.units.last_mut().unwrap().unit_type = UnitType::Scout;
@@ -664,8 +732,12 @@ mod tests {
         assert!(game.dens.is_empty(), "cleared");
         assert_eq!(game.stock(Team::Blue), before + DEN_SPOILS);
         assert_eq!(animal(&game).home, Some(Hex::new(0, 0)));
-        // And it adds no more.
+        assert!(game.notice.ends_with("FREE TO SETTLE"), "{}", game.notice);
+        // Its land is open to a city at once.
         game.units.pop();
+        assert_eq!(game.founding_issue(Hex::new(0, 0)), None);
+        // And it adds no more, of its own or strays.
+        game.stray_limit = 4;
         for _ in 0..2 * DEN_BREED_TURNS {
             game.resolve_dens();
         }
@@ -685,49 +757,135 @@ mod tests {
             for turn in 1..DEN_BREED_TURNS {
                 game.resolve_dens();
                 assert_eq!(count(&game), born - 1, "turn {turn}");
-                assert_eq!(
-                    game.den_at(den).unwrap().next_in,
-                    Some(DEN_BREED_TURNS - turn)
-                );
+                assert_eq!(game.den_at(den).unwrap().next_in, DEN_BREED_TURNS - turn);
             }
             game.resolve_dens();
             assert_eq!(count(&game), born);
             let new = game.units.last().unwrap();
             assert_eq!((new.pos, new.home), (den, Some(den)));
         }
-        // Full: no countdown, and no more.
-        assert_eq!(game.den_at(den).unwrap().next_in, None);
+        // Full, in a world with no room for strays: no more, and the next
+        // waits, due.
         for (i, unit) in game.units.iter_mut().enumerate() {
             unit.pos = Hex::new(2, i as i32 - 1);
         }
         for _ in 0..2 * DEN_BREED_TURNS {
             game.resolve_dens();
         }
+        assert_eq!(game.units.len(), 3);
+        assert_eq!(game.den_at(den).unwrap().next_in, 0);
+        // One dies: the den has another at once.
+        game.units.pop();
+        game.resolve_dens();
         assert_eq!(count(&game), 3);
+        assert_eq!(game.den_at(den).unwrap().next_in, DEN_BREED_TURNS);
+    }
+
+    #[test]
+    fn a_full_den_sends_out_strays_up_to_the_worlds_limit() {
+        let mut game = wolf_den();
+        game.stray_limit = 2;
+        let den = Hex::new(0, 0);
+        game.units[0].pos = Hex::new(3, 0);
+        let strays = |game: &GameState| game.units.iter().filter(|u| u.is_stray()).count();
+        for stray in 1..=2 {
+            for turn in 1..DEN_BREED_TURNS {
+                game.resolve_dens();
+                assert_eq!(strays(&game), stray - 1, "turn {turn}");
+            }
+            game.resolve_dens();
+            assert_eq!(strays(&game), stray);
+            let new = game.units.last().unwrap();
+            assert_eq!((new.pos, new.home, new.team), (den, None, Team::Wild));
+            game.units.last_mut().unwrap().pos = Hex::new(-3, stray as i32);
+            assert_eq!(game.den_at(den).unwrap().next_in, DEN_BREED_TURNS);
+        }
+        // Its own is still one, at its cap.
+        assert_eq!(game.units.iter().filter(|u| u.home == Some(den)).count(), 1);
+        // At the limit it waits, due...
+        for _ in 0..2 * DEN_BREED_TURNS {
+            game.resolve_dens();
+        }
+        assert_eq!(strays(&game), 2);
+        assert_eq!(game.den_at(den).unwrap().next_in, 0);
+        // ...until a stray dies.
+        let gone = game.units.iter().position(Unit::is_stray).unwrap();
+        game.units.remove(gone);
+        game.resolve_dens();
+        assert_eq!(strays(&game), 2);
+    }
+
+    #[test]
+    fn a_stray_roams_and_hunts_beyond_any_territory_but_never_into_a_city() {
+        let mut game = wolf_den();
+        game.units.clear();
+        // A stray wolf pack at the den, with nobody about: it ranges far,
+        // as far as it can go each turn.
+        let id = add(&mut game, Hex::new(0, 0), Team::Wild, UnitType::Wolf);
+        let stray = |game: &GameState| game.units.iter().find(|u| u.id == id).unwrap().clone();
+        assert!(stray(&game).is_stray());
+        let mut farthest = 0;
+        for _ in 0..12 {
+            let was = stray(&game).pos;
+            play(&mut game);
+            let now = stray(&game).pos;
+            assert_eq!(now.distance(was), 2, "{was:?} to {now:?}");
+            farthest = farthest.max(now.distance(Hex::new(0, 0)));
+        }
+        assert!(farthest > territory(UnitType::Wolf), "only {farthest}");
+        // It notices prey farther off than a den's wolf pack would.
+        let range = hunting_range(UnitType::Wolf) + STRAY_EXTRA_HUNTING;
+        assert_eq!(hunts_within(&stray(&game)), range);
+        let idx = game.units.iter().position(|u| u.id == id).unwrap();
+        game.units[idx].pos = Hex::new(-3, 0);
+        let scout = add(
+            &mut game,
+            Hex::new(-3 + range, 0),
+            Team::Blue,
+            UnitType::Scout,
+        );
+        assert_eq!(game.animal_prey(idx), Some(Hex::new(-3 + range, 0)));
+        // A scout in a city is safe from it, as from any animal.
+        let city = Hex::new(-3 + range, 0);
+        game.cities = vec![crate::game::city::City::new(0, Team::Blue, city)];
+        game.auto_assign_city(0);
+        assert_eq!(game.animal_prey(idx), None);
+        game.units[idx].pos = Hex::new(-4 + range, 0);
+        for _ in 0..6 {
+            play(&mut game);
+            let wolf = stray(&game);
+            assert_ne!(wolf.pos, city);
+        }
+        let scout = game.units.iter().find(|u| u.id == scout).unwrap();
+        assert_eq!(scout.hp, scout.max_hp(), "safe in its city");
+        assert_eq!(game.cities[0].team, Team::Blue);
     }
 
     #[test]
     fn a_den_has_another_animal_some_turns_after_one_dies() {
         let mut game = wolf_den();
         game.units.clear();
-        for turn in 1..=DEN_BREED_TURNS {
+        for turn in 1..DEN_BREED_TURNS {
             game.resolve_dens();
             assert!(game.units.is_empty(), "turn {turn}");
             assert_eq!(
                 game.den_at(Hex::new(0, 0)).unwrap().next_in,
-                Some(DEN_BREED_TURNS + 1 - turn)
+                DEN_BREED_TURNS - turn
             );
         }
         // Due, but a settler stands on the den: it waits for it to leave.
         let settler = add(&mut game, Hex::new(0, 0), Team::Blue, UnitType::Melee);
         game.settlers.insert(settler);
         game.resolve_dens();
-        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().next_in, Some(0));
+        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().next_in, 0);
         game.units.clear();
         game.resolve_dens();
         let wolf = animal(&game);
         assert_eq!((wolf.pos, wolf.unit_type), (Hex::new(0, 0), UnitType::Wolf));
-        assert_eq!(game.den_at(Hex::new(0, 0)).unwrap().next_in, None);
+        assert_eq!(
+            game.den_at(Hex::new(0, 0)).unwrap().next_in,
+            DEN_BREED_TURNS
+        );
     }
 
     #[test]
@@ -763,8 +921,12 @@ mod tests {
                 game.dens.len(),
                 "an animal a den to start with"
             );
-            assert!(game.dens.iter().all(|d| d.next_in == Some(DEN_BREED_TURNS)));
+            assert!(game.dens.iter().all(|d| d.next_in == DEN_BREED_TURNS));
         }
+        // A stray a side for each den a side.
+        assert_eq!(off.stray_limit, 0);
+        assert_eq!(few.stray_limit, 4 * STRAYS_PER_SIDE);
+        assert_eq!(many.stray_limit, 8 * STRAYS_PER_SIDE);
     }
 
     #[test]
@@ -782,18 +944,27 @@ mod tests {
             notes[2].contains("CLEAR IT") && notes[2].contains("FOOD"),
             "{notes:?}"
         );
+        assert_eq!(notes[3], "CLEARED, ITS LAND IS FREE TO SETTLE");
         assert_eq!(
-            notes[3],
+            notes[4],
             format!("ANOTHER WOLF PACK IN {DEN_BREED_TURNS} TURNS")
         );
         game.resolve_dens();
         let notes = game.den_notes(Hex::new(0, 0), false);
         assert_eq!(
-            notes[3],
+            notes[4],
             format!("ANOTHER WOLF PACK IN {} TURNS", DEN_BREED_TURNS - 1)
         );
-        // Full, nothing to wait for.
-        assert_eq!(wolf_den().den_notes(Hex::new(0, 0), false).len(), 3);
+        // Full, its next goes out as a stray; the world keeps so many.
+        let mut full = wolf_den();
+        full.stray_limit = 4;
+        assert_eq!(
+            full.den_notes(Hex::new(0, 0), false)[4..],
+            [
+                format!("FULL: ANOTHER WOLF PACK LEAVES IT AS A STRAY IN {DEN_BREED_TURNS} TURNS"),
+                "STRAYS ROAM ANYWHERE, HUNTING WITHIN 6 HEXES: UP TO 4 IN THE WORLD".into(),
+            ]
+        );
         // Out of sight, only what was seen: nothing, before anyone looked.
         assert!(game.den_notes(Hex::new(0, 0), true).is_empty());
         assert!(game.den_notes(Hex::new(1, 0), false).is_empty());

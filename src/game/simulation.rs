@@ -388,10 +388,9 @@ fn check_invariants(game: &GameState, context: &str) {
             unit.unit_type.is_animal(),
             "{context}: {unit} is an animal of a side, or the wild's troop"
         );
-        assert_eq!(
-            unit.is_animal(),
-            unit.home.is_some(),
-            "{context}: {unit} has a den but isn't an animal, or the reverse"
+        assert!(
+            unit.home.is_none() || unit.is_animal(),
+            "{context}: {unit} has a den but isn't an animal"
         );
         if let Some(home) = unit.home {
             assert!(
@@ -399,12 +398,20 @@ fn check_invariants(game: &GameState, context: &str) {
                 "{context}: {unit} is {} hexes from its den",
                 unit.pos.distance(home)
             );
-            assert!(
-                game.cities.iter().all(|c| c.pos != unit.pos),
-                "{context}: {unit} stands in a city"
-            );
         }
+        // No animal, of a den or a stray, stands in a city.
+        assert!(
+            !unit.is_animal() || game.cities.iter().all(|c| c.pos != unit.pos),
+            "{context}: {unit} stands in a city"
+        );
     }
+    // Strays never outnumber the world's limit.
+    let strays = game.units.iter().filter(|u| u.is_stray()).count();
+    assert!(
+        strays <= game.stray_limit,
+        "{context}: {strays} strays, over the world's limit of {}",
+        game.stray_limit
+    );
     // No den keeps more animals than its cap, cleared or not.
     let mut homes: HashMap<Hex, usize> = HashMap::default();
     for home in game.units.iter().filter_map(|u| u.home) {
@@ -429,18 +436,22 @@ fn check_invariants(game: &GameState, context: &str) {
             game.cities.iter().all(|c| c.pos != den.pos),
             "{context}: a city on a den"
         );
-        // A den counts down to its next animal only while it has fewer than its cap.
+        // A den counts down to its next animal, and waits past its count
+        // only while it can't have it: something stands on the den, or it
+        // has all its own and the world all its strays.
+        assert!(den.next_in <= DEN_BREED_TURNS);
         let alive = homes.get(&den.pos).copied().unwrap_or(0);
-        assert_eq!(
-            alive < den.cap,
-            den.next_in.is_some(),
-            "{context}: the {} at {:?} has {alive} of {} animals and counts down {:?}",
+        let blocked = game.is_occupied(den.pos)
+            || game.field_workers.iter().any(|w| w.pos == den.pos)
+            || (alive >= den.cap && strays >= game.stray_limit);
+        assert!(
+            den.next_in > 0 || blocked,
+            "{context}: the {} at {:?} waits with {alive} of {} animals and {strays} of {} strays",
             den.name(),
             den.pos,
             den.cap,
-            den.next_in
+            game.stray_limit
         );
-        assert!(den.next_in.is_none_or(|t| t <= DEN_BREED_TURNS));
     }
     for worker in &game.field_workers {
         assert!(
