@@ -28,7 +28,12 @@
 use std::ops::RangeInclusive;
 
 use super::GameState;
+use super::keys::Command;
+use super::scenario::Scenario;
 use super::strings::{text, tooltip};
+
+/// The key that starts the next world, which the world settings are for.
+const NEXT_WORLD: Command = Command::Scenario(Scenario::World);
 
 /// The player's options. See the module comment for adding one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,14 +168,14 @@ impl Setting {
     }
 
     /// The heading it's listed under in the menu.
-    pub fn group(self) -> &'static str {
+    pub fn group(self) -> String {
         match self {
             Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => {
-                text!("settings_group_turns")
+                text!("settings_group_turns").into()
             }
-            Setting::FogStyle => text!("settings_group_map"),
+            Setting::FogStyle => text!("settings_group_map").into(),
             Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
-                text!("settings_group_next_world")
+                text!("settings_group_next_world", world_key = NEXT_WORLD.key())
             }
         }
     }
@@ -187,15 +192,18 @@ impl Setting {
     }
 
     /// What it does, for its tooltip: its entry's tooltip.
-    pub fn description(self) -> &'static str {
+    pub fn description(self) -> String {
+        let world_key = NEXT_WORLD.key();
         match self {
-            Setting::TurnPlayback => tooltip!("setting_turn_playback"),
-            Setting::TurnTransition => tooltip!("setting_turn_transition"),
-            Setting::MaxQueuedTurns => tooltip!("setting_queue_limit"),
-            Setting::FogStyle => tooltip!("setting_fog"),
-            Setting::WorldAi => tooltip!("setting_world_ai"),
-            Setting::WorldStart => tooltip!("setting_world_start"),
-            Setting::WorldAnimals => tooltip!("setting_world_animals"),
+            Setting::TurnPlayback => {
+                tooltip!("setting_turn_playback", key = Command::Playback.key())
+            }
+            Setting::TurnTransition => tooltip!("setting_turn_transition").into(),
+            Setting::MaxQueuedTurns => tooltip!("setting_queue_limit").into(),
+            Setting::FogStyle => tooltip!("setting_fog").into(),
+            Setting::WorldAi => tooltip!("setting_world_ai", world_key = world_key),
+            Setting::WorldStart => tooltip!("setting_world_start", world_key = world_key),
+            Setting::WorldAnimals => tooltip!("setting_world_animals", world_key = world_key),
         }
     }
 
@@ -414,7 +422,7 @@ mod tests {
             assert!(!setting.group().is_empty());
         }
         // A group's settings are listed together, so each heading shows once.
-        let mut seen: Vec<&str> = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
         for setting in Setting::ALL {
             if seen.last() != Some(&setting.group()) {
                 assert!(!seen.contains(&setting.group()), "{setting:?} apart");

@@ -21,6 +21,8 @@ use super::builder::{ButtonSpec, PanelBuilder, Row};
 use super::text::wrap;
 use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, SMALL, TEXT, TITLE, Target};
 use crate::game::GameState;
+use crate::game::keys::Command;
+use crate::game::strings::text;
 
 /// The characters a line of the status takes before it wraps.
 const STATUS_WRAP: usize = 44;
@@ -40,9 +42,9 @@ pub enum NetField {
 impl NetField {
     pub(super) fn name(self) -> &'static str {
         match self {
-            NetField::Port => "PORT",
-            NetField::Address => "HOST ADDRESS",
-            NetField::Code => "JOIN CODE",
+            NetField::Port => text!("net_field_port"),
+            NetField::Address => text!("net_field_address"),
+            NetField::Code => text!("net_field_code"),
         }
     }
 
@@ -187,14 +189,22 @@ impl GameState {
     /// the settings, so the menu stays the height of one of them.
     pub(super) fn network_panel_content(&self) -> PanelBuilder {
         let mut panel = PanelBuilder::default();
-        panel.text(TITLE, vec![("MULTIPLAYER".into(), TEXT)]);
+        panel.text(TITLE, vec![(text!("net_title").into(), TEXT)]);
         panel.gap(GAP);
         self.network_rows(&mut panel);
         panel.gap(GAP);
-        let button = |target, label: &str, hint: &str| ButtonSpec::new(target, label, hint);
+        let button = |target, label: &str, hint: String| ButtonSpec::new(target, label, hint);
         panel.compact_buttons(vec![
-            button(Target::CloseMultiplayer, "BACK", ""),
-            button(Target::CloseSettings, "CLOSE", "ESC"),
+            button(
+                Target::CloseMultiplayer,
+                text!("net_back_button"),
+                String::new(),
+            ),
+            button(
+                Target::CloseSettings,
+                text!("settings_close_button"),
+                Command::Back.key(),
+            ),
         ]);
         panel
     }
@@ -206,7 +216,7 @@ impl GameState {
         let button = |target, label: &str, unavailable: Option<String>| {
             ButtonSpec::new(target, label, "").unavailable(unavailable)
         };
-        let busy = || menu.busy.then(|| "ALREADY JOINING A GAME".to_string());
+        let busy = || menu.busy.then(|| text!("net_busy").to_string());
         let field = |panel: &mut PanelBuilder, field: NetField| {
             panel.rows.push(Row::Field(
                 field,
@@ -224,10 +234,14 @@ impl GameState {
             let side = format!("{:?}", self.local_team).to_uppercase();
             match self.join_code() {
                 Some(code) => {
-                    panel.text(BODY, vec![("HOSTING AS ".into(), LABEL_TEXT), (side, TEXT)]);
+                    let hosting = format!("{} ", text!("net_hosting_as"));
+                    panel.text(BODY, vec![(hosting, LABEL_TEXT), (side, TEXT)]);
                     self.host_rows(panel, code);
                 }
-                None => panel.text(BODY, vec![("PLAYING AS ".into(), LABEL_TEXT), (side, TEXT)]),
+                None => {
+                    let playing = format!("{} ", text!("net_playing_as"));
+                    panel.text(BODY, vec![(playing, LABEL_TEXT), (side, TEXT)]);
+                }
             }
             let open = self.open_seats();
             if !open.is_empty() {
@@ -237,17 +251,24 @@ impl GameState {
                     .collect();
                 panel.text(
                     BODY,
-                    vec![(format!("SEATS OPEN: {}", waiting.join(", ")), LABEL_TEXT)],
+                    vec![(
+                        text!("net_seats_open", seats = waiting.join(", ")),
+                        LABEL_TEXT,
+                    )],
                 );
             }
             status(panel);
-            panel.compact_buttons(vec![button(Target::LeaveGame, "LEAVE GAME", None)]);
+            panel.compact_buttons(vec![button(
+                Target::LeaveGame,
+                text!("net_leave_button"),
+                None,
+            )]);
             return;
         }
         panel.text(
             BODY,
             vec![
-                ("PLAYERS  ".into(), LABEL_TEXT),
+                (format!("{}  ", text!("net_players")), LABEL_TEXT),
                 (menu.players.to_string(), GOLD_TEXT),
             ],
         );
@@ -255,20 +276,29 @@ impl GameState {
             button(
                 Target::NetPlayers(menu.players.saturating_sub(1)),
                 "<",
-                (menu.players <= 2).then(|| "A NETWORK GAME NEEDS 2 PLAYERS OR MORE".into()),
+                (menu.players <= 2).then(|| text!("net_players_too_few").into()),
             ),
             button(
                 Target::NetPlayers(menu.players + 1),
                 ">",
-                (menu.players >= MAX_PLAYERS).then(|| format!("{MAX_PLAYERS} PLAYERS AT MOST")),
+                (menu.players >= MAX_PLAYERS)
+                    .then(|| text!("net_players_too_many", players = MAX_PLAYERS)),
             ),
         ]);
         field(panel, NetField::Port);
-        panel.compact_buttons(vec![button(Target::HostGame, "HOST GAME", busy())]);
+        panel.compact_buttons(vec![button(
+            Target::HostGame,
+            text!("net_host_button"),
+            busy(),
+        )]);
         panel.gap(GAP);
         field(panel, NetField::Address);
         field(panel, NetField::Code);
-        panel.compact_buttons(vec![button(Target::JoinGame, "JOIN GAME", busy())]);
+        panel.compact_buttons(vec![button(
+            Target::JoinGame,
+            text!("net_join_button"),
+            busy(),
+        )]);
         status(panel);
     }
 
@@ -276,9 +306,12 @@ impl GameState {
     /// the join `code`, and this machine's address on the local network;
     /// then what players over the internet need instead.
     fn host_rows(&self, panel: &mut PanelBuilder, code: &str) {
-        let copy = |target| ButtonSpec::new(target, "COPY", "");
+        let copy = |target| ButtonSpec::new(target, text!("net_copy_button"), "");
         panel.title_with_button(
-            vec![("JOIN CODE  ".into(), LABEL_TEXT), (code.into(), GOLD_TEXT)],
+            vec![
+                (format!("{}  ", text!("net_host_code")), LABEL_TEXT),
+                (code.into(), GOLD_TEXT),
+            ],
             copy(Target::CopyJoinCode),
         );
         let Some((port, _)) = self.net_menu.host else {
@@ -288,20 +321,18 @@ impl GameState {
         panel.gap(GAP / 2.0);
         match self.net_menu.host_address() {
             Some(address) => panel.title_with_button(
-                vec![("YOUR ADDRESS  ".into(), LABEL_TEXT), (address, GOLD_TEXT)],
+                vec![
+                    (format!("{}  ", text!("net_host_address")), LABEL_TEXT),
+                    (address, GOLD_TEXT),
+                ],
                 copy(Target::CopyHostAddress),
             ),
             None => panel.text(
                 SMALL,
-                vec![(
-                    format!("NO LOCAL NETWORK ADDRESS FOUND - PORT {port}"),
-                    LABEL_TEXT,
-                )],
+                vec![(text!("net_host_no_address", port = port), LABEL_TEXT)],
             ),
         }
-        let hint = format!(
-            "PLAYERS OVER THE INTERNET NEED YOUR PUBLIC IP, AND PORT {port} FORWARDED TO THIS PC"
-        );
+        let hint = text!("net_host_internet", port = port);
         for line in wrap(&hint, STATUS_WRAP) {
             panel.text(SMALL, vec![(line, LABEL_TEXT)]);
         }
@@ -326,13 +357,13 @@ impl GameState {
                         players: menu.players,
                     });
                 }
-                _ => menu.status = "THE PORT IS A NUMBER FROM 1 TO 65535".into(),
+                _ => menu.status = text!("net_bad_port").into(),
             },
             Target::JoinGame if !menu.busy => {
                 if menu.address.is_empty() {
-                    menu.status = "TYPE THE HOST'S ADDRESS FIRST".into();
+                    menu.status = text!("net_no_address").into();
                 } else if menu.code.is_empty() {
-                    menu.status = "TYPE THE JOIN CODE THE HOST SHOWS".into();
+                    menu.status = text!("net_no_code").into();
                 } else {
                     menu.request = Some(NetRequest::Join {
                         address: menu.address.clone(),

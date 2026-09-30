@@ -1,7 +1,7 @@
 # Controls
 
 Run `cargo run --release`. The city scenario opens by default. You control Blue; Red plans its
-orders when you end the turn. The key map in code is `App::window_event` in `src/app.rs`; the
+orders when you end the turn. The key map in code is `src/game/keys.rs`; the
 rules behind each action are in `game-rules.md`. This file is the only description of the
 controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just points here.
 

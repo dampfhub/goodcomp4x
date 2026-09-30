@@ -2468,7 +2468,11 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
         match row {
             Row::Heading(text) => heading = Some(text.clone()),
             Row::Setting(setting, value) => {
-                assert_eq!(heading.as_deref(), Some(setting.group()), "{setting:?}");
+                assert_eq!(
+                    heading.as_deref(),
+                    Some(setting.group().as_str()),
+                    "{setting:?}"
+                );
                 assert_eq!(*value, game.settings.get(*setting));
                 listed.push(*setting);
             }
@@ -2481,7 +2485,7 @@ fn the_settings_menu_shows_every_setting_under_its_heading() {
     // anything it steps.
     let text = panel_strings(|p| p.rows = classic_rows(panel.rows.clone()));
     for setting in Setting::ALL {
-        assert_shows(&text, setting.group());
+        assert_shows(&text, &setting.group());
         assert_shows(&text, setting.name());
         if settings_menu::steps_in_classic(setting) {
             assert_shows(&text, &setting.value_text(game.settings.get(setting)));

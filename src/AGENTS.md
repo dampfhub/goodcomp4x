@@ -12,7 +12,7 @@ for anything new a message carries, with a case in the randomized plan test
 `app.rs` owns the window, the renderer and the `GameState`, turns input into `GameState` method
 calls, and builds each frame. It also carries out what the settings menu's Multiplayer page asks
 (`GameState::take_net_request`: host, join on a thread of its own, leave, or copy to the
-clipboard), and while a text field has the keys (`App::typing`) they go to it, not the key map.
+clipboard), and while a text field has the keys (`App::typing`) they go to it (the key map's `TYPING` keys, `game/keys.rs`), not to the game.
 `clipboard.rs` is the system clipboard as text (Win32 through `windows-sys` under
 `cfg(windows)`, a stub elsewhere); `App` uses it for the classic fields' Ctrl+V/C/X and the
 COPY buttons, and gives it to ImGui (`set_clipboard_backend`). The game never touches it, or
@@ -35,11 +35,14 @@ the window is created (it did once the window was minimized and restored).
   The classic presentation adds a `game.build_ui(..)` batch; the default ImGui presentation
   builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
   optional classic UI, and ImGui data in order. F11 switches presentations.
-- The key map is the `KeyCode` match in `App::window_event`; most arms call one `GameState`
-  method. Escape has its own `KeyboardInput` arm: a press calls `GameState::press_escape`
-  (close the settings menu, a view or the selection, or else open the settings menu); F5 is
-  handled by `App` itself. The settings menu's Quit button sets a flag
-  (`GameState::quit_requested`) that the next frame checks before closing the window.
+- The key map is `src/game/keys.rs`: `App::window_event` turns a key press into a `keys::Key`
+  (`game_key`), looks up its `Command` (`keys::command_for`, in `PLAYING`, or `TYPING` while a
+  text field has the keys) and carries it out (`App::carry_out`, `App::type_key`); most commands
+  call one `GameState` method. Escape (`Command::Back`) calls `GameState::press_escape` (close
+  the settings menu, a view or the selection, or else open the settings menu); F5 and F11 are
+  handled by `App` itself. The UI names keys from the same map (`Command::key`).
+  The settings menu's Quit button sets a flag (`GameState::quit_requested`) that the next frame
+  checks before closing the window.
 - Left clicks act on release, and only if the cursor moved less than the 6-pixel drag threshold:
   `handle_click` (the modifiers pick its `ClickMode`: Shift queues, or adds a clicked unit to
   the selection; Ctrl swaps, or takes a clicked group member out). A longer drag that started

@@ -3022,7 +3022,7 @@ fn setting_label_width(ui: &Ui, panel: &PanelBuilder, font: FontId) -> f32 {
 fn setting_tooltip(ui: &Ui, setting: Setting) {
     ui.tooltip(|| {
         ui.text_colored(TEXT, setting.name());
-        for line in super::text::wrap(setting.description(), TOOLTIP_WRAP) {
+        for line in super::text::wrap(&setting.description(), TOOLTIP_WRAP) {
             ui.text_colored([0.72, 0.75, 0.76, 1.0], line);
         }
     });
