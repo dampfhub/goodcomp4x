@@ -922,6 +922,15 @@ fn build_game_dock(dockspace: u32, tree: &DockTree) -> bool {
             }
         }
         ::imgui::sys::igDockBuilderRemoveNodeChildNodes(dockspace);
+        // The dockspace is one node now, the map. Taking a panel out above
+        // may have merged the map's own node into it, deleting that node
+        // while ImGui's root still points at it (it looks again only as the
+        // dockspace is drawn), and splitting reads that pointer.
+        let root = ::imgui::sys::igDockBuilderGetNode(dockspace);
+        let central = ::imgui::sys::ImGuiDockNodeFlags_CentralNode;
+        (*root).CentralNode = root;
+        (*root).LocalFlags |= central;
+        (*root).MergedFlags |= central;
         build_dock_node(dockspace, tree);
         ::imgui::sys::igDockBuilderFinish(dockspace);
     }
