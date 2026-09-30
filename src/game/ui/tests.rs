@@ -2643,7 +2643,7 @@ fn the_multiplayer_page_hosts_and_joins_from_the_menu() {
 
 #[test]
 fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
-    let mut host = GameState::host_game(3, &crate::game::Settings::default());
+    let mut host = GameState::host_test_game(3, &crate::game::Settings::default());
     host.settings_open = true;
     host.activate_target(Target::OpenMultiplayer);
     host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
@@ -2827,7 +2827,7 @@ fn imgui_fields_paste_copy_and_cut_through_the_clipboard() {
 
 #[test]
 fn imgui_copy_buttons_copy_the_code_and_address() {
-    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    let mut host = GameState::host_test_game(2, &crate::game::Settings::default());
     host.settings_open = true;
     host.activate_target(Target::OpenMultiplayer);
     host.set_host_address(55741, Some("192.168.1.20".parse().unwrap()));
@@ -3421,7 +3421,7 @@ fn escape_or_a_right_click_on_the_map_stops_placing_in_both_presentations() {
 
 #[test]
 fn escape_and_right_click_stop_placing_in_a_network_game() {
-    let mut host = GameState::host_game(2, &crate::game::Settings::default());
+    let mut host = GameState::host_test_game(2, &crate::game::Settings::default());
     let (_, welcome) = host.welcome(&crate::game::NetMessage::Hello {
         version: crate::game::PROTOCOL_VERSION,
     });
@@ -3625,7 +3625,7 @@ fn the_imgui_clear_buttons_empty_their_queues() {
 /// show.
 fn waiting_guest() -> GameState {
     use crate::game::{NetMessage, PROTOCOL_VERSION, Settings};
-    let mut host = GameState::host_game(2, &Settings::default());
+    let mut host = GameState::host_test_game(2, &Settings::default());
     let (_, welcome) = host.welcome(&NetMessage::Hello {
         version: PROTOCOL_VERSION,
     });
