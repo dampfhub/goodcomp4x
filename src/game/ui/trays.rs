@@ -1,12 +1,13 @@
 //! The bottom-left command tray: a unit, a group, a city or a Barracks.
 
 use super::builder::{ButtonSpec, CatalogEntry, PanelBuilder, Row};
+use super::queue::{idle_word, wait_text, waiting_line};
 use super::text::{
     ability_text, compare, cost_hint, resource_color, signed_quantity, stat_spans, turns_text,
 };
 use super::{
     BODY, BOOSTED_TEXT, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, QueueItemSpec, QueueKind,
-    REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction,
+    REDUCED_TEXT, SMALL, TEXT, TITLE, Target, UnitAction, WAITING_TEXT,
 };
 use crate::game::GameState;
 use crate::game::city::{
@@ -517,8 +518,9 @@ impl GameState {
         if let Some((_, _, done)) = worked {
             panel.bar(done);
         }
-        if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
-            panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
+        if let Some(wait) = &status.head {
+            let (size, line) = waiting_line(wait);
+            panel.text(size, line);
         }
         // The priority order: a chip per good, its rank in its corner. The
         // chip being dragged (classic) is gold, and the one it would land
@@ -757,7 +759,19 @@ impl GameState {
                 None if city.barracks_queue.is_empty() => {
                     ("BARRACKS: IDLE - TRAIN TROOPS THERE".into(), GOLD_TEXT)
                 }
-                None => ("BARRACKS: NOTHING IT CAN PAY FOR".into(), REDUCED_TEXT),
+                // Its first item waits: the same warning as its own panel's
+                // (`waiting_line`).
+                None => match &status.head {
+                    Some(wait) => (
+                        format!(
+                            "BARRACKS {} — {}",
+                            idle_word(Lane::Barracks),
+                            wait_text(wait)
+                        ),
+                        WAITING_TEXT,
+                    ),
+                    None => ("BARRACKS: NOTHING IT CAN PAY FOR".into(), REDUCED_TEXT),
+                },
             };
             panel.gap(GAP);
             panel.text(SMALL, vec![training]);
@@ -928,8 +942,9 @@ impl GameState {
             );
             panel.bar(done);
         }
-        if let Some(waiting) = self.head_waiting_text(i, Lane::Barracks, &status) {
-            panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
+        if let Some(wait) = &status.head {
+            let (size, line) = waiting_line(wait);
+            panel.text(size, line);
         }
         let builds = [
             BuildUnit::Melee,

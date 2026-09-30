@@ -144,6 +144,10 @@ const SHORT_PRICE: Color = [0.82, 0.44, 0.38, 1.0];
 /// A short card that's also queued keeps its gold ground: its price in a
 /// dark red that reads on gold.
 const SHORT_QUEUED_PRICE: Color = [0.42, 0.14, 0.10, 1.0];
+/// A queue that works nothing this turn because its first item waits
+/// (`queue::waiting_line`, the turn strip's rim): a muted red in step with
+/// `SHORT_PRICE`, set apart by the line's size rather than its glare.
+const WAITING_TEXT: Color = [0.88, 0.40, 0.33, 1.0];
 /// The stockpile's resources, wherever they're named.
 const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
 const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
@@ -395,6 +399,9 @@ pub(super) struct RosterChip {
     pub(super) color: Color,
     pub(super) selected: bool,
     pub(super) count: usize,
+    /// Flagged in the waiting red: an idle queue's chip
+    /// (`RosterKey::Waiting`).
+    pub(super) warning: bool,
 }
 
 /// A turn strip chip's picture.
@@ -404,6 +411,8 @@ pub(super) enum ChipIcon {
     Unit(UnitLook),
     /// A city's tower.
     City,
+    /// A Barracks, as on the map.
+    Barracks,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

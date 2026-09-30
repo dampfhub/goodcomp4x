@@ -3,12 +3,56 @@
 
 use super::builder::{ButtonSpec, PanelBuilder};
 use super::{
-    LABEL_TEXT, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind, TITLE_ROW_HEIGHT,
-    Target, contains, to_ui,
+    BODY, LABEL_TEXT, Line, PADDING, QUEUE_ITEM_HEIGHT, QueueDrag, QueueItemSpec, QueueKind,
+    REDUCED_TEXT, SMALL, TITLE_ROW_HEIGHT, Target, WAITING_TEXT, contains, to_ui,
 };
 use crate::game::GameState;
-use crate::game::city::{Lane, SETTLER_MIN_POPULATION, Stock, stock_icons, turns_icon};
+use crate::game::city::{
+    HeadWait, Lane, SETTLER_MIN_POPULATION, Stock, WaitsFor, stock_icons, turns_icon,
+};
 use glam::Vec2;
+
+/// What a queue that works nothing this turn because its first item waits
+/// is doing, for the panels and the turn strip: a city gathers by itself
+/// (`gathers_this_turn`); a Barracks idles. The one place it's written.
+pub(super) fn idle_word(lane: Lane) -> &'static str {
+    match lane {
+        Lane::City => "GATHERING WHILE IT WAITS",
+        Lane::Barracks => "IDLE",
+    }
+}
+
+/// "CITY 2" or "CITY 2 BARRACKS": the queue's building, by its city's id.
+pub(super) fn queue_place(city_id: u32, lane: Lane) -> String {
+    match lane {
+        Lane::City => format!("CITY {}", city_id + 1),
+        Lane::Barracks => format!("CITY {} BARRACKS", city_id + 1),
+    }
+}
+
+/// "MELEE WAITS, SHORT OF [wood]3": the item that waits and what for, with
+/// how much the stockpile is short of when that's what it waits for.
+pub(super) fn wait_text(wait: &HeadWait) -> String {
+    let name = wait.build.name();
+    match wait.waits_for {
+        WaitsFor::Stock(short) => format!("{name} WAITS, SHORT OF {}", stock_icons(short)),
+        WaitsFor::Supply => format!("{name} WAITS FOR SUPPLY: NO ROOM TO START IT"),
+        WaitsFor::Citizens => format!("{name} WAITS FOR POPULATION {SETTLER_MIN_POPULATION}"),
+    }
+}
+
+/// A panel's line for a queue whose first item waits (`wait_text`): when
+/// the queue works nothing else, a warning in the waiting red, "IDLE —
+/// RANGED WAITS, SHORT OF [wood]3" (`idle_word`); otherwise, small, the
+/// wait alone.
+pub(super) fn waiting_line(wait: &HeadWait) -> (u32, Line) {
+    if wait.idle {
+        let text = format!("{} — {}", idle_word(wait.lane), wait_text(wait));
+        (BODY, vec![(text, WAITING_TEXT)])
+    } else {
+        (SMALL, vec![(wait_text(wait), REDUCED_TEXT)])
+    }
+}
 
 pub(super) fn queue_items_that_fit(available_height: f32) -> usize {
     // The title, with the Clear button at its end (`queue_title`).
@@ -282,32 +326,46 @@ impl GameState {
     }
 
     /// What one of `city`'s queues does this turn, for the panels. For the
-    /// player's own cities it's `forecast`'s view: the item worked, and
-    /// which items wait for the stockpile or for supply. Other sides'
-    /// stockpiles aren't the player's to see, so their queues show only
-    /// their first item, and never that the city gathers.
+    /// player's own cities it's `forecast`'s view: the item worked, which
+    /// items wait for the stockpile or for supply, and why the first
+    /// waits (`head_wait`). Other sides' stockpiles aren't the player's to
+    /// see, so their queues show only their first item, and never that the
+    /// city gathers.
     pub(super) fn queue_status(&self, city: usize, lane: Lane) -> QueueStatus {
         let len = self.lane_len(city, lane);
         let side =
             (self.cities[city].team == self.local_team).then(|| self.forecast(self.local_team));
-        let forecast = side.as_ref().and_then(|side| side.lane(city, lane));
-        let (worked, waiting, supply) = match forecast {
-            Some(forecast) => (
-                forecast.worked,
-                self.waiting_items(forecast),
-                self.supply_waiting_items(forecast),
-            ),
-            None => ((len > 0).then_some(0), Vec::new(), Vec::new()),
-        };
-        QueueStatus {
-            worked,
-            waiting,
-            supply,
-            gathers: lane == Lane::City
-                && side
-                    .as_ref()
-                    .is_some_and(|side| self.gathers_this_turn(side, city)),
+        let gathers = lane == Lane::City
+            && side
+                .as_ref()
+                .is_some_and(|side| self.gathers_this_turn(side, city));
+        match side.as_ref().and_then(|side| side.lane(city, lane)) {
+            Some(forecast) => QueueStatus {
+                worked: forecast.worked,
+                waiting: self.waiting_items(forecast),
+                supply: self.supply_waiting_items(forecast),
+                gathers,
+                head: self.head_wait(forecast),
+            },
+            None => QueueStatus {
+                worked: (len > 0).then_some(0),
+                waiting: Vec::new(),
+                supply: Vec::new(),
+                gathers,
+                head: None,
+            },
         }
+    }
+
+    /// The player's queues that work nothing this turn because their first
+    /// item waits (`HeadWait::idle`), in city order: the turn strip's
+    /// waiting chips and End Turn's count.
+    pub(super) fn idle_queues(&self) -> Vec<HeadWait> {
+        let forecast = self.forecast(self.local_team);
+        self.head_waits(&forecast)
+            .into_iter()
+            .filter(|wait| wait.idle)
+            .collect()
     }
 
     /// Whether item `index` of one of `city`'s queues is a Settler waiting
@@ -343,36 +401,6 @@ impl GameState {
         ))
     }
 
-    /// "MELEE WAITS FOR [wood]3" when the first item of one of `city`'s
-    /// queues waits for the stockpile (`status`).
-    pub(super) fn head_waiting_text(
-        &self,
-        city: usize,
-        lane: Lane,
-        status: &QueueStatus,
-    ) -> Option<String> {
-        if self.waits_for_citizens_at(city, lane, 0) {
-            return Some(format!(
-                "{} WAITS FOR POPULATION {SETTLER_MIN_POPULATION}",
-                self.item_name(city, lane, 0)
-            ));
-        }
-        // Its side's units and started items leave no room for it: the
-        // supply has fallen since it was queued (`supply_waiting_items`).
-        if status.supply.contains(&0) {
-            return Some(format!(
-                "{} WAITS FOR SUPPLY: NO ROOM TO START IT",
-                self.item_name(city, lane, 0)
-            ));
-        }
-        let short = status.head_waits()?;
-        Some(format!(
-            "{} WAITS FOR {}",
-            self.item_name(city, lane, 0),
-            stock_icons(short)
-        ))
-    }
-
     /// Row `index` of one of `city`'s queues: the item's `name` and the
     /// turns it has left, or what it waits for (and it's tinted). The item
     /// the city works is marked.
@@ -392,7 +420,7 @@ impl GameState {
         let mut state = match waits {
             _ if citizens => format!("WAITS FOR POP {SETTLER_MIN_POPULATION}"),
             _ if supply => "WAITS FOR SUPPLY".into(),
-            Some(short) => format!("WAITS {}", stock_icons(short)),
+            Some(short) => format!("WAITS, SHORT OF {}", stock_icons(short)),
             None => match self.item_turns_left(city, lane, index) {
                 0 => "READY".into(),
                 turns => format!("{} LEFT", turns_icon(turns)),
@@ -503,6 +531,9 @@ pub(super) struct QueueStatus {
     /// The city queue works nothing, so its city gathers by itself
     /// (`GameState::gathers_this_turn`): the player's own cities only.
     pub(super) gathers: bool,
+    /// Why the first item waits, if it does (`GameState::head_wait`): the
+    /// panels' waiting line (`waiting_line`).
+    pub(super) head: Option<HeadWait>,
 }
 
 impl QueueStatus {
@@ -512,11 +543,5 @@ impl QueueStatus {
             .iter()
             .find(|&&(waiting, _)| waiting == index)
             .map(|&(_, short)| short)
-    }
-
-    /// What the first item waits for, if it waits: its city shows the
-    /// missing resources' badge.
-    pub(super) fn head_waits(&self) -> Option<Stock> {
-        self.waits(0)
     }
 }

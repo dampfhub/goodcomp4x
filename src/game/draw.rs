@@ -2723,21 +2723,7 @@ fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<
 /// team's, marked B.
 fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
     let alpha = color[3];
-    let outline = with_alpha(ICON_OUTLINE_COLOR, alpha);
-    let (eave, peak, half) = (0.1, 0.4, 0.38);
-    let roof = |grow: f32| {
-        (
-            pos + Vec2::new(-half - grow, eave - grow / 2.0),
-            pos + Vec2::new(half + grow, eave - grow / 2.0),
-            pos + Vec2::new(0.0, peak + grow),
-        )
-    };
-    let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
-    mesh::triangle(a, b, c, outline, out);
-    let walls = (pos + Vec2::new(-0.28, -0.32), pos + Vec2::new(0.28, eave));
-    push_outlined_rects(&[walls], 1.0, color, out);
-    let (a, b, c) = roof(0.0);
-    mesh::triangle(a, b, c, color, out);
+    push_barracks_house(pos, 1.0, color, out);
     font::push_glyph(
         pos + Vec2::new(0.0, -0.09),
         0.26,
@@ -2745,6 +2731,28 @@ fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
         with_alpha(LABEL_COLOR, alpha),
         out,
     );
+}
+
+/// A barracks' house, unmarked: walls and a pitched roof in `color`, `scale`
+/// times its size on the map (0.76 wide, 0.72 tall), in whatever space
+/// `pos` is in: the turn strip draws it too.
+pub(super) fn push_barracks_house(pos: Vec2, scale: f32, color: Color, out: &mut Vec<Vertex>) {
+    let outline = with_alpha(ICON_OUTLINE_COLOR, color[3]);
+    let at = |x: f32, y: f32| pos + Vec2::new(x, y) * scale;
+    let (eave, peak, half) = (0.1, 0.4, 0.38);
+    let roof = |grow: f32| {
+        (
+            at(-half - grow, eave - grow / 2.0),
+            at(half + grow, eave - grow / 2.0),
+            at(0.0, peak + grow),
+        )
+    };
+    let (a, b, c) = roof(ICON_OUTLINE_WIDTH * 1.6);
+    mesh::triangle(a, b, c, outline, out);
+    let walls = (at(-0.28, -0.32), at(0.28, eave));
+    push_outlined_rects(&[walls], scale, color, out);
+    let (a, b, c) = roof(0.0);
+    mesh::triangle(a, b, c, color, out);
 }
 
 /// The reticle of a unit on alert (`Unit::alert`): a red ring with a tick on

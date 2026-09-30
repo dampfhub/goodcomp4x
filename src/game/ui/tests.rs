@@ -1,4 +1,5 @@
 use super::builder::{ButtonSpec, Row, classic_rows, flat_rows};
+use super::queue::{wait_text, waiting_line};
 use super::text::{
     end_turn_label, fit_text, price_hint, quantity, signed_quantity, stock_spans, wrap,
 };
@@ -1457,7 +1458,8 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
         .expect("the queue's row");
     assert!(row.1, "tinted as waiting");
     assert!(
-        row.0.contains(&format!("WAITS {}", stock_icons(short))),
+        row.0
+            .contains(&format!("WAITS, SHORT OF {}", stock_icons(short))),
         "{}",
         row.0
     );
@@ -1532,11 +1534,13 @@ fn clicks_on_a_panel_do_not_reach_the_map() {
 #[test]
 fn end_turn_button_names_what_is_waiting() {
     // Production first, then units: the turn's order.
-    assert_eq!(end_turn_label((3, 1)), "CHOOSE PRODUCTION");
-    assert_eq!(end_turn_label((0, 2)), "2 CITIES NEED PRODUCTION");
-    assert_eq!(end_turn_label((3, 0)), "3 UNITS NEED ORDERS");
-    assert_eq!(end_turn_label((1, 0)), "UNIT NEEDS ORDERS");
-    assert_eq!(end_turn_label((0, 0)), "END TURN");
+    assert_eq!(end_turn_label((3, 1), 0), "CHOOSE PRODUCTION");
+    assert_eq!(end_turn_label((0, 2), 1), "2 CITIES NEED PRODUCTION");
+    assert_eq!(end_turn_label((3, 0), 1), "3 UNITS NEED ORDERS");
+    assert_eq!(end_turn_label((1, 0), 0), "UNIT NEEDS ORDERS");
+    assert_eq!(end_turn_label((0, 0), 0), "END TURN");
+    // Once nothing needs orders, the queues that sit idle flag it.
+    assert_eq!(end_turn_label((0, 0), 2), "END TURN · 2 WAITING");
 
     let game = GameState::new();
     let layout = game.layout(SCREEN);
@@ -1961,6 +1965,120 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
         !keys.iter().any(|k| matches!(k, RosterKey::Production(_))),
         "{keys:?}"
     );
+}
+
+/// #336: a queue whose first item waits, working nothing else, is idle: its
+/// panel says so in the waiting red with what's short and by how much, and
+/// so do its turn strip chip and End Turn, in both presentations.
+#[test]
+fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
+    use crate::game::city::Lane;
+    let mut game = GameState::city_scenario();
+    game.units.clear();
+    game.selected = None;
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    let id = game.cities[0].id;
+    // Broke: a Melee and a Ranged, each first in its queue, wait for wood.
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    game.queue_build(0, Build::Unit(BuildUnit::Melee));
+    game.queue_barracks(0, BuildUnit::Ranged);
+    let short = game
+        .expected_stock(Team::Blue)
+        .shortfall(BuildUnit::Melee.price());
+    assert!(short.wood > 0, "{short:?}");
+    let idle = game.idle_queues();
+    assert_eq!(idle.len(), 2, "{idle:?}");
+    assert!(idle.iter().all(|wait| wait.idle && wait.city == 0));
+
+    // The panels: a large line in the waiting red, with how much is short.
+    let warning = format!(
+        "GATHERING WHILE IT WAITS — MELEE WAITS, SHORT OF {}",
+        stock_icons(short)
+    );
+    let mut tray = PanelBuilder::default();
+    game.city_tray(0, &mut tray);
+    let line = tray
+        .rows
+        .iter()
+        .find_map(|row| match row {
+            Row::Text(size, line) if line[0].0 == warning => Some((*size, line[0].1)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{warning} in the city tray"));
+    assert_eq!(line, (BODY, WAITING_TEXT));
+    let barracks = panel_strings(|panel| game.barracks_tray(0, panel));
+    assert_shows(&barracks, "IDLE — RANGED WAITS, SHORT OF");
+    let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
+    assert_shows(&hover, &warning);
+
+    // The turn strip: a chip for each, rimmed red, and the heading's count.
+    let keys = roster_keys(&game);
+    let city_chip = RosterKey::Waiting(id, Lane::City);
+    let barracks_chip = RosterKey::Waiting(id, Lane::Barracks);
+    assert!(
+        keys.contains(&city_chip) && keys.contains(&barracks_chip),
+        "{keys:?}"
+    );
+    let panel = game.roster_panel().expect("the turn strip");
+    let heading = line_strings(panel.rows.iter().filter_map(|row| match row {
+        Row::Text(_, line) => Some(line.clone()),
+        _ => None,
+    }));
+    assert_shows(&heading, "WAITING: 2");
+    let chips: Vec<RosterChip> = panel
+        .rows
+        .iter()
+        .filter_map(|row| match row {
+            Row::Roster(chips) => Some(chips.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert!(
+        chips
+            .iter()
+            .filter(|chip| matches!(chip.key, RosterKey::Waiting(..)))
+            .all(|chip| chip.warning)
+    );
+    let (title, _, text) = game.roster_tooltip(city_chip);
+    assert_eq!(title, "CITY 1 GATHERING WHILE IT WAITS");
+    assert!(text.contains("MELEE WAITS, SHORT OF"), "{text}");
+
+    // End Turn: nothing needs orders, so it flags the idle queues, and its
+    // tooltip names them.
+    assert_eq!(game.pending(), (0, 0));
+    let end_turn = find_button(&game, Target::EndTurn);
+    assert_eq!(end_turn.label, "END TURN · 2 WAITING");
+    let tip = line_strings(game.tooltip_lines(&end_turn).into_iter().map(|(_, l)| l));
+    assert_shows(&tip, "2 QUEUES WORK NOTHING THIS TURN");
+    assert_shows(&tip, "CITY 1 BARRACKS: RANGED");
+
+    // ImGui draws both chips and End Turn's label.
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    assert!(screen.button(Target::RosterSelect(city_chip)).is_some());
+    assert!(screen.button(Target::RosterSelect(barracks_chip)).is_some());
+
+    // A chip opens its city or its Barracks.
+    game.handle_click(
+        roster_cursor(&game, barracks_chip),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(game.selected_barracks, Some(0));
+    game.handle_click(roster_cursor(&game, city_chip), SCREEN, ClickMode::Normal);
+    assert_eq!(game.selected_city, Some(0));
+
+    // Something the city can do behind the Melee (free Gather): it isn't
+    // idle, so the wait is a small line and the flags go.
+    game.queue_build(0, Build::Gather);
+    let status = game.queue_status(0, Lane::City);
+    let wait = status.head.expect("the Melee still waits");
+    assert!(!wait.idle);
+    assert_eq!(waiting_line(&wait).0, SMALL);
+    assert_eq!(game.idle_queues().len(), 1, "the Barracks still idles");
+    assert!(!roster_keys(&game).contains(&city_chip));
 }
 
 #[test]
@@ -3199,7 +3317,7 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
         _ => None,
     }))
     .join(" ");
-    assert!(text.contains("SIEGE WAITS FOR"), "{text}");
+    assert!(text.contains("SIEGE WAITS, SHORT OF"), "{text}");
     // With nothing it can work, it gathers, and the tray, the queue and
     // the hover panel say so; the queue's row is still drawn where it was.
     let gathering = format!("GATHERING {}", stock_icons(GATHER_YIELD));
@@ -5011,12 +5129,9 @@ fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
     };
     assert!(rows[0].contains("WAITS FOR SUPPLY"), "{rows:?}");
     let waits = "MELEE WAITS FOR SUPPLY: NO ROOM TO START IT";
-    assert_eq!(
-        game.head_waiting_text(0, crate::game::city::Lane::City, &status),
-        Some(waits.into())
-    );
+    assert_eq!(status.head.map(|wait| wait_text(&wait)), Some(waits.into()));
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(&tray, waits);
+    assert_shows(&tray, &format!("GATHERING WHILE IT WAITS — {waits}"));
 }
 
 /// Where ImGui has the panel titled `title`, and how big.

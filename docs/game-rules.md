@@ -488,7 +488,8 @@ Everyone in a step acts simultaneously:
   Ctrl-right-click does).
 - The turn strip (`ui/roster.rs`, a panel starting at the bottom center) lists what the
   player still has to see to this turn, civilian tasks first: cities with an empty queue,
-  settlers, then military units needing orders.
+  cities and Barracks idle this turn because the first item of their queue waits (rimmed red,
+  counted as WAITING; clicking one opens it), settlers, then military units needing orders.
   Units are grouped by kind (settlers apart), each group in the order its first unit comes in
   unit order, with a count. Clicking a city's chip opens it. Clicking a group selects all its
   units and moves the camera to the first, and while any of them is selected, a second row
@@ -745,8 +746,13 @@ only).
   city's queue before its Barracks', so when several wait on one stockpile the first city's is
   paid first. Each item keeps its own work, which reordering carries with it; an unpaid item has
   none. A worked item moved out of the active slot shows SAVED on its queue row until it resumes.
-  A waiting item's row is tinted red and says what it waits for ("WAITS" and the missing
-  resources), the city tray and hover panel name the first item's wait, and the city shows a
+  A waiting item's row is tinted red and says what it waits for ("WAITS, SHORT OF" and the
+  missing resources, each with how much), the city tray, Barracks tray and hover panel name the
+  first item's wait. When that queue works nothing else this turn, so that the item isn't
+  getting built (the city **gathers while it waits**, see Gathering by itself; a Barracks is
+  **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS — MELEE WAITS,
+  SHORT OF" the resources, or "IDLE — RANGED WAITS, ..." for a Barracks), the turn strip adds a
+  red-rimmed chip for it, and End Turn counts it as WAITING. The city shows a
   badge over its tower on the map with the icon of each resource it lacks, whenever the first
   item of its queue or its Barracks' waits. What waits is judged on the stockpile as this turn's
   economy will find it: what's there now, plus the turn's income, less the citizens' food, and
@@ -972,7 +978,7 @@ only).
   every city's delivery, less the citizens' food), your supply (SUPPLY used/available, red
   once it's all used), the latest notice, and the End Turn button, whose label names what is
   still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
-  TURN.
+  TURN, or END TURN · 2 WAITING while queues sit idle (its tooltip lists them).
 - **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers net
   of the food its citizens eat (a cluster whose manager is picked up counts for nothing until it's
   placed, here and in the top bar), the current build and its turns left, the priority chips (food, wood and

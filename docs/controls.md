@@ -36,7 +36,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Shift-left / Shift-right-click a hex with a group | Queue the turns for every member, so their queues stay the same length |
 | Shift-left-click a member's planned stop with a group | Take that member's move there, and its later moves, off; it waits out those turns, so its queue stays as long as the others' |
 | Clear Orders button (group) / Ctrl-right-click | Clear every member's orders, queues, holds, guards and alerts |
-| Click a chip in the turn strip | A city's: open the city. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
+| Click a chip in the turn strip | A city's: open the city. An idle queue's (rimmed red): open its city or Barracks. A group's: select all its units (listing them one by one below) and move the camera to them. A unit's: select just it |
 | Shift-click / Ctrl-click a group or unit chip in the turn strip | Add its units to / take them out of the selection |
 | F / Found City button | Found a city with the selected settler, where it stands: on open land, not ruins, and at least 6 hexes from every other city (the notice says why not) |
 | Escape | Let go of the selected unit or group |
@@ -50,7 +50,10 @@ and a new world, start the same way. A unit you select by clicking stays selecte
 
 The turn strip ("need orders"; a panel that starts at the bottom of the screen, centered or as
 near the middle as the other panels allow) shows a chip for everything you still have to see to
-this turn, civilian tasks first: each city with nothing to build (its tower), your settlers, and
+this turn, civilian tasks first: each city with nothing to build (its tower), each city or
+Barracks that works nothing this turn because the first item of its queue waits (its tower or
+house, rimmed red; the heading counts them as WAITING, and the chip's tooltip says what the item
+waits for and how much is short), your settlers, and
 then your military units needing orders. Units are grouped by kind, one chip per kind with a count; a group of several
 that you select lists its units one by one on a second row, to pick from or take out. Selected
 units, and the open city, are framed; a unit leaves the strip once it has its orders (or holds,
@@ -106,7 +109,10 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Any order while it waits (network game) | Takes the turn back too, and the order stands: end the turn again to send the new plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
-PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
+PRODUCTION") and turns gold, reading END TURN, once nothing is; while any of your queues works
+nothing this turn (a city gathering while its first item waits, or an idle Barracks) it reads
+END TURN · 2 WAITING, and its tooltip lists them, each with what its first item waits for.
+Ending the turn is still allowed. Clicks are ignored while a turn
 plays out. In a network game, once you have ended the turn and wait for the others' plans
 (the button names whose), you can still look around: clicks and C, Tab and V select units and
 open city, Barracks and interior views, and none of that takes the turn back. Every control

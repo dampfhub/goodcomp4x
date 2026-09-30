@@ -96,11 +96,13 @@ pub(super) fn signed_quantity(quarters: i32) -> String {
 
 /// The End Turn button's label: the next thing the turn is waiting on, in
 /// the turn strip's order (production, then units, as that's what clicking
-/// selects first), or "END TURN" once nothing is.
-pub(super) fn end_turn_label((units, cities): (usize, usize)) -> String {
+/// selects first), or "END TURN" once nothing is, flagged with how many of
+/// the player's queues sit idle this turn (`idle`, from `idle_queues`).
+pub(super) fn end_turn_label((units, cities): (usize, usize), idle: usize) -> String {
     match (units, cities) {
         (_, 1) => "CHOOSE PRODUCTION".into(),
         (_, cities) if cities > 1 => format!("{cities} CITIES NEED PRODUCTION"),
+        (0, _) if idle > 0 => format!("END TURN · {idle} WAITING"),
         (0, _) => "END TURN".into(),
         (1, _) => "UNIT NEEDS ORDERS".into(),
         (units, _) => format!("{units} UNITS NEED ORDERS"),

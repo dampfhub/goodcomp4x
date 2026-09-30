@@ -103,6 +103,34 @@ pub(in crate::game) struct LaneForecast {
     pub supply: i64,
 }
 
+/// What the first item of a queue waits for (`HeadWait`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::game) enum WaitsFor {
+    /// The stockpile, short of this for it (`waiting_items`).
+    Stock(Stock),
+    /// Room in its side's supply to start it (`supply_waiting_items`).
+    Supply,
+    /// A Settler's city reaching `SETTLER_MIN_POPULATION`
+    /// (`waits_for_citizens`).
+    Citizens,
+}
+
+/// The first item of one of a city's queues, waiting this turn
+/// (`GameState::head_wait`): the one account of a waiting queue that the
+/// panels, the queue rows, the turn strip, End Turn and the map all show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::game) struct HeadWait {
+    pub city: usize,
+    pub lane: Lane,
+    /// The item that waits.
+    pub build: Build,
+    pub waits_for: WaitsFor,
+    /// Its queue works nothing else this turn either, so nothing in it
+    /// gets built: a city gathers by itself meanwhile (`auto_gather`), a
+    /// Barracks idles.
+    pub idle: bool,
+}
+
 /// Every queue of a side, as `GameState::forecast` sees this turn going.
 pub(in crate::game) struct QueueForecast {
     pub lanes: Vec<LaneForecast>,
@@ -598,6 +626,53 @@ impl GameState {
             .worked
             .unwrap_or_else(|| self.lane_len(lane.city, lane.lane));
         (0..end).filter(move |&index| !self.lane_item(lane.city, lane.lane, index).0)
+    }
+
+    /// Why the first item of a queue waits this turn, if it does
+    /// (`HeadWait`): a Settler short of citizens, then no room in the
+    /// supply, then the stockpile short of its price.
+    pub(in crate::game) fn head_wait(&self, lane: LaneForecast) -> Option<HeadWait> {
+        let (city, kind) = (lane.city, lane.lane);
+        if self.lane_len(city, kind) == 0 || lane.worked == Some(0) {
+            return None;
+        }
+        let waits_for = if kind == Lane::City && self.waits_for_citizens(city, 0) {
+            WaitsFor::Citizens
+        } else if self.supply_waiting_items(lane).contains(&0) {
+            WaitsFor::Supply
+        } else {
+            match self.waiting_items(lane).first() {
+                Some(&(0, short)) => WaitsFor::Stock(short),
+                _ => return None,
+            }
+        };
+        Some(HeadWait {
+            city,
+            lane: kind,
+            build: self.lane_build(city, kind, 0),
+            waits_for,
+            idle: lane.worked.is_none(),
+        })
+    }
+
+    /// The first item of each of `forecast`'s queues that waits
+    /// (`head_wait`), in city order, each city's queue before its
+    /// Barracks'.
+    pub(in crate::game) fn head_waits(&self, forecast: &QueueForecast) -> Vec<HeadWait> {
+        forecast
+            .lanes
+            .iter()
+            .filter_map(|&lane| self.head_wait(lane))
+            .collect()
+    }
+
+    /// The build of item `index` of one of `city`'s queues.
+    pub(in crate::game) fn lane_build(&self, city: usize, lane: Lane, index: usize) -> Build {
+        let c = &self.cities[city];
+        match lane {
+            Lane::City => c.queue[index].build,
+            Lane::Barracks => Build::Unit(c.barracks_queue[index].build),
+        }
     }
 
     /// What `city` waits for, if the first item of either of its queues
