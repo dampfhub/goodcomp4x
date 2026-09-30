@@ -5104,6 +5104,184 @@ fn imgui_double_clicking_the_settings_title_centers_it_again() {
     assert_eq!(imgui_panel("Settings"), (home, size), "centered");
 }
 
+/// Where ImGui's drop target for docking at the game window's `side` edge
+/// ("left" or "right") is: the middle of that edge, below the status bar.
+fn window_edge_target(side: &str) -> Vec2 {
+    let middle = imgui::STATUS_HEIGHT + (SCREEN.y - imgui::STATUS_HEIGHT) / 2.0;
+    match side {
+        "left" => Vec2::new(10.0, middle),
+        "right" => Vec2::new(SCREEN.x - 10.0, middle),
+        _ => panic!("no target for {side}"),
+    }
+}
+
+impl ImGuiScreen {
+    /// Holds Ctrl, drags the panel titled `title` by its title bar onto the
+    /// drop target at the game window's `side` edge, as the player docks it
+    /// there, lets Ctrl go and lets the panels settle.
+    fn dock_to_window_edge(&mut self, game: &mut GameState, title: &str, side: &str) {
+        self.settle(game);
+        self.hold_ctrl(game, true);
+        self.settle(game);
+        let (at, size) = imgui_panel(title);
+        let grab = at + Vec2::new(size.x / 2.0, 8.0);
+        self.drag(game, grab, window_edge_target(side));
+        self.hold_ctrl(game, false);
+        self.settle(game);
+    }
+
+    /// The same, dragging the panel from where it's docked out onto the
+    /// middle of the map, where it floats.
+    fn undock_onto_the_map(&mut self, game: &mut GameState, title: &str) {
+        self.settle(game);
+        self.hold_ctrl(game, true);
+        self.settle(game);
+        let (at, size) = imgui_panel(title);
+        let grab = at + Vec2::new(size.x / 2.0, 8.0);
+        self.drag(game, grab, SCREEN / 2.0);
+        self.hold_ctrl(game, false);
+        self.settle(game);
+    }
+
+    /// A left click at `at` as `App` makes it: to the map (through
+    /// `handle_map_click`) unless ImGui keeps the mouse there. Whether the
+    /// map had it.
+    fn click_map(&mut self, game: &mut GameState, at: Vec2) -> bool {
+        if self.captures_mouse_at(game, at) {
+            return false;
+        }
+        game.handle_map_click(at, self.size, ClickMode::Normal);
+        true
+    }
+}
+
+/// #333: in the ImGui presentation the whole game window is a dock target.
+/// A panel dragged onto its left edge docks there, and the rest of the
+/// window still belongs to the map: the mouse over it is the game's
+/// (clicks, the wheel and hovering all go by `want_capture_mouse`), so a
+/// click there selects a unit, while the docked panel keeps its own.
+#[test]
+fn imgui_a_panel_docks_to_the_window_edge_and_the_map_keeps_the_mouse() {
+    let mut game = GameState::city_scenario();
+    game.clear_selection();
+    let mut screen = ImGuiScreen::new();
+    screen.dock_to_window_edge(&mut game, "Debug", "left");
+    let (side, width) = screen.layout.window_edge("Debug").expect("docked");
+    assert_eq!(side, "left");
+    let (at, size) = imgui_panel("Debug");
+    assert!(at.x < 1.0 && size.x == width, "{at} {size}");
+    assert!(
+        size.y > SCREEN.y - imgui::STATUS_HEIGHT - 10.0,
+        "the whole height: {size}"
+    );
+    assert!(screen.captures_mouse_at(&mut game, at + size / 2.0));
+
+    // One of the player's units on the map, clear of every panel: a click
+    // on it reaches the map and selects it.
+    let mut looking = game.clone();
+    let (unit, at) = (0..game.units.len())
+        .map(|i| (i, hex_cursor(&game, game.units[i].pos)))
+        .find(|&(i, at)| {
+            game.is_player_controlled(i)
+                && (width + 20.0..SCREEN.x - 20.0).contains(&at.x)
+                && (imgui::STATUS_HEIGHT + 20.0..SCREEN.y - 20.0).contains(&at.y)
+                && !screen.captures_mouse_at(&mut looking, at)
+        })
+        .expect("a unit on the open map");
+    assert!(screen.click_map(&mut game, at));
+    assert_eq!(game.selected, Some(unit));
+    // Just past the docked panel's edge is the map too.
+    assert!(!screen.captures_mouse_at(&mut game, Vec2::new(width + 12.0, 400.0)));
+
+    // Kept with the layout, for the next session.
+    let saved = ImGuiLayoutState::from_text(&screen.layout.to_text());
+    assert_eq!(saved.debug_edge_saved("default"), Some("left"));
+}
+
+/// #333: panels other than Debug docked at the window's edge go back
+/// there when they show again: the city tray docked on the right, the city
+/// closed and opened.
+#[test]
+fn imgui_a_panel_docked_to_the_window_edge_comes_back_there() {
+    let mut game = city_view();
+    let mut screen = ImGuiScreen::new();
+    screen.dock_to_window_edge(&mut game, "Selection", "right");
+    assert_eq!(
+        screen.layout.window_edge("Selection").map(|(side, _)| side),
+        Some("right")
+    );
+    let city = game.selected_city.unwrap();
+    game.press_escape();
+    assert_eq!(game.selected_city, None);
+    screen.settle(&mut game);
+    // Nothing selected: the map has the room.
+    assert!(!screen.captures_mouse_at(&mut game, Vec2::new(SCREEN.x - 60.0, 400.0)));
+    game.open_city(city);
+    screen.settle(&mut game);
+    assert_eq!(
+        screen.layout.window_edge("Selection").map(|(side, _)| side),
+        Some("right")
+    );
+
+    // And in the next session, as `App` saves and loads ImGui's half
+    // (`imgui.ini`) with the layout's: saved hidden, and shown first there
+    // with the city open, it's docked where it was.
+    game.press_escape();
+    screen.settle(&mut game);
+    let mut ini = String::new();
+    screen.context.save_ini_settings(&mut ini);
+    let layout = screen.layout.to_text();
+    drop(screen);
+    let mut next = ImGuiScreen::new();
+    next.context.load_ini_settings(&ini);
+    next.layout = ImGuiLayoutState::from_text(&layout);
+    let mut game = city_view();
+    next.settle(&mut game);
+    assert_eq!(
+        next.layout.window_edge("Selection").map(|(side, _)| side),
+        Some("right")
+    );
+}
+
+/// #333: Debug's docking in the game window belongs to the view's layout,
+/// as its floating place does: Troop follows Default's until the player
+/// changes it there, Default keeps its own, and RESET (Ctrl+Shift+R) gives
+/// Troop Default's again.
+#[test]
+fn imgui_debug_docked_to_the_window_edge_follows_the_views_layout() {
+    let mut game = GameState::city_scenario();
+    game.clear_selection();
+    let unit = player_units(&game)[0];
+    let mut screen = ImGuiScreen::new();
+    let debug_side = |screen: &ImGuiScreen| screen.layout.window_edge("Debug").map(|(s, _)| s);
+    screen.dock_to_window_edge(&mut game, "Debug", "right");
+    assert_eq!(debug_side(&screen), Some("right"));
+
+    // Troop follows Default.
+    game.set_selection(vec![unit]);
+    screen.settle(&mut game);
+    assert_eq!(debug_side(&screen), Some("right"));
+    // Taken out in Troop: Troop's own layout now.
+    screen.undock_onto_the_map(&mut game, "Debug");
+    assert_eq!(debug_side(&screen), None);
+    assert_eq!(screen.layout.debug_edge_saved("troop"), None);
+    assert_eq!(screen.layout.debug_edge_saved("default"), Some("right"));
+
+    // Default still has it docked; Troop still hasn't.
+    game.clear_selection();
+    screen.settle(&mut game);
+    assert_eq!(debug_side(&screen), Some("right"));
+    game.set_selection(vec![unit]);
+    screen.settle(&mut game);
+    assert_eq!(debug_side(&screen), None);
+
+    // RESET: Troop follows Default's again, docked.
+    assert!(screen.layout.request_reset_active_view());
+    screen.settle(&mut game);
+    assert_eq!(debug_side(&screen), Some("right"));
+    assert_eq!(screen.layout.debug_edge_saved("troop"), Some("right"));
+}
+
 /// Every view of `game` whose buttons can be off, named: nothing selected
 /// (the top bar and Debug panel), each of the player's units alone, all of
 /// them as a group, each of the player's cities, its Barracks and its

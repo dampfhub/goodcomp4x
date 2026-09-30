@@ -47,9 +47,30 @@ panel outer rectangles fixed, including automatically placed and player-sized
 panels. While Ctrl is held, the title bar takes space inside the panel; content
 can scroll until Ctrl is released.
 The `imgui` dependency enables its `docking` feature. Selection, Production
-Queue, and Debug can dock to one another. The transparent dockspace starts
-below the ImGui status bar but does not accept drops onto the empty map;
-this keeps a drop on a panel's bottom target from becoming a screen-wide split.
+Queue, and Debug can dock to one another.
+**The whole game window is a dock target** (#333): `draw_game_dockspace` makes
+the window below the status bar a transparent dockspace, and a panel dragged
+(Ctrl held) onto the drop target at one of its edges docks along that edge,
+and others dock to it or beside it. The rest of the dockspace, the map, is its
+central node, which takes no docking (`NoDockingInCentralNode`) and blocks
+nothing (`PassthruCentralNode`: ImGui cuts a hole in the host window there, so
+`want_capture_mouse` stays false and clicks, drags, the wheel and hovering
+reach the map and the camera, as with no dockspace). Only while a panel is
+being dragged does ImGui take the hole away, to show the drop targets. A panel
+docked there that hides (the city tray when the city closes, Inspect off a
+hover) keeps its empty node, and ImGui docks it back as it shows again, so
+`render_imgui_window` gives such a panel no position that frame, which would
+undock it (`returns_to_game_dock`). Debug's docking there belongs to the
+view's layout, like its floating place: `debug_view_edges` keeps, by view,
+the side of the map it's docked on and its width or height (`EdgeDock`,
+saved as `debug_edge` lines); a view that follows Default's Debug follows
+this too (`debug_edge_for_view`); switching views or RESET docks or undocks
+it to match (`place_debug_edge`, which asks ImGui again for a few frames until
+it's done), and any other change is the player's, for the layout being
+arranged (`track_debug_edge`, which in City / Building or Troop makes the view
+stop following Default's, as moving Debug does). The relations that put
+Selection, Queue and Debug back beside each other (`dock_relation`) leave
+panels docked in the game window alone.
 Docked rectangles are reserved in the automatic layout, and floating windows
 are clamped below the status bar. Docking uses a transparent drag payload so
 the chosen split target stays visible, and floating sizes are preserved across
@@ -173,10 +194,12 @@ updates views that still inherit; moving it while editing Outer applies the
 position to all views and clears local overrides. Outer boxes keep one
 position across all views.
 In City / Building or Troop, **Ctrl+Shift+R** (or the status-bar Reset button)
-clears that view's Debug position and the contextual dock relations of every
+clears that view's Debug position, its docking in the game window, and the contextual dock relations of every
 kind of selection shown in it (`SelectionKind::view`: an open interior's too,
 in City / Building) so it inherits
-Default again. It leaves the view's boxes and other panels in place.
+Default again, docked in the game window or not as Default has it. It leaves the
+view's boxes and other panels in place (a panel docked in the game window other
+than Debug stays docked: only Debug's placement is kept by view).
 One floating panel resets on its own by a double-click: on its title bar, it
 goes back where its view's layout places it and keeps its size
 (`ImGuiLayoutState::reset_position`); on its resize grip, back to the size the
@@ -189,7 +212,8 @@ for Debug in City / Building or Troop, they are what RESET restores, Default's
 placement, and once both are back that view follows Default's Debug again.
 ImGui collapses a window double-clicked on its title bar: `title_double_clicked`
 tells it an item is hovered that frame, so only the arrow collapses a panel.
-Docked panels, captured ones in their boxes among them, take their place and
+Docked panels, captured ones in their boxes and those docked in the game
+window among them, take their place and
 size from the dock and have no reset.
 
 Hold Ctrl and drag Selection, Production Queue, Debug, or Inspect into a box.
