@@ -252,6 +252,18 @@ pub enum BuildUnit {
 }
 
 impl BuildUnit {
+    /// Every troop and ship a queue trains.
+    pub const ALL: [Self; 8] = [
+        Self::Melee,
+        Self::Ranged,
+        Self::Cavalry,
+        Self::Siege,
+        Self::Armored,
+        Self::PatrolGalley,
+        Self::LandingCraft,
+        Self::BombardShip,
+    ];
+
     pub(in crate::game) fn unit_type(self) -> UnitType {
         match self {
             Self::Melee => UnitType::Melee,
@@ -276,21 +288,23 @@ impl BuildUnit {
             Self::BombardShip => "BOMBARD SHIP",
         }
     }
-    /// What queuing it takes from the side's stockpile (`economy.rs`).
-    /// Tempo tuning (#239): option B raised the land troops' prices x1.5,
-    /// rounding halves up, from Melee 2/6/0, Ranged 2/7/0, Cavalry 3/4/3,
-    /// Siege 1/8/4 and Armored 3/2/7 (`docs/rts-economy.md`, Round 7).
-    /// Ships are unchanged.
+    /// What queuing it takes from the side's stockpile (`economy.rs`): at
+    /// most two kinds of goods, one of them metal (#374), so metal is what
+    /// most often limits an army. Foot and horse troops pay food and metal;
+    /// bows, engines and ships, built of timber, wood and metal. The amounts
+    /// keep the army's tempo near what it was (`docs/rts-economy.md`,
+    /// Round 11). Before, Melee was 3/9/0, Ranged 3/11/0, Cavalry 5/6/5,
+    /// Siege 2/12/6, Armored 5/3/11, and each ship 1 food more.
     pub fn price(self) -> Stock {
         let (food, wood, metal) = match self {
-            Self::Melee => (3, 9, 0),
-            Self::Ranged => (3, 11, 0),
-            Self::Cavalry => (5, 6, 5),
-            Self::Siege => (2, 12, 6),
-            Self::Armored => (5, 3, 11),
-            Self::PatrolGalley => (1, 10, 2),
-            Self::LandingCraft => (1, 12, 2),
-            Self::BombardShip => (1, 12, 6),
+            Self::Melee => (5, 0, 2),
+            Self::Ranged => (0, 9, 2),
+            Self::Cavalry => (6, 0, 5),
+            Self::Siege => (0, 12, 6),
+            Self::Armored => (6, 0, 10),
+            Self::PatrolGalley => (0, 10, 2),
+            Self::LandingCraft => (0, 12, 2),
+            Self::BombardShip => (0, 12, 6),
         };
         Stock::whole(food, wood, metal)
     }

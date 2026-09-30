@@ -185,10 +185,13 @@ struct LaneUse {
     /// City queue: turns it worked nothing, so its city gathered by itself (waiting or
     /// empty; `auto_gather`).
     auto_gather: u32,
-    /// Barracks: turns training, and turns idle with the resources a Melee lacked.
+    /// Barracks: turns training, and turns idle: at the side's supply cap, or else with the
+    /// resources a Melee and a Ranged lacked.
     training: u32,
     idle: u32,
+    idle_supply: u32,
     idle_short: [u32; 3],
+    idle_short_ranged: [u32; 3],
     /// Turns each queue (city, Barracks) held a finished unit for want of an open hex beside it.
     held: [u32; 2],
 }
@@ -478,11 +481,14 @@ impl Observer {
                 }
             }
         }
-        // An idle Barracks: nothing queued after planning. What a Melee lacked of what the
-        // side has left to spend this turn says what held it back.
+        // An idle Barracks: nothing queued after planning. The side's supply, or else what a
+        // Melee and a Ranged lacked of what the side has left to spend this turn, says what
+        // held it back.
         for team in Team::ALL {
             let spare = game.forecast(team).spare;
+            let full = game.supply_lock(team, 1).is_some();
             let short = spare.shortfall(BuildUnit::Melee.price());
+            let short_ranged = spare.shortfall(BuildUnit::Ranged.price());
             let idle = game
                 .cities
                 .iter()
@@ -498,7 +504,15 @@ impl Observer {
                     continue;
                 }
                 side.lanes.idle += 1;
+                if full {
+                    side.lanes.idle_supply += 1;
+                    continue;
+                }
                 for (count, lacking) in side.lanes.idle_short.iter_mut().zip(whole(short)) {
+                    *count += u32::from(lacking > 0.0);
+                }
+                let lanes = &mut side.lanes.idle_short_ranged;
+                for (count, lacking) in lanes.iter_mut().zip(whole(short_ranged)) {
                     *count += u32::from(lacking > 0.0);
                 }
             }
@@ -1122,6 +1136,10 @@ impl KindReport {
             ),
             ("idle".into(), 100.0 * sum(&|l| l.idle) / barracks_turns),
             (
+                "idle, at the supply cap".into(),
+                100.0 * sum(&|l| l.idle_supply) / idle,
+            ),
+            (
                 "idle, a Melee lacked food".into(),
                 100.0 * sum(&|l| l.idle_short[0]) / idle,
             ),
@@ -1132,6 +1150,18 @@ impl KindReport {
             (
                 "idle, a Melee lacked metal".into(),
                 100.0 * sum(&|l| l.idle_short[2]) / idle,
+            ),
+            (
+                "idle, a Ranged lacked food".into(),
+                100.0 * sum(&|l| l.idle_short_ranged[0]) / idle,
+            ),
+            (
+                "idle, a Ranged lacked wood".into(),
+                100.0 * sum(&|l| l.idle_short_ranged[1]) / idle,
+            ),
+            (
+                "idle, a Ranged lacked metal".into(),
+                100.0 * sum(&|l| l.idle_short_ranged[2]) / idle,
             ),
             (
                 "holding a finished unit".into(),
