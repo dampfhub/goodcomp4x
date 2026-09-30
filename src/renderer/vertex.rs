@@ -17,9 +17,9 @@ pub fn soft_disc_uv(local: [f32; 2]) -> [f32; 2] {
 pub struct Vertex {
     pub pos: [f32; 3],
     pub color: [f32; 4],
-    /// Where to sample the atlas, or `SOLID_UV`. A `u` of 1 or more marks a
-    /// distance-field glyph, sampled at `u - 1`; a `u` of -2 or less, a
-    /// soft disc (`soft_disc_uv`).
+    /// Where to sample the atlas, or `SOLID_UV`. `1 <= u < 2` marks a
+    /// distance-field glyph at `u - 1`; `2 <= u < 3` a color sprite at
+    /// `u - 2`; a `u` of -2 or less, a soft disc (`soft_disc_uv`).
     pub uv: [f32; 2],
 }
 

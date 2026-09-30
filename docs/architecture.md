@@ -75,6 +75,28 @@ cost frame time.
 While a city interior is open, `build_vertices` draws its tactical grid and
 copies in place of the exterior world; the exterior camera is restored on exit.
 
+## Repeated world artwork
+
+`game/sprites.rs` rasterizes the existing map icons and terrain decorations once into a
+linear RGBA atlas. Each occurrence is six vertices, in the original painter order and world
+batch; no per-icon draw calls or texture switches are needed. ImGui and inline UI icons keep
+their existing vector path. The raster uses 2x2 supersampling, 224 pixels across the artwork,
+16-pixel cell gutters and five mip levels. Colors stay premultiplied through rasterization,
+mip generation and filtering; the shader converts back to straight alpha for blending.
+The renderer accepts one-channel font and four-channel sprite atlases without game knowledge.
+
+Yield-row layouts and their small meshes are cached by the food/wood/metal tuple, bounded to
+256 entries. This caches artwork, not game state: fog memory and current yields are still
+queried every frame. World culling uses the actual viewport aspect, with a margin for artwork
+extending beyond hex centers; headless callers keep a conservative default.
+
+Run `cargo test --release world_overlay_report -- --ignored --nocapture` to measure the
+F4/F10/Alt workload at the default and maximum camera heights. The report excludes first-use
+atlas/layout initialization and measures CPU geometry generation, not total frame time.
+`cargo run -- --screenshot world.png --scenario world --seed 3 --world-overlay --size 2560x1440`
+provides a reproducible GPU check. Geometry-budget tests prevent repeated artwork from returning
+to millions of vertices.
+
 ## A turn
 
 1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `order_queue.rs`,

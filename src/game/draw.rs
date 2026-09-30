@@ -65,9 +65,6 @@ const DEN_RIM_COLOR: Color = [0.36, 0.20, 0.09, 1.0];
 const LANDMARK_RIM_WIDTH: f32 = 0.05;
 /// Distance between cloud banks, in world units (a hex is 1 from center to corner).
 const CLOUD_SPACING: f32 = 2.8;
-/// The widest window, width over height, the fog is built for (a 21:9
-/// ultrawide); a narrower one just draws a little fog off its sides.
-const MAX_VIEW_ASPECT: f32 = 2.4;
 /// Under the clouds, filling the gaps between puffs: the shade of their
 /// undersides, so the fog reads as cloud all the way through.
 const CLOUD_BASE_COLOR: Color = [0.10, 0.103, 0.123, 1.0];
@@ -426,16 +423,16 @@ impl GameState {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref(), &fog);
             mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
-            push_tile_symbols(center, self.grid.tile(hex), &mut out);
+            super::sprites::push_tile(center, self.grid.tile(hex), &mut out);
             if let Some(resource) = self.grid.resource(hex) {
                 let icon = MapIcon::resource(resource);
-                map_icons::push_map_icon(center + RESOURCE_SPOT, icon, &mut out);
+                super::sprites::push_icon(center + RESOURCE_SPOT, icon, 1.0, &mut out);
             }
             if let Some(special) = self.grid.special(hex) {
                 push_landmark_rim(center, SPECIAL_RIM_COLOR, &mut out);
                 let icon = MapIcon::special(special);
                 let spot = center + LANDMARK_SPOT;
-                map_icons::push_map_icon_scaled(spot, icon, LANDMARK_SCALE, &mut out);
+                super::sprites::push_icon(spot, icon, LANDMARK_SCALE, &mut out);
             }
             self.push_known_ruin(hex, &fog, &mut out);
             self.push_known_den(hex, &fog, &mut out);
@@ -452,7 +449,11 @@ impl GameState {
         // (as the player knows the board) are lit, and the rest dimmed, so
         // the reach stands out.
         if self.placing_job.is_some() {
-            for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
+            for hex in self
+                .grid
+                .all_hexes()
+                .filter(|&h| self.may_show(h) && self.is_explored(h))
+            {
                 let reach = self.grid.is_passable(hex) && self.known_worker_reach(hex);
                 let tint = if reach {
                     WORKER_REACH_TINT
@@ -688,13 +689,9 @@ impl GameState {
         out
     }
 
-    /// The world rectangle (min, max) the camera may show: its full height,
-    /// and as wide as the widest window it's drawn in (`MAX_VIEW_ASPECT`),
-    /// since the vertices are built without knowing the window's shape.
+    /// The world rectangle (min, max) the camera may show in this viewport.
     pub(super) fn cloud_view(&self) -> (Vec2, Vec2) {
-        let half = self.camera.half_height;
-        let reach = Vec2::new(half * MAX_VIEW_ASPECT, half);
-        (self.camera.center - reach, self.camera.center + reach)
+        self.camera.view_bounds()
     }
 
     /// Whether anything drawn on `hex` may be on screen (`cloud_view`, with
@@ -724,7 +721,7 @@ impl GameState {
         };
         push_landmark_rim(hex.to_world(), RUIN_RIM_COLOR, out);
         let spot = hex.to_world() + LANDMARK_SPOT;
-        map_icons::push_map_icon_scaled(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
+        super::sprites::push_icon(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
         let Some(ruin) = ruin else { return };
         let color = ruin.holder.map_or(BORDER_COLOR, Team::color);
         for i in 0..RUIN_HOLD_TURNS {
@@ -746,7 +743,7 @@ impl GameState {
         if known {
             push_landmark_rim(hex.to_world(), DEN_RIM_COLOR, out);
             let spot = hex.to_world() + LANDMARK_SPOT;
-            map_icons::push_map_icon_scaled(spot, MapIcon::Paw, LANDMARK_SCALE, out);
+            super::sprites::push_icon(spot, MapIcon::Paw, LANDMARK_SCALE, out);
         }
     }
 
@@ -1418,7 +1415,7 @@ impl GameState {
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;
             match MapIcon::improvement(label) {
-                Some(icon) => map_icons::push_map_icon(center, icon, out),
+                Some(icon) => super::sprites::push_icon(center, icon, 1.0, out),
                 None => {
                     let letter = label.chars().next().unwrap_or('?');
                     font::push_glyph(center, 0.2, letter, ICON_OUTLINE_COLOR, out);
@@ -1856,6 +1853,24 @@ impl GameState {
 /// each laid out like the pips on a die, or as one icon and a number past
 /// six. Nothing for a tile yielding nothing.
 fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
+    // Cache geometry by yield value, never by tile, so yield changes are immediate.
+    thread_local! {
+        static ROWS: std::cell::RefCell<HashMap<(i32, i32, i32), Vec<Vertex>>> = Default::default();
+    }
+    ROWS.with_borrow_mut(|rows| {
+        if rows.len() >= 256 && !rows.contains_key(&goods) {
+            rows.clear();
+        }
+        let shape = rows.entry(goods).or_insert_with(|| {
+            let mut shape = Vec::new();
+            build_yield_row(Vec2::ZERO, goods, &mut shape);
+            shape
+        });
+        mesh::place(shape, center, 1.0, None, out);
+    });
+}
+
+fn build_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
     let row = yield_row(goods);
     if row.icons.is_empty() {
         return;
@@ -1863,7 +1878,7 @@ fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
     let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
     mesh::convex_polygon(&pill, YIELD_ROW_COLOR, out);
     for (icon, at) in row.icons {
-        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
+        super::sprites::push_icon(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
     }
     for (text, at) in row.labels {
         font::push_text_centered(
@@ -2044,7 +2059,7 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
 /// bottom too, or along the top on hills. Bare ground gets its own marks
 /// along the bottom: dunes for desert, grass tufts for tundra, reeds for
 /// marsh. Mountains get one large snow-capped peak, water waves.
-fn push_tile_symbols(center: Vec2, tile: Tile, out: &mut Vec<Vertex>) {
+pub(super) fn push_tile_symbols(center: Vec2, tile: Tile, out: &mut Vec<Vertex>) {
     // A triangle rotated a quarter turn points straight up.
     let peak = |offset: Vec2, radius: f32, color: Color, out: &mut Vec<Vertex>| {
         mesh::regular_polygon(center + offset, radius, 3, FRAC_PI_2, color, out);
@@ -2536,7 +2551,7 @@ fn push_waiting_badge(city: Vec2, short: Stock, out: &mut Vec<Vertex>) {
     for (k, icon) in icons.into_iter().enumerate() {
         let center = Vec2::new(first + k as f32 * WAITING_ICON_PITCH, middle);
         // The icons are laid out about a fifth of a hex tall.
-        map_icons::push_map_icon_scaled(center, icon, WAITING_ICON_HEIGHT * 5.0 / HEX_SIZE, out);
+        super::sprites::push_icon(center, icon, WAITING_ICON_HEIGHT * 5.0 / HEX_SIZE, out);
     }
 }
 
@@ -2902,6 +2917,33 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_yield_rows_and_revealed_world_have_small_geometry_budgets() {
+        let mut row = Vec::new();
+        push_yield_row(Vec2::ZERO, (2, 1, 0), &mut row);
+        assert!(row.len() <= 100, "{} yield vertices", row.len());
+        // Translation and the cache must not change layout or sprite selection.
+        let mut moved = Vec::new();
+        push_yield_row(Vec2::new(10.0, -5.0), (2, 1, 0), &mut moved);
+        assert_eq!(row.len(), moved.len());
+        for (a, b) in row.iter().zip(&moved) {
+            assert!((a.pos[0] + 10.0 - b.pos[0]).abs() < 1e-5);
+            assert!((a.pos[1] - 5.0 - b.pos[1]).abs() < 1e-5);
+            assert_eq!((a.color, a.uv), (b.color, b.uv));
+        }
+        for seed in [3, 42] {
+            let mut game = GameState::world_scenario(seed);
+            game.fog_of_war = false;
+            game.camera.half_height = super::super::camera::MAX_HALF_HEIGHT;
+            game.set_details(true);
+            let count = game.build_vertices().len();
+            assert!(count < 600_000, "seed {seed}: {count} vertices with Alt");
+            game.set_details(false);
+            game.camera.half_height = 12.0;
+            assert!(game.build_vertices().len() < 100_000);
+        }
+    }
     use crate::game::PLAYER_TEAM;
     use crate::game::fog::tests::{
         behind_the_mountain, glance_at, remembered_route_hex, worked_tile_behind_the_mountain,

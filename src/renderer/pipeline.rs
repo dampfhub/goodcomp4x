@@ -74,7 +74,7 @@ pub unsafe fn create_render_pass(
 pub unsafe fn create_graphics_pipeline(
     device: &ash::Device,
     render_pass: vk::RenderPass,
-    set_layout: vk::DescriptorSetLayout,
+    set_layouts: &[vk::DescriptorSetLayout],
     samples: vk::SampleCountFlags,
 ) -> Result<(vk::PipelineLayout, vk::Pipeline)> {
     let vert_module = unsafe { create_shader_module(device, VERT_SPIRV) }?;
@@ -129,9 +129,8 @@ pub unsafe fn create_graphics_pipeline(
     let push_constant_ranges = [vk::PushConstantRange::default()
         .stage_flags(vk::ShaderStageFlags::VERTEX)
         .size(size_of::<[f32; 16]>() as u32)];
-    let set_layouts = [set_layout];
     let layout_info = vk::PipelineLayoutCreateInfo::default()
-        .set_layouts(&set_layouts)
+        .set_layouts(set_layouts)
         .push_constant_ranges(&push_constant_ranges);
     let pipeline_layout = unsafe { device.create_pipeline_layout(&layout_info, None) }?;
 

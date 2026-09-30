@@ -90,6 +90,22 @@ pub(super) enum MapIcon {
 }
 
 impl MapIcon {
+    pub(super) const ALL: [Self; 14] = [
+        Self::HorseHead,
+        Self::Ingot,
+        Self::Wheat,
+        Self::OreCart,
+        Self::Fence,
+        Self::Logs,
+        Self::Food,
+        Self::Wood,
+        Self::Metal,
+        Self::Clock,
+        Self::Ruins,
+        Self::FruitTree,
+        Self::StoneBlocks,
+        Self::Paw,
+    ];
     pub(super) fn resource(resource: Resource) -> Self {
         match resource {
             Resource::Horses => Self::HorseHead,
@@ -158,11 +174,6 @@ pub(in crate::game) fn push_inline_icon(
     }
 }
 
-/// Draws `icon` centered on `center`.
-pub(super) fn push_map_icon(center: Vec2, icon: MapIcon, out: &mut Vec<Vertex>) {
-    push_map_icon_scaled(center, icon, 1.0, out);
-}
-
 /// Draws `icon` centered on `center`, `scale` times its usual size. Each
 /// icon's triangles are worked out once (`build_map_icon`), then placed.
 pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec<Vertex>) {
@@ -180,7 +191,7 @@ pub(super) fn push_map_icon_scaled(center: Vec2, icon: MapIcon, scale: f32, out:
 }
 
 /// `icon`'s triangles, centered on the origin at its usual size.
-fn build_map_icon(icon: MapIcon, out: &mut Vec<Vertex>) {
+pub(super) fn build_map_icon(icon: MapIcon, out: &mut Vec<Vertex>) {
     let mut pen = Pen {
         center: Vec2::ZERO,
         scale: HEX_SIZE / DESIGN_HEX_RADIUS,

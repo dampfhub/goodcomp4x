@@ -280,6 +280,7 @@ them.
 | `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world`, `siege` (F12), or `naval` |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
+| `--world-overlay` | With `--screenshot`: disable fog, show tile yields and zoom all the way out, for reproducible rendering checks |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
 | `--host` | Host a network game on a new world (you're Blue, the AI plays the sides nobody does) and show its join code (`multiplayer.md`); the settings menu's Multiplayer page does the same |
 | `--players <n>` | With `--host`: how many people play, you included (2-7; 2 unless given) |

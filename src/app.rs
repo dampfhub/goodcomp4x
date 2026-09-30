@@ -283,6 +283,11 @@ impl App {
             None => options.scenario.new_game(&settings),
         });
         game.set_settings(settings);
+        if options.world_overlay {
+            game.toggle_fog();
+            game.set_details(true);
+            game.camera.zoom(-100.0);
+        }
         if let Some(text) = load(NETWORK_FILE) {
             game.set_net_menu(NetMenu::from_text(&text));
         }
@@ -557,6 +562,9 @@ impl App {
             network.pump(&mut self.game);
         }
         self.game.update(dt.as_secs_f32());
+        if let Some(size) = self.screen_size() {
+            self.game.camera.set_viewport(size);
+        }
         // A screenshot shows the clouds still, so the same arguments give the
         // same image.
         if self.screenshot.is_none() {
@@ -768,7 +776,14 @@ impl ApplicationHandler for App {
         imgui_platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
 
         // Safety: `App` drops the renderer before the window (see field order).
-        match unsafe { Renderer::new(&window, font_atlas(), &mut imgui) } {
+        match unsafe {
+            Renderer::new(
+                &window,
+                font_atlas(),
+                crate::game::sprite_atlas(),
+                &mut imgui,
+            )
+        } {
             Ok(renderer) => self.renderer = Some(renderer),
             Err(err) => {
                 self.fail(event_loop, err.context("failed to initialize the renderer"));
