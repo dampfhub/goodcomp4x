@@ -28,6 +28,7 @@ mod scenario;
 mod settings;
 #[cfg(test)]
 mod simulation;
+mod sprites;
 mod strings;
 mod terrain;
 mod transition;
@@ -54,6 +55,7 @@ pub use multiplayer::{
 pub use orders::ClickMode;
 pub use scenario::Scenario;
 pub use settings::Settings;
+pub use sprites::atlas as sprite_atlas;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{

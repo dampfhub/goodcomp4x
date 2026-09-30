@@ -30,7 +30,8 @@ the window is created (it did once the window was minimized and restored).
 ## Frame and input flow
 
 - Each redraw, `App` calls `game.update(dt)` and `game.animate_clouds(dt)` (skipped in
-  screenshot mode, so shots stay reproducible) and updates hover, then builds world vertices.
+  screenshot mode, so shots stay reproducible) and updates hover, then builds world vertices. The camera receives the actual viewport size before
+  cloud animation and geometry culling, including ultrawide windows.
   The classic presentation adds a `game.build_ui(..)` batch; the default ImGui presentation
   builds native windows from the same panel content. `Renderer::draw_frame` draws the world,
   optional classic UI, and ImGui data in order. F11 switches presentations.
@@ -59,7 +60,9 @@ the window is created (it did once the window was minimized and restored).
   `RedrawRequested`, so `about_to_wait` calls `App::redraw` itself; input events are ignored.
   After each frame `Screenshot::after_frame` counts frames, then (after `SETTLE_FRAMES` and
   `SETTLE_TIME`) asks the renderer to `capture_next_frame`, takes it with
-  `take_captured_frame`, writes the PNG (`png` crate) and quits. A failure or the 20 s timeout
+  `take_captured_frame`, writes the PNG (`png` crate) and quits. `--world-overlay` with
+  `--screenshot` disables fog, holds the details overlay and zooms all the way out
+  to reproduce the worst-case world view. A failure or the 20 s timeout
   quits through `App::fail`, which `main` turns into a non-zero exit.
 
 ## Invariants

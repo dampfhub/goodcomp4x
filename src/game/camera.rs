@@ -13,6 +13,8 @@ const GLIDE_RATE: f32 = 10.0;
 pub struct Camera {
     pub center: Vec2,
     pub half_height: f32,
+    /// Last drawable viewport; headless callers use the conservative default.
+    aspect: f32,
     /// Point the camera is gliding towards, if any.
     target: Option<Vec2>,
 }
@@ -22,8 +24,20 @@ impl Camera {
         Self {
             center,
             half_height,
+            aspect: 2.4,
             target: None,
         }
+    }
+
+    pub fn set_viewport(&mut self, size: Vec2) {
+        if size.is_finite() && size.min_element() > 0.0 {
+            self.aspect = size.x / size.y;
+        }
+    }
+
+    pub(super) fn view_bounds(&self) -> (Vec2, Vec2) {
+        let half = Vec2::new(self.half_height * self.aspect, self.half_height);
+        (self.center - half, self.center + half)
     }
 
     /// Starts gliding the view to center on `point`.
@@ -101,6 +115,32 @@ impl Camera {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn culling_bounds_follow_the_viewport_including_ultrawide_and_portrait() {
+        let mut camera = Camera::new(Vec2::new(7.0, -4.0), 12.0);
+        for size in [
+            Vec2::new(900.0, 1600.0),
+            Vec2::new(1600.0, 900.0),
+            Vec2::new(3840.0, 1080.0),
+        ] {
+            camera.set_viewport(size);
+            let (min, max) = camera.view_bounds();
+            assert!(
+                camera
+                    .screen_to_world(Vec2::new(0.0, size.y), size)
+                    .abs_diff_eq(min, 1e-5)
+            );
+            assert!(
+                camera
+                    .screen_to_world(Vec2::new(size.x, 0.0), size)
+                    .abs_diff_eq(max, 1e-5)
+            );
+        }
+        let before = camera.view_bounds();
+        camera.set_viewport(Vec2::ZERO);
+        assert_eq!(camera.view_bounds(), before);
+    }
 
     #[test]
     fn world_to_screen_undoes_screen_to_world() {

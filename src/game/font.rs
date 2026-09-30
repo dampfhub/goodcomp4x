@@ -334,6 +334,7 @@ fn build() -> Font {
         ui: faces,
         world,
         atlas: Atlas {
+            channels: 1,
             width: width as u32,
             height: height as u32,
             levels: mip_chain(pixels, width, height),

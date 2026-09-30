@@ -1,14 +1,14 @@
-//! The coverage atlas: one single-channel texture every draw can sample,
-//! uploaded once at startup and bound as descriptor set 0.
+//! A coverage or linear RGBA atlas every draw can sample,
+//! uploaded once at startup and bound for every world/UI batch.
 
 use anyhow::{Result, ensure};
 use ash::vk;
 
 use super::buffer;
 
-/// A single-channel (coverage) image and its mip chain, largest level first.
-/// Each level is `max(1, width >> i)` by `max(1, height >> i)` bytes.
+/// Coverage (one channel) or linear RGBA (four channels), largest mip first.
 pub struct Atlas {
+    pub channels: u32,
     pub width: u32,
     pub height: u32,
     pub levels: Vec<Vec<u8>>,
@@ -37,7 +37,11 @@ impl Texture {
         validate_atlas(atlas)?;
         let mip_levels = atlas.levels.len() as u32;
 
-        let format = vk::Format::R8_UNORM;
+        let format = if atlas.channels == 4 {
+            vk::Format::R8G8B8A8_UNORM
+        } else {
+            vk::Format::R8_UNORM
+        };
         let image_info = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(format)
@@ -268,6 +272,10 @@ unsafe fn upload(
 
 fn validate_atlas(atlas: &Atlas) -> Result<()> {
     ensure!(
+        matches!(atlas.channels, 1 | 4),
+        "atlas must have one or four channels"
+    );
+    ensure!(
         atlas.width > 0 && atlas.height > 0,
         "atlas dimensions must be nonzero"
     );
@@ -278,9 +286,9 @@ fn validate_atlas(atlas: &Atlas) -> Result<()> {
         "atlas has too many mip levels"
     );
     for (i, level) in atlas.levels.iter().enumerate() {
-        let expected = u64::from((atlas.width >> i).max(1)) * u64::from((atlas.height >> i).max(1));
+        let pixels = u64::from((atlas.width >> i).max(1)) * u64::from((atlas.height >> i).max(1));
         ensure!(
-            level.len() as u64 == expected,
+            pixels.checked_mul(u64::from(atlas.channels)) == Some(level.len() as u64),
             "atlas mip {i} has the wrong size"
         );
     }
@@ -321,8 +329,30 @@ fn atlas_regions(atlas: &Atlas) -> (Vec<vk::BufferImageCopy>, usize) {
 mod tests {
     use super::*;
     #[test]
+    fn rgba_upload_sizes_include_all_four_channels() {
+        let mut atlas = Atlas {
+            channels: 4,
+            width: 2,
+            height: 2,
+            levels: vec![vec![0; 16], vec![0; 4]],
+        };
+        validate_atlas(&atlas).unwrap();
+        let (regions, total) = atlas_regions(&atlas);
+        assert_eq!(regions[1].buffer_offset, 16);
+        assert_eq!(total, 20);
+        atlas.levels[0].truncate(4);
+        assert!(validate_atlas(&atlas).is_err());
+        atlas.channels = 3;
+        assert!(validate_atlas(&atlas).is_err());
+        atlas.channels = 4;
+        atlas.width = u32::MAX;
+        atlas.height = u32::MAX;
+        assert!(validate_atlas(&atlas).is_err());
+    }
+    #[test]
     fn rectangular_atlas_clamps_each_axis_and_bounds_the_chain() {
         let mut atlas = Atlas {
+            channels: 1,
             width: 8,
             height: 2,
             levels: vec![vec![0; 16], vec![0; 4], vec![0; 2], vec![0; 1]],
@@ -351,26 +381,31 @@ mod tests {
     fn atlas_rejects_empty_or_malformed_data_before_upload() {
         for atlas in [
             Atlas {
+                channels: 1,
                 width: 0,
                 height: 1,
                 levels: vec![vec![]],
             },
             Atlas {
+                channels: 1,
                 width: 1,
                 height: 0,
                 levels: vec![vec![]],
             },
             Atlas {
+                channels: 1,
                 width: 1,
                 height: 1,
                 levels: vec![],
             },
             Atlas {
+                channels: 1,
                 width: 1,
                 height: 1,
                 levels: vec![vec![0], vec![]],
             },
             Atlas {
+                channels: 1,
                 width: 2,
                 height: 2,
                 levels: vec![vec![0; 3]],
@@ -379,6 +414,7 @@ mod tests {
             assert!(validate_atlas(&atlas).is_err());
         }
         validate_atlas(&Atlas {
+            channels: 1,
             width: 1,
             height: 1,
             levels: vec![vec![0]],

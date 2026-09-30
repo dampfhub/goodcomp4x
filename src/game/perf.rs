@@ -13,6 +13,27 @@ use super::*;
 
 const SCREEN: Vec2 = Vec2::new(1600.0, 900.0);
 
+/// Reproduce F4, F10, then Alt, at home and at maximum zoom-out.
+#[test]
+#[ignore]
+fn world_overlay_report() {
+    let mut game = GameState::world_scenario(3);
+    game.fog_of_war = false;
+    let mut buffer = Vec::new();
+    for half in [game.camera.half_height, super::camera::MAX_HALF_HEIGHT] {
+        game.camera.half_height = half;
+        for details in [false, true] {
+            game.set_details(details);
+            let elapsed = time(50, || game.build_vertices_into(&mut buffer));
+            println!(
+                "half_height={half} Alt={details}: {} vertices, {:.3} ms",
+                buffer.len(),
+                elapsed.as_secs_f64() * 1000.0
+            );
+        }
+    }
+}
+
 /// Mean time of `f` over `runs` calls.
 fn time(runs: u32, mut f: impl FnMut()) -> Duration {
     f();

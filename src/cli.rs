@@ -17,6 +17,8 @@ Options:
                        map every run
   --screenshot <FILE>  render the scenario in a hidden window, write one frame
                        to FILE as a PNG, and exit
+  --world-overlay     with --screenshot: disable fog, show resource yields,
+                       and zoom all the way out (F10 + Alt + zoom out)
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900); at least 640x480 at 100%
                        display scaling, and more at higher scaling
@@ -38,6 +40,7 @@ pub struct Options {
     pub seed: Option<u32>,
     /// Screenshot mode: where to write the PNG.
     pub screenshot: Option<PathBuf>,
+    pub world_overlay: bool,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
     /// A multiplayer game to host or join.
@@ -60,6 +63,7 @@ impl Default for Options {
             scenario: Scenario::Cities,
             seed: None,
             screenshot: None,
+            world_overlay: false,
             size: None,
             network: None,
             help: false,
@@ -98,6 +102,7 @@ impl Options {
                     })?);
                 }
                 "--screenshot" => options.screenshot = Some(value()?.into()),
+                "--world-overlay" => options.world_overlay = true,
                 "--size" => options.size = Some(parse_size(&value()?)?),
                 "--host" => host = true,
                 "--port" => {
@@ -150,6 +155,9 @@ impl Options {
         }
         if options.network.is_some() && options.screenshot.is_some() {
             bail!("a screenshot can't be taken of a network game");
+        }
+        if options.world_overlay && options.screenshot.is_none() {
+            bail!("--world-overlay requires --screenshot");
         }
         Ok(options)
     }
@@ -231,6 +239,12 @@ mod tests {
 
     #[test]
     fn bad_arguments_are_errors() {
+        assert!(parse(&["--world-overlay"]).is_err());
+        assert!(
+            parse(&["--screenshot", "out.png", "--world-overlay"])
+                .unwrap()
+                .world_overlay
+        );
         assert!(parse(&["--scenario", "moon"]).is_err());
         assert!(parse(&["--screenshot"]).is_err());
         assert!(parse(&["--size", "1280"]).is_err());
