@@ -6,8 +6,8 @@ use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
-    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, REDUCED_TEXT, ROSTER_TOKEN_SHARE, SMALL, Shape,
-    TEXT,
+    QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, REDUCED_TEXT, ROSTER_TOKEN_SHARE, SHORT_BG,
+    SHORT_BORDER_COLOR, SHORT_HOVER_BG, SHORT_PRICE, SHORT_QUEUED_PRICE, SMALL, Shape, TEXT,
 };
 use super::{ChipIcon, Target};
 use crate::game::draw::{push_city_tower, push_unit_token};
@@ -52,7 +52,6 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             waiting,
             dragging,
             drop_target,
-            locked,
         } => {
             let bg = if *dragging {
                 BUTTON_HOVER_BG
@@ -77,9 +76,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             face.push(
                 origin,
                 label,
-                if *locked {
-                    DIM_TEXT
-                } else if *active {
+                if *active {
                     GOLD_TEXT
                 } else if *waiting {
                     REDUCED_TEXT
@@ -158,8 +155,19 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         (ButtonState::Queued, true) => (QUEUED_HOVER_BG, QUEUED_TEXT, QUEUED_HINT_TEXT),
         (ButtonState::Disabled, _) => (DISABLED_BG, DISABLED_TEXT, DISABLED_TEXT),
     };
+    // Short of its price (`Button::drawn_short`): a dark red ground (gold
+    // kept when queued), a red rim and its price in red.
+    let short = button.drawn_short();
+    let (bg, hint_color) = match (short, button.state(), hovered) {
+        (false, ..) => (bg, hint_color),
+        (true, ButtonState::Queued, _) => (bg, SHORT_QUEUED_PRICE),
+        (true, _, false) => (SHORT_BG, SHORT_PRICE),
+        (true, _, true) => (SHORT_HOVER_BG, SHORT_PRICE),
+    };
     let (border, border_color) = if button.armed {
         (ARMED_BORDER, ARMED_BORDER_COLOR)
+    } else if short {
+        (BORDER, SHORT_BORDER_COLOR)
     } else {
         (BORDER, BORDER_COLOR)
     };

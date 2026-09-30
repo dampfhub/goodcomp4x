@@ -372,7 +372,7 @@ impl GameState {
     }
 
     pub fn queue_selected_city_unit(&mut self, build: BuildUnit) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -450,7 +450,7 @@ impl GameState {
 
     /// 9 or the Grow card: one more citizen, bought with food.
     pub fn queue_selected_city_growth(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -477,7 +477,7 @@ impl GameState {
 
     /// 8 or the Worker button: a worker for the open city's pool.
     pub fn queue_selected_city_worker(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -503,7 +503,7 @@ impl GameState {
     /// A scout or a settler from the open city's own queue, if it may queue
     /// one (`city_build_issue`).
     fn queue_selected_city_civilian(&mut self, build: Build) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -546,7 +546,7 @@ impl GameState {
     }
 
     pub fn queue_selected_city_building(&mut self, building: Building) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -574,7 +574,7 @@ impl GameState {
 
     /// 0 or the Gather card: the open city spends a turn gathering.
     pub fn queue_selected_city_gather(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -706,7 +706,7 @@ impl GameState {
     }
 
     pub fn queue_selected_barracks_unit(&mut self, build: BuildUnit) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
@@ -775,7 +775,7 @@ impl GameState {
     }
 
     pub fn move_selected_city_queue_item(&mut self, index: usize, up: bool) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -794,10 +794,10 @@ impl GameState {
     }
 
     /// A city queue row's X, or Backspace for the head: takes it off,
-    /// refunded if it was paid for. Not while a turn plays out (or, in a
-    /// network game, waits for the others' plans), like queueing.
+    /// refunded if it was paid for. Not while a turn plays out, like
+    /// queueing.
     pub fn remove_selected_city_queue_item(&mut self, index: usize) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -819,7 +819,7 @@ impl GameState {
     /// after removing them one by one (Grows included: what one refunds
     /// depends only on how many are paid for, not on the order).
     pub fn clear_selected_city_queue(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_city else {
@@ -857,7 +857,7 @@ impl GameState {
     /// A Barracks queue row's X: takes it off, refunded if it was paid for.
     /// Not while a turn plays out.
     pub fn remove_selected_barracks_queue_item(&mut self, index: usize) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
@@ -877,7 +877,7 @@ impl GameState {
     /// The Barracks queue's Clear button: takes every troop off, each
     /// through `take_barracks_item` as its X would.
     pub fn clear_selected_barracks_queue(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {

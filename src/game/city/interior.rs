@@ -76,10 +76,9 @@ impl GameState {
     }
 
     /// Backspace or the Clear Orders button inside a city: the selected
-    /// troop's interior orders go. Not once the turn is out of the player's
-    /// hands (playing out, or a network game's plan sent).
+    /// troop's interior orders go. Not while a turn plays out.
     pub fn clear_selected_interior_orders(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let (Some(city), Some(source)) = (self.interior_view, self.interior_selected) else {
@@ -181,8 +180,8 @@ impl GameState {
 
     /// Clicking a tile in the interior view selects a copy or gives it an
     /// independent tactical order. The source field unit is unchanged. With
-    /// the plan sent (a network game waiting for the others'), it only
-    /// selects.
+    /// the plan sent (a network game waiting for the others'), an order
+    /// takes the turn back (`take_back_on_new_orders`).
     pub(in crate::game) fn interior_click(&mut self, tile: Hex) {
         let Some(city) = self.interior_view else {
             return;
@@ -195,10 +194,6 @@ impl GameState {
         if let Some(fighter) = clicked.filter(|f| f.team == self.local_team) {
             self.interior_selected =
                 (self.interior_selected != Some(fighter.source_id)).then_some(fighter.source_id);
-            return;
-        }
-        if self.is_resolving() {
-            self.interior_selected = None;
             return;
         }
         let Some(source) = self.interior_selected else {

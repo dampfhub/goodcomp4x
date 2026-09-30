@@ -103,13 +103,16 @@ improvements, walls, gates, outposts and forts, and its buildings with a site (r
 | Space with nothing left to do | End the turn |
 | End Turn button | Hold every unfinished unit, then end the turn, closing the city or Barracks view (or open a city that still needs a build) |
 | End Turn button while it waits (network game: WAITING FOR ..., TAKE BACK) | Take the turn back, to change your orders and end it again; too late once the host has every plan |
+| Any order while it waits (network game) | Takes the turn back too, and the order stands: end the turn again to send the new plan |
 
 The End Turn button names what the turn is waiting on ("3 UNITS NEED ORDERS", "CHOOSE
 PRODUCTION") and turns gold, reading END TURN, once nothing is. Clicks are ignored while a turn
-plays out. In a network game, once you have ended the turn and wait for the others' plans,
-you can still look around: clicks and C, Tab and V select units and open city, Barracks and
-interior views (a click only selects, never orders), and every control that would change your
-orders shows disabled.
+plays out. In a network game, once you have ended the turn and wait for the others' plans
+(the button names whose), you can still look around: clicks and C, Tab and V select units and
+open city, Barracks and interior views, and none of that takes the turn back. Every control
+works as while planning, and one that changes your orders (a move, an attack, a hold or
+guard, a build or queue change, a citizen, a worker, the priority order) takes the turn back
+and stands (`multiplayer.md`).
 
 ## Cities
 
@@ -136,7 +139,7 @@ orders shows disabled.
 | S / Settler card | Queue a settler: 30 food and 10 wood, 6 turns, and a citizen when it's done; only a city of population 3 or more (the card is dimmed, saying NEEDS POPULATION 3, below that). Below 3 a queued settler waits (WAITS FOR POP 3) and the queue works the next item |
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
 | 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
-| A build card the stockpile can't pay for yet | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
+| A build card the stockpile can't pay for yet (red rim and red price) | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the city shows a badge over its tower with the missing resources' icons. Prices show as resource icons and amounts, turns after a clock |
 | A dimmed build card | It can't be queued: (a troop, ship or Scout) your supply is all used, saying SUPPLY FULL (the top bar shows SUPPLY used/available), (Cavalry, Armored) the barracks has no deposit or its cap is used up, (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
@@ -235,7 +238,7 @@ that end of the range).
 | Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
 | Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
-| Animals (Next World) | Buttons | Off, few (the default: one animal den a side) or many (two a side): the dens of wolf packs and bears in the next world (F4); see `game-rules.md`, Animals |
+| Animals (Next World) | Buttons | Off, few (the default: one animal den a side, each keeping up to two animals) or many (two dens a side, up to three animals each): the dens of wolf packs and bears in the next world (F4); see `game-rules.md`, Animals |
 
 Settings, and whether the menu is open, stay as they are across scenario switches (F1-F4, F12)
 and loads (F7).
@@ -284,6 +287,7 @@ them.
 | `--scenario <name>` | Start in `combat`, `cities` (the default), `frontier`, `world`, `siege` (F12), or `naval` |
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
+| `--world-overlay` | With `--screenshot`: disable fog, show tile yields and zoom all the way out, for reproducible rendering checks |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
 | `--host` | Host a network game on a new world (you're Blue, the AI plays the sides nobody does) and show its join code (`multiplayer.md`); the settings menu's Multiplayer page does the same |
 | `--players <n>` | With `--host`: how many people play, you included (2-7; 2 unless given) |

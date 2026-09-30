@@ -12,10 +12,10 @@ file holds.
   classic views show the same thing and do the same thing. A new kind of row is a `Row` variant
   that `builder.rs` places (classic) and `imgui.rs` measures (`measure_panel`) and renders
   (`render_imgui_panel`).
-- **A button that changes the plan** (an order, a build, a citizen, a worker) has its `Target`
-  in `Target::changes_plan` (`mod.rs`), so both presentations show it disabled while a network
-  game waits for the others' plans (`PanelBuilder::freeze_plan`); the method it calls refuses
-  while `is_resolving`.
+- **A button that changes the plan** (an order, a build, a citizen, a worker) stays on while a
+  network game waits for the others' plans: the method it calls refuses only while
+  `is_playing_out`, and the change takes the turn back (`take_back_on_new_orders`,
+  `multiplayer.rs`). Never refuse an order on `is_resolving`, which also holds while waiting.
 - **A button that can be off says why.** Build buttons with `ButtonSpec::new(target, label, hint)`
   and its `.queued(..)`, `.unavailable(reason)`, `.armed(..)` (`builder.rs`): a button is
   disabled exactly when it has a reason, which its tooltip shows in red in both presentations, so
@@ -58,6 +58,9 @@ file holds.
   Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
+- **Text files.** The settings menu's text is in `text/menus.ini`, asked for by tag
+  (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an entry, not a
+  literal. Other areas move there in stages (#341); until theirs does, keep their text as it is.
 - **Characters past ASCII** in game text: only those in `font::UI_PUNCTUATION`
   (`font.rs`), which both presentations' fonts carry. A new one goes in that list;
   `ui_text_uses_only_the_shared_glyphs` finds one used and not listed.
@@ -85,7 +88,7 @@ file holds.
 - **New player setting:** no UI change. `settings_menu.rs` builds a `Row::Setting` for every
   entry of `Setting::ALL`, under its `group`'s heading, and its `control` (checkbox, slider or
   choice) picks the widget in both presentations, so add the setting in `game/settings.rs`
-  (its module comment lists the steps). The settings menu tests in `tests.rs` walk
+  (its module comment lists the steps; its words are entries in `text/menus.ini`). The settings menu tests in `tests.rs` walk
   `Setting::ALL` too. A new kind of control (text entry, say) is a `Control` variant, drawn by
   `render_setting` (`imgui.rs`) and laid out as buttons by `classic_setting_rows`.
 

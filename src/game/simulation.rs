@@ -14,17 +14,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 mod economy;
+mod wildlife;
 
-use super::animals::{DEN_RETURN_TURNS, TERRITORY_RADIUS};
+use super::animals::{DEN_BREED_TURNS, den_cap, territory};
 use super::city::{
-    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
-    WORKERS_PER_MANAGER,
+    Build, BuildUnit, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS,
+    MIN_CITY_DISTANCE, Queued, WORKERS_PER_MANAGER,
 };
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
-use super::settings::Settings;
+use super::settings::{ANIMALS_MANY, Settings};
 use super::terrain::{Resource, Terrain};
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
@@ -78,15 +79,75 @@ fn play_turn(game: &mut GameState) {
     game.plan_ai_turn(PLAYER_TEAM);
     // `resolve_turn` plans the AI team itself.
     game.resolve_turn();
+    play_out(game);
+}
+
+/// Plays out a turn whose plans are all in (`resolve_turn` called), all at once, and checks
+/// that every city spent it (`auto_gather`): its queue worked an item, or, working nothing,
+/// the city gathered by itself, never both. A city taken this turn, or holding a finished
+/// item for want of an open hex, is let be. A failure names the turn; `ReplayHint` names the
+/// game.
+fn play_out(game: &mut GameState) {
+    let before: Vec<(Team, Vec<Queued<Build>>)> = game
+        .cities
+        .iter()
+        .map(|c| (c.team, c.queue.clone()))
+        .collect();
     game.update(0.0);
+    for (i, (team, queue)) in before.iter().enumerate() {
+        let Some(city) = game.cities.get(i) else {
+            continue;
+        };
+        let holding = queue
+            .iter()
+            .any(|q| q.paid && q.progress >= game.city_build_work(i, q.build));
+        if city.team != *team || holding {
+            continue;
+        }
+        let worked = city.queue != *queue;
+        let gathered = game.auto_gathered.contains(&i);
+        assert!(
+            worked != gathered,
+            "turn {}: {team:?} city {} {}: {queue:?}",
+            game.turn,
+            city.id + 1,
+            if worked {
+                "worked its queue and gathered too"
+            } else {
+                "spent its turn on nothing"
+            }
+        );
+    }
+}
+
+/// The cities of `team` queue ahead, as a player would: a city queue left only to gather
+/// trains a Melee instead (or, where it can't, grows), whatever the stockpile holds, and
+/// waits for it, gathering by itself meanwhile (`auto_gather`).
+fn queue_ahead(game: &mut GameState, team: Team) {
+    let melee = Build::Unit(BuildUnit::Melee);
+    for city in 0..game.cities.len() {
+        let c = &game.cities[city];
+        if c.team != team || c.queue.len() != 1 || c.queue[0] != Queued::new(Build::Gather) {
+            continue;
+        }
+        let build = if game.city_build_issue(city, melee).is_none() {
+            melee
+        } else if game.can_grow(city) {
+            Build::Grow
+        } else {
+            continue;
+        };
+        game.take_queue_item(city, 0);
+        game.queue_build(city, build);
+    }
 }
 
 /// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
 /// without a queue gets one Shift-click's worth of moves toward the nearest enemy (every
 /// turn it takes to get next to it, up to the default `Settings::max_queued_turns`) and then
 /// an attack on its hex (queued only if in range from where the moves end), as a player would queue
-/// them. The AI still runs the player's cities and workers;
-/// units already following a queue keep their orders.
+/// them. The AI still runs the player's cities and workers, but they queue ahead
+/// (`queue_ahead`); units already following a queue keep their orders.
 fn play_queued_turn(game: &mut GameState) -> usize {
     game.selected = None;
     game.group.clear();
@@ -124,8 +185,9 @@ fn play_queued_turn(game: &mut GameState) -> usize {
         game.queue_attack(target);
     }
     game.selected = None;
+    queue_ahead(game, PLAYER_TEAM);
     game.resolve_turn();
-    game.update(0.0);
+    play_out(game);
     game.units.iter().filter(|u| u.following_queue).count()
 }
 
@@ -159,7 +221,7 @@ fn play_alert_turn(game: &mut GameState, context: &str) -> usize {
         .filter(|&i| game.alert_target(i).is_some())
         .count();
     game.resolve_turn();
-    game.update(0.0);
+    play_out(game);
     for (id, pos) in on_alert {
         if let Some(unit) = game.units.iter().find(|u| u.id == id) {
             assert_eq!(unit.pos, pos, "{context}: {unit} moved while on alert");
@@ -333,7 +395,7 @@ fn check_invariants(game: &GameState, context: &str) {
         );
         if let Some(home) = unit.home {
             assert!(
-                unit.pos.distance(home) <= TERRITORY_RADIUS,
+                unit.pos.distance(home) <= territory(unit.unit_type),
                 "{context}: {unit} is {} hexes from its den",
                 unit.pos.distance(home)
             );
@@ -342,6 +404,20 @@ fn check_invariants(game: &GameState, context: &str) {
                 "{context}: {unit} stands in a city"
             );
         }
+    }
+    // No den keeps more animals than its cap, cleared or not.
+    let mut homes: HashMap<Hex, usize> = HashMap::default();
+    for home in game.units.iter().filter_map(|u| u.home) {
+        *homes.entry(home).or_default() += 1;
+    }
+    for (&home, &count) in &homes {
+        let cap = game
+            .den_at(home)
+            .map_or(den_cap(ANIMALS_MANY), |den| den.cap);
+        assert!(
+            count <= cap && cap <= den_cap(ANIMALS_MANY),
+            "{context}: {count} animals of the den at {home:?}, over its cap of {cap}"
+        );
     }
     for den in &game.dens {
         assert!(
@@ -353,16 +429,18 @@ fn check_invariants(game: &GameState, context: &str) {
             game.cities.iter().all(|c| c.pos != den.pos),
             "{context}: a city on a den"
         );
-        // A den counts down to its next animal only while it has none.
-        let alive = game.units.iter().any(|u| u.home == Some(den.pos));
+        // A den counts down to its next animal only while it has fewer than its cap.
+        let alive = homes.get(&den.pos).copied().unwrap_or(0);
         assert_eq!(
-            alive,
-            den.returns_in.is_none(),
-            "{context}: the {} at {:?} counts down with its animal alive, or the reverse",
+            alive < den.cap,
+            den.next_in.is_some(),
+            "{context}: the {} at {:?} has {alive} of {} animals and counts down {:?}",
             den.name(),
-            den.pos
+            den.pos,
+            den.cap,
+            den.next_in
         );
-        assert!(den.returns_in.is_none_or(|t| t <= DEN_RETURN_TURNS));
+        assert!(den.next_in.is_none_or(|t| t <= DEN_BREED_TURNS));
     }
     for worker in &game.field_workers {
         assert!(
@@ -728,8 +806,12 @@ fn interior_hp_uses_the_source_unit_upgrade() {
 
 #[test]
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
-    // Animals killed and dens cleared, over every world.
-    let (killed, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // Animals killed, born to dens and dens cleared, over every world.
+    let (killed, born, cleared) = (
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    );
     // Games where a side used all its supply.
     let supply_full = AtomicUsize::new(0);
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
@@ -739,12 +821,18 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
         let dens_at_start = game.dens.len();
-        let animals: Vec<u32> = game
-            .units
-            .iter()
-            .filter(|u| u.is_animal())
-            .map(|u| u.id)
-            .collect();
+        let animal_ids = |game: &GameState| -> Vec<u32> {
+            game.units
+                .iter()
+                .filter(|u| u.is_animal())
+                .map(|u| u.id)
+                .collect()
+        };
+        let first_animals = animal_ids(&game);
+        // Every animal the world has had, and whether one ever roamed
+        // two or more hexes from its den.
+        let mut animals: HashSet<u32> = first_animals.iter().copied().collect();
+        let mut roamed = false;
         let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
             let ruins_before = game.ruins.len();
@@ -762,6 +850,11 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             check_invariants(&game, &context);
             check_founding(&game, starting, &context);
             economy.watch(&game, &context);
+            animals.extend(animal_ids(&game));
+            roamed |= game
+                .units
+                .iter()
+                .any(|u| u.home.is_some_and(|home| home.distance(u.pos) >= 2));
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
         if scenario == Scenario::World {
@@ -770,19 +863,22 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
             );
         }
-        // Anti-vacuity: the world's animals fight: one of them was hurt, or died.
+        // Anti-vacuity: the world's animals fight (one of them was hurt, or
+        // died) and roam.
         if scenario == Scenario::World {
-            let fought = animals.iter().any(|&id| {
+            let fought = first_animals.iter().any(|&id| {
                 game.units
                     .iter()
                     .find(|u| u.id == id)
                     .is_none_or(|u| u.hp < u.max_hp())
             });
             assert!(fought, "{name}: no animal fought in {TURNS} turns");
+            assert!(roamed, "{name}: no animal roamed from its den");
             let dead = animals
                 .iter()
                 .filter(|&&id| game.units.iter().all(|u| u.id != id));
             killed.fetch_add(dead.count(), Ordering::Relaxed);
+            born.fetch_add(animals.len() - first_animals.len(), Ordering::Relaxed);
             cleared.fetch_add(dens_at_start - game.dens.len(), Ordering::Relaxed);
         }
         // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
@@ -802,9 +898,10 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
     let supply_full = supply_full.into_inner();
     eprintln!("games where a side used all its supply: {supply_full}");
     assert!(supply_full > 0, "no side ever used all its supply");
-    // Anti-vacuity: the AI hunts, killing animals and clearing dens.
-    let (killed, cleared) = (killed.into_inner(), cleared.into_inner());
-    eprintln!("worlds: {killed} animals killed, {cleared} dens cleared");
+    // Anti-vacuity: dens add animals, and the AI hunts, killing them and clearing dens.
+    let (killed, born, cleared) = (killed.into_inner(), born.into_inner(), cleared.into_inner());
+    eprintln!("worlds: {born} animals born, {killed} killed, {cleared} dens cleared");
+    assert!(born > 0, "no den added an animal in any world");
     assert!(killed > 0, "no side killed an animal in any world");
     assert!(cleared > 0, "no side cleared a den in any world");
 }
@@ -812,12 +909,14 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
 #[test]
 fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
     // The most sides there are, each starting with a settler to found its
-    // city: the other way a world can start (`Settings::world_start_city`).
+    // city: the other way a world can start (`Settings::world_start_city`),
+    // and with many animals: two dens a side, three animals each.
     for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
         let mut game = GameState::new();
         game.settings.instant_playback = true;
         game.settings.world_ai = Team::ALL.len() - 1;
         game.settings.world_start_city = false;
+        game.settings.world_animals = ANIMALS_MANY;
         game.seed_rng(seed);
         game.switch_scenario(scenario);
         let name = format!("crowded settler world seed {seed}");
@@ -847,15 +946,31 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
         let name = format!("{} seed {seed}", scenario.name());
         let starting = game.cities.len();
         let mut followed = 0;
+        // Turns a city of the player's gathered by itself while its queue waited.
+        let mut gathered_waiting = 0;
         for turn in 1..=TURNS {
             followed += play_queued_turn(&mut game);
             let context = format!("{name} queued turn {turn}");
             assert!(!game.is_resolving(), "{context}: the turn did not finish");
             check_invariants(&game, &context);
             check_founding(&game, starting, &context);
+            gathered_waiting += game
+                .auto_gathered
+                .iter()
+                .filter(|&&i| {
+                    game.cities[i].team == PLAYER_TEAM && !game.cities[i].queue.is_empty()
+                })
+                .count();
         }
         // Anti-vacuity: queues were actually carried from turn to turn.
         assert!(followed > 0, "{name}: no unit ever followed a queued turn");
+        // Anti-vacuity: queueing ahead, the player's cities waited, and gathered meanwhile.
+        if matches!(scenario, Scenario::Cities | Scenario::World) {
+            assert!(
+                gathered_waiting > 0,
+                "{name}: no city of the player's gathered while it waited"
+            );
+        }
     });
 }
 

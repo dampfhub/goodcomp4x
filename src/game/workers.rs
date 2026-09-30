@@ -640,7 +640,7 @@ impl GameState {
     /// A card in the open city's production list, or R and I: arms `kind`
     /// for placing on the map, or disarms it if it's the one armed already.
     pub fn arm_worker_job(&mut self, kind: JobKind) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.job_city() else {
@@ -679,7 +679,7 @@ impl GameState {
     /// every tile or edge it passes, so a place that already has this job
     /// is skipped without a notice.
     pub(super) fn place_job_at(&mut self, hex: Hex, across: Option<Hex>) -> bool {
-        let Some(kind) = self.placing_job.filter(|_| !self.is_resolving()) else {
+        let Some(kind) = self.placing_job.filter(|_| !self.is_playing_out()) else {
             return false;
         };
         if let Some(across) = across {
@@ -748,7 +748,7 @@ impl GameState {
     /// passes. Returns whether the press belongs to placing: false over the
     /// classic UI (`check_ui`) or with nothing armed.
     pub fn paint_job_at(&mut self, cursor: Vec2, screen_size: Vec2, check_ui: bool) -> bool {
-        if self.placing_job.is_none() || self.is_resolving() {
+        if self.placing_job.is_none() || self.is_playing_out() {
             return false;
         }
         if check_ui && self.ui_covers(cursor, screen_size) {
@@ -831,7 +831,7 @@ impl GameState {
 
     /// The X on a worker job in the open city.
     pub fn remove_worker_job(&mut self, index: usize) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self.worker_list_city() else {
@@ -864,7 +864,7 @@ impl GameState {
     /// on the way. Home, it stays there, held, until released
     /// (`release_worker`).
     pub fn recall_worker(&mut self, id: u32) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(w) = self
@@ -991,7 +991,7 @@ impl GameState {
     /// workers (recalled, and home) takes jobs again, going out in the
     /// Workers step at the end of this turn.
     pub fn release_worker(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(city) = self

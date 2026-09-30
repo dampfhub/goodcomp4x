@@ -3,7 +3,6 @@
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
-use super::tooltips::PLAN_SENT;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
@@ -31,6 +30,10 @@ pub(super) struct ButtonSpec {
     /// its tooltip says this.
     pub(super) unavailable: Option<String>,
     pub(super) armed: bool,
+    /// A build the stockpile can't pay for this turn (`build_shortfall`):
+    /// still pressable, since it waits in the queue until paid, but drawn
+    /// short, with a red rim and price, unlike a disabled button's dimming.
+    pub(super) short: bool,
 }
 
 impl ButtonSpec {
@@ -43,6 +46,7 @@ impl ButtonSpec {
             queued: false,
             unavailable: None,
             armed: false,
+            short: false,
         }
     }
 
@@ -69,9 +73,21 @@ impl ButtonSpec {
         self
     }
 
+    /// Whether the stockpile is short of its price this turn (`short`).
+    pub(super) fn short(mut self, short: bool) -> Self {
+        self.short = short;
+        self
+    }
+
     /// How it's drawn: disabled when unavailable, else gold when queued.
     pub(super) fn state(&self) -> ButtonState {
         ButtonState::new(self.queued, self.unavailable.is_some())
+    }
+
+    /// Whether it's drawn short (`short`): never while it's disabled, which
+    /// says why on its own.
+    pub(super) fn drawn_short(&self) -> bool {
+        self.short && self.unavailable.is_none()
     }
 
     /// The button placed from `min` to `max`, see-through if `faded`.
@@ -83,44 +99,10 @@ impl ButtonSpec {
             queued: self.queued,
             unavailable: self.unavailable,
             armed: self.armed,
+            short: self.short,
             faded,
             min,
             max,
-        }
-    }
-}
-
-/// `PanelBuilder::freeze_plan` on `rows`, and on the rows of any scrolling
-/// list among them.
-fn freeze_rows(rows: &mut [Row]) {
-    let freeze = |spec: &mut ButtonSpec| {
-        if spec.target.changes_plan() {
-            spec.unavailable = Some(PLAN_SENT.into());
-            spec.armed = false;
-        }
-    };
-    for row in rows {
-        match row {
-            Row::Buttons(buttons, _)
-            | Row::Reorder(_, buttons)
-            | Row::LabeledButtons(_, buttons) => buttons.iter_mut().for_each(freeze),
-            Row::TitleWithButton(_, button) => freeze(button),
-            Row::BuildingCatalog(_, entries, ..) => {
-                for entry in entries {
-                    if let CatalogEntry::Card(button) = entry {
-                        freeze(button);
-                    }
-                }
-            }
-            Row::ScrollList(list) => freeze_rows(&mut list.entries),
-            Row::QueueItem(item) => item.locked = true,
-            Row::Text(..)
-            | Row::Gap(_)
-            | Row::Bar(_)
-            | Row::Roster(_)
-            | Row::Heading(_)
-            | Row::Setting(..)
-            | Row::Field(..) => {}
         }
     }
 }
@@ -471,14 +453,6 @@ impl PanelBuilder {
         self.rows.push(Row::Reorder(kind, buttons));
     }
 
-    /// For a plan that can't change (a network game waiting for the others'):
-    /// every button that would change it shows disabled, and queue rows
-    /// lock (no dragging, no X). Both presentations call it on the panels
-    /// they show, so looking stays open and ordering doesn't.
-    pub(super) fn freeze_plan(&mut self) {
-        freeze_rows(&mut self.rows);
-    }
-
     /// Button borders are drawn just outside their rows, so a row of buttons
     /// right under another needs a gap to keep them from overlapping.
     fn space_button_rows(&mut self) {
@@ -665,10 +639,8 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 waiting: item.waiting,
                 dragging: item.dragging,
                 drop_target: item.drop_target,
-                locked: item.locked,
             });
-            let remove = ButtonSpec::new(item.kind.remove_target(item.index), "X", "")
-                .unavailable(item.locked.then(|| PLAN_SENT.into()));
+            let remove = ButtonSpec::new(item.kind.remove_target(item.index), "X", "");
             layout
                 .buttons
                 .push(remove.place(Vec2::new(body_max_x, min.y), max, faded));
@@ -678,7 +650,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 min,
                 max,
                 body_max_x,
-                locked: item.locked,
+                locked: false,
             });
         }
         Row::Reorder(kind, buttons) => {

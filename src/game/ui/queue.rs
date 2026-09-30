@@ -143,7 +143,7 @@ impl GameState {
 
     /// Capture a queue row body. Its separate X button remains an ordinary click.
     pub fn start_queue_drag_at(&mut self, cursor: Vec2, screen_size: Vec2) -> bool {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return false;
         }
         let point = to_ui(cursor, screen_size);
@@ -220,7 +220,7 @@ impl GameState {
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
-        if source == target || self.is_resolving() {
+        if source == target || self.is_playing_out() {
             return;
         }
         let city = match kind {
@@ -275,7 +275,7 @@ impl GameState {
         panel.title_with_button(
             vec![(title.into(), LABEL_TEXT)],
             ButtonSpec::new(clear, "CLEAR", "").unavailable(
-                self.is_resolving()
+                self.is_playing_out()
                     .then(|| "NOT WHILE THE TURN PLAYS OUT".into()),
             ),
         );
@@ -285,12 +285,12 @@ impl GameState {
     /// player's own cities it's `forecast`'s view: the item worked, and
     /// which items wait for the stockpile or for supply. Other sides'
     /// stockpiles aren't the player's to see, so their queues show only
-    /// their first item.
+    /// their first item, and never that the city gathers.
     pub(super) fn queue_status(&self, city: usize, lane: Lane) -> QueueStatus {
         let len = self.lane_len(city, lane);
-        let forecast = (self.cities[city].team == self.local_team)
-            .then(|| self.forecast(self.local_team).lane(city, lane))
-            .flatten();
+        let side =
+            (self.cities[city].team == self.local_team).then(|| self.forecast(self.local_team));
+        let forecast = side.as_ref().and_then(|side| side.lane(city, lane));
         let (worked, waiting, supply) = match forecast {
             Some(forecast) => (
                 forecast.worked,
@@ -303,6 +303,10 @@ impl GameState {
             worked,
             waiting,
             supply,
+            gathers: lane == Lane::City
+                && side
+                    .as_ref()
+                    .is_some_and(|side| self.gathers_this_turn(side, city)),
         }
     }
 
@@ -407,7 +411,6 @@ impl GameState {
             dragging: drag.is_some_and(|drag| drag.source == index),
             drop_target: drag
                 .is_some_and(|drag| drag.target == Some(index) && drag.source != index),
-            locked: false,
         }
     }
 
@@ -467,11 +470,14 @@ impl GameState {
         if city.queue.len() > visible {
             panel.scrollbar = Some((QueueKind::City, offset, city.queue.len(), visible));
         }
-        self.queue_title(
-            "CITY QUEUE - DRAG TO REORDER",
-            Target::ClearCityQueue,
-            panel,
-        );
+        // Everything in it waits: the city gathers by itself
+        // (`gathers_this_turn`).
+        let title = if status.gathers {
+            "CITY QUEUE - GATHERING THIS TURN"
+        } else {
+            "CITY QUEUE - DRAG TO REORDER"
+        };
+        self.queue_title(title, Target::ClearCityQueue, panel);
         let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);
         for (index, item) in city.queue.iter().enumerate().skip(offset).take(visible) {
             panel.queue_item(self.queue_row(
@@ -494,6 +500,9 @@ pub(super) struct QueueStatus {
     pub(super) waiting: Vec<(usize, Stock)>,
     /// The items that wait for supply (`GameState::supply_waiting_items`).
     pub(super) supply: Vec<usize>,
+    /// The city queue works nothing, so its city gathers by itself
+    /// (`GameState::gathers_this_turn`): the player's own cities only.
+    pub(super) gathers: bool,
 }
 
 impl QueueStatus {

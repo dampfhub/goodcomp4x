@@ -134,6 +134,16 @@ const NOTICE_TEXT: Color = [0.95, 0.85, 0.55, 1.0];
 const GOLD_TEXT: Color = [0.95, 0.80, 0.35, 1.0];
 const BOOSTED_TEXT: Color = [0.55, 0.92, 0.50, 1.0];
 const REDUCED_TEXT: Color = [0.98, 0.52, 0.42, 1.0];
+/// A build card the stockpile can't pay for yet (`ButtonSpec::short`): a
+/// muted red rim, a faintly red ground and its price in `SHORT_PRICE`, bright
+/// enough to read and press, unlike a disabled card's grey.
+const SHORT_BORDER_COLOR: Color = [0.46, 0.23, 0.20, 1.0];
+const SHORT_BG: Color = [0.06, 0.038, 0.036, 0.95];
+const SHORT_HOVER_BG: Color = [0.10, 0.065, 0.06, 0.95];
+const SHORT_PRICE: Color = [0.82, 0.44, 0.38, 1.0];
+/// A short card that's also queued keeps its gold ground: its price in a
+/// dark red that reads on gold.
+const SHORT_QUEUED_PRICE: Color = [0.42, 0.14, 0.10, 1.0];
 /// The stockpile's resources, wherever they're named.
 const FOOD_TEXT: Color = [0.62, 0.90, 0.40, 1.0];
 const WOOD_TEXT: Color = [0.85, 0.62, 0.36, 1.0];
@@ -261,70 +271,6 @@ enum Target {
     CopyHostAddress,
 }
 
-impl Target {
-    /// Whether what the button does changes the player's plan for the turn
-    /// (an order, a build, a citizen or worker), which a network game can't
-    /// once the plan is sent: while it waits for the others', these show
-    /// disabled (`PanelBuilder::freeze_plan`). Looking (opening views,
-    /// selecting, the camera) and the settings don't. End Turn has its own
-    /// state.
-    fn changes_plan(self) -> bool {
-        match self {
-            Target::Unit(_)
-            | Target::Build(_)
-            | Target::Building(_)
-            | Target::BarracksBuild(_)
-            | Target::InteriorClear
-            | Target::CityQueueRemove(_)
-            | Target::BarracksQueueRemove(_)
-            | Target::ClearCityQueue
-            | Target::ClearBarracksQueue
-            | Target::BuildWorker
-            | Target::BuildScout
-            | Target::BuildSettler
-            | Target::Grow
-            | Target::Gather
-            | Target::WorkerJob(_)
-            | Target::CancelPlacing
-            | Target::WorkerJobRemove(_)
-            | Target::RecallWorker(_)
-            | Target::ReleaseWorker
-            | Target::Priority(_) => true,
-            Target::ToggleYields
-            | Target::OpenSettings
-            | Target::OpenBarracks
-            | Target::OpenCity
-            | Target::OpenInterior
-            | Target::ShowWorker(_)
-            | Target::QueueItem(..)
-            | Target::RosterSelect(_)
-            | Target::RosterAdd(_)
-            | Target::RosterRemove(_)
-            | Target::EndTurn
-            | Target::Scenario(_)
-            | Target::SaveState
-            | Target::LoadState
-            | Target::CompleteProduction
-            | Target::TogglePlayback
-            | Target::ToggleFog
-            | Target::ToggleProductionSpeedup
-            | Target::ToggleLifetimeCap
-            | Target::SetSetting(..)
-            | Target::CloseSettings
-            | Target::Quit
-            | Target::OpenMultiplayer
-            | Target::CloseMultiplayer
-            | Target::NetPlayers(_)
-            | Target::EditNetField(_)
-            | Target::HostGame
-            | Target::JoinGame
-            | Target::LeaveGame
-            | Target::CopyJoinCode
-            | Target::CopyHostAddress => false,
-        }
-    }
-}
-
 /// An order for the selected unit.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UnitAction {
@@ -376,6 +322,8 @@ struct Button {
     unavailable: Option<String>,
     /// This button's action is what the next map click will do.
     armed: bool,
+    /// A build the stockpile can't pay for yet (`ButtonSpec::short`).
+    short: bool,
     /// Part of the debug panel, drawn see-through so it doesn't read as game UI.
     faded: bool,
     min: Vec2,
@@ -386,6 +334,11 @@ impl Button {
     /// How it's drawn: disabled when unavailable, else gold when queued.
     fn state(&self) -> ButtonState {
         ButtonState::new(self.queued, self.unavailable.is_some())
+    }
+
+    /// Drawn short: a red rim and price (`ButtonSpec::drawn_short`).
+    fn drawn_short(&self) -> bool {
+        self.short && self.unavailable.is_none()
     }
 
     fn contains(&self, point: Vec2) -> bool {
@@ -423,7 +376,6 @@ enum Shape {
         waiting: bool,
         dragging: bool,
         drop_target: bool,
-        locked: bool,
     },
     /// A unit's token in the unit strip, framed while it's selected.
     UnitChip {
@@ -494,9 +446,6 @@ struct QueueItemSpec {
     waiting: bool,
     dragging: bool,
     drop_target: bool,
-    /// Can't be dragged or taken off: shown dim, its X disabled (a plan
-    /// that can't change, `PanelBuilder::freeze_plan`).
-    locked: bool,
 }
 
 struct QueueItemRegion {
@@ -505,6 +454,7 @@ struct QueueItemRegion {
     min: Vec2,
     max: Vec2,
     body_max_x: f32,
+    /// Can't be dragged: a priority chip whose button is off.
     locked: bool,
 }
 
@@ -541,9 +491,6 @@ struct Layout {
     /// The unit strip's tokens and the unit id each one stands for.
     roster_chips: Vec<(Vec2, Vec2, RosterKey)>,
     dock: Option<Dock>,
-    /// The player's plan can't change (a network game waiting for the
-    /// others'): docked panels show what would change it disabled.
-    plan_frozen: bool,
     /// Where the settings menu's shapes and buttons start, while it's open:
     /// `build_ui` draws them after everything before them, buttons
     /// included, so no other panel's buttons show through it.
@@ -565,10 +512,7 @@ impl Layout {
 
     /// Place a measured panel in a screen zone. All docked panels compose with
     /// one another and keep their rendering and hit boxes at the same rect.
-    fn dock_panel(&mut self, mut panel: PanelBuilder, zone: Zone) -> Option<Rect> {
-        if self.plan_frozen {
-            panel.freeze_plan();
-        }
+    fn dock_panel(&mut self, panel: PanelBuilder, zone: Zone) -> Option<Rect> {
         let rect = self.dock.as_mut()?.place(panel.size(), zone)?;
         panel.place_bottom_left(rect.min, self);
         Some(rect)
@@ -887,20 +831,12 @@ impl GameState {
             cursor.and_then(|c| self.job_target_at(self.camera.screen_to_world(c, screen_size)));
     }
 
-    /// While a network game waits for the others' plans: this side's is
-    /// sent, so the panels show everything that would change it disabled,
-    /// though they still show and open what there is to look at.
-    fn plan_frozen(&self) -> bool {
-        self.waiting_for_peers()
-    }
-
     pub fn set_ui_notice(&mut self, notice: &str) {
         self.notice = notice.into();
     }
 
     fn layout(&self, screen_size: Vec2) -> Layout {
         let mut layout = Layout::for_screen(screen_size);
-        layout.plan_frozen = self.plan_frozen();
         self.top_bar(screen_size, &mut layout);
 
         let mut tray = PanelBuilder::default();

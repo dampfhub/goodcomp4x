@@ -65,7 +65,7 @@ impl GameState {
 
     /// Arms `mode` for the next map click, or disarms it if it's already armed.
     fn toggle_ui_click_mode(&mut self, mode: ClickMode, notice: &str) {
-        if self.is_resolving() || self.selection().is_empty() {
+        if self.is_playing_out() || self.selection().is_empty() {
             return;
         }
         if self.ui_click_mode == Some(mode) {
@@ -82,8 +82,9 @@ impl GameState {
     /// An action armed from the command tray applies to this map click only,
     /// unless a modifier key picked `mode` itself. Once the selected unit has
     /// nothing left to plan, selection moves on to the next unit that does.
-    /// Ignored while a turn is playing out; while a network game waits for
-    /// the others' plans, it only selects (`handle_map_click`).
+    /// Ignored while a turn is playing out. While a network game waits for
+    /// the others' plans, an order it gives takes the turn back
+    /// (`take_back_on_new_orders`); a click that only selects doesn't.
     pub fn handle_click(&mut self, cursor: Vec2, screen_size: Vec2, mode: ClickMode) {
         if self.is_playing_out() {
             return;
@@ -122,12 +123,6 @@ impl GameState {
 
         let point = self.camera.screen_to_world(cursor, screen_size);
         if self.city_click_at(hex, point) {
-            return;
-        }
-        // The plan is sent (a network game waiting for the others'): a
-        // click only picks what to look at.
-        if self.is_resolving() {
-            self.select_only(hex, mode);
             return;
         }
 
@@ -228,19 +223,6 @@ impl GameState {
         }
     }
 
-    /// A map click on `hex` that changes nothing but the selection, while
-    /// the plan can't change: one of the player's units there is selected
-    /// (Shift adds it, Ctrl takes it out of a group); anywhere else lets go.
-    fn select_only(&mut self, hex: Hex, mode: ClickMode) {
-        match (mode, self.controlled_unit_at(hex)) {
-            (ClickMode::QueueMove, Some(ally)) => self.add_to_selection(ally),
-            (ClickMode::Swap, Some(ally)) if !self.group.is_empty() => {
-                self.remove_from_selection(ally);
-            }
-            (_, ally) => self.set_selection(ally.into_iter().collect()),
-        }
-    }
-
     /// Whether a plain order on `hex` (an attack if `attack`) may go ahead
     /// for the selection. If a selected unit follows a queue reaching past
     /// this turn, which the order would replace, the first such click only
@@ -300,7 +282,7 @@ impl GameState {
     /// Space: holds the selected unit (or group) if it still needs orders,
     /// moving on to whatever else does. Once nothing does, ends the turn.
     pub fn hold_or_end_turn(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if !self.group.is_empty() {
@@ -321,7 +303,7 @@ impl GameState {
     /// already holding, it stops holding instead and stays selected, back in
     /// the turn order.
     pub fn hold_selected_unit(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if !self.group.is_empty() {
@@ -344,7 +326,7 @@ impl GameState {
     /// G or the Guard button: the selected unit stays put and is skipped in
     /// the turn order every turn until it's given an order, or G unguards it.
     pub fn toggle_guard(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if !self.group.is_empty() {
@@ -368,7 +350,7 @@ impl GameState {
     /// an enemy in range (`alert_target`), until it's given another order,
     /// or E takes it off alert. Only troops that can (`can_go_on_alert`).
     pub fn toggle_alert(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if !self.group.is_empty() {
@@ -414,7 +396,7 @@ impl GameState {
     /// on the same unit disbands it, and selection moves on. A landing craft
     /// goes with its passengers, which the first press warns of.
     pub fn disband_selected(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(idx) = self.selected.filter(|&i| self.is_player_controlled(i)) else {
@@ -573,7 +555,7 @@ impl GameState {
     /// Ctrl-right-click: clears all of the selected unit's (or group's)
     /// orders, including a hold, guard or alert.
     pub fn handle_right_click(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if !self.group.is_empty() {
@@ -598,7 +580,7 @@ impl GameState {
         clear: bool,
         queue: bool,
     ) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         if self.interior_view.is_some() {
@@ -848,7 +830,7 @@ impl GameState {
 
     /// Toggles the selected unit's ability for this turn, if it's off cooldown.
     pub fn toggle_selected_ability(&mut self) {
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return;
         }
         let Some(idx) = self.selected else { return };

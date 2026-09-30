@@ -5,7 +5,7 @@ use super::text::{
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::{Build, Good, Priorities, Queued, Stock, stock_icons};
+use crate::game::city::{Build, GATHER_YIELD, Good, Priorities, Queued, Stock, stock_icons};
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
@@ -1382,6 +1382,7 @@ fn find_button(game: &GameState, target: Target) -> Button {
         queued: button.queued,
         unavailable: button.unavailable.clone(),
         armed: button.armed,
+        short: button.short,
         faded: button.faded,
         min: button.min,
         max: button.max,
@@ -1460,6 +1461,63 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
         "{}",
         row.0
     );
+}
+
+/// #340: a build card the stockpile can't pay for this turn is drawn short
+/// (a red rim and price) in both presentations, still pressable, and unlike
+/// a disabled card; one it can pay for isn't.
+#[test]
+fn build_cards_the_stockpile_cannot_pay_for_are_drawn_short_in_both_presentations() {
+    let mut game = GameState::city_scenario();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.fund(Team::Blue);
+    game.open_city(0);
+    let city_cards = [Target::Build(BuildUnit::Melee), Target::Grow];
+    let short_rims = |game: &GameState| {
+        game.build_ui(SCREEN, None)
+            .iter()
+            .filter(|v| v.color == SHORT_BORDER_COLOR)
+            .count()
+    };
+    let imgui_short = |game: &mut GameState| {
+        let mut screen = ImGuiScreen::new();
+        imgui::SHORT_BUTTONS.with_borrow_mut(Vec::clear);
+        screen.settle(game);
+        imgui::SHORT_BUTTONS.with_borrow(|drawn| drawn.clone())
+    };
+    for target in city_cards {
+        let card = find_button(&game, target);
+        assert!(!card.short && !card.drawn_short(), "{target:?} affordable");
+    }
+    assert_eq!(short_rims(&game), 0, "nothing short while funded");
+    assert!(imgui_short(&mut game).is_empty());
+
+    // Broke: the same cards are short, and still ready to press.
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    for target in city_cards {
+        let card = find_button(&game, target);
+        assert!(card.drawn_short(), "{target:?} short");
+        assert_eq!(card.state(), ButtonState::Ready, "{target:?}");
+    }
+    assert!(short_rims(&game) > 0, "classic draws the red rim");
+    let drawn = imgui_short(&mut game);
+    for target in city_cards {
+        assert!(drawn.contains(&target), "ImGui draws {target:?} short");
+    }
+
+    // A card that's off for another reason (a locked troop) is disabled,
+    // not short: dimmed, saying why.
+    game.open_barracks(0);
+    let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
+    assert!(melee.drawn_short(), "a Barracks card is short too");
+    let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
+    assert_eq!(armored.state(), ButtonState::Disabled);
+    assert!(!armored.drawn_short(), "disabled wins over short");
+    let drawn = imgui_short(&mut game);
+    assert!(drawn.contains(&Target::BarracksBuild(BuildUnit::Melee)));
+    assert!(!drawn.contains(&Target::BarracksBuild(BuildUnit::Armored)));
 }
 
 #[test]
@@ -2732,6 +2790,7 @@ impl ImGuiScreen {
         io.add_mouse_button_event(::imgui::MouseButton::Left, down);
         imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
         imgui::DRAWN_MARKS.with_borrow_mut(Vec::clear);
+        imgui::SHORT_BUTTONS.with_borrow_mut(Vec::clear);
         let ui = self.context.frame();
         game.draw_imgui(ui, self.size, mouse, &self.fonts, &mut self.layout);
         self.context.render();
@@ -3141,7 +3200,29 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
     }))
     .join(" ");
     assert!(text.contains("SIEGE WAITS FOR"), "{text}");
-    assert!(text.contains("NOTHING IT CAN PAY FOR"), "{text}");
+    // With nothing it can work, it gathers, and the tray, the queue and
+    // the hover panel say so; the queue's row is still drawn where it was.
+    let gathering = format!("GATHERING {}", stock_icons(GATHER_YIELD));
+    assert!(text.contains(&format!("BUILDING {gathering}")), "{text}");
+    let title = queue.rows.iter().find_map(|row| match row {
+        Row::TitleWithButton(line, _) => Some(line_strings([line.clone()]).join(" ")),
+        _ => None,
+    });
+    assert_eq!(title.as_deref(), Some("CITY QUEUE - GATHERING THIS TURN"));
+    let hover = panel_strings(|panel| game.structure_hover_panel(city, false, panel));
+    assert_shows(&hover, &format!("QUEUE: {gathering}"));
+    // Paid for as things stand, it's worked, and nothing says the city gathers.
+    game.fund(game.local_team);
+    let tray = panel_strings(|panel| game.city_tray(city, panel));
+    assert!(
+        !tray.iter().any(|line| line.contains("GATHERING")),
+        "{tray:?}"
+    );
+    let hover = panel_strings(|panel| game.structure_hover_panel(city, false, panel));
+    assert!(
+        !hover.iter().any(|line| line.contains("GATHERING")),
+        "{hover:?}"
+    );
 }
 
 #[test]
@@ -3473,101 +3554,104 @@ fn open_view(game: &mut GameState, view: &str) {
 }
 
 #[test]
-fn waiting_for_the_others_the_classic_panels_show_but_change_nothing() {
-    let mut game = waiting_guest();
-    let team = game.local_team;
-    let plan = game.team_plan(team);
-    // The turn still being planned is the one named, not the last.
-    let top = game.layout(SCREEN);
-    let turn = top
-        .shapes
-        .iter()
-        .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == "TURN 1")));
-    assert!(turn, "the turn being planned");
-    for view in WAITING_VIEWS {
-        open_view(&mut game, view);
-        let layout = game.layout(SCREEN);
-        let changing: Vec<&Button> = layout
-            .buttons
-            .iter()
-            .filter(|b| b.target.changes_plan())
-            .collect();
-        assert!(!changing.is_empty(), "{view}: something to refuse");
-        for button in &changing {
-            let target = button.target;
-            assert_eq!(button.state(), ButtonState::Disabled, "{view}: {target:?}");
-            let why = line_strings(game.tooltip_lines(button).into_iter().map(|(_, l)| l));
-            assert!(
-                why.join(" ").contains(tooltips::PLAN_SENT),
-                "{view}: {target:?} says why: {why:?}"
+fn waiting_for_the_others_looking_keeps_the_turn_ended_in_both_presentations() {
+    for imgui in [false, true] {
+        let mut game = waiting_guest();
+        let team = game.local_team;
+        let plan = game.team_plan(team);
+        let _sent = game.take_outbox();
+        let mut screen = ImGuiScreen::new();
+        for view in WAITING_VIEWS {
+            open_view(&mut game, view);
+            if imgui {
+                screen.settle(&mut game);
+            } else {
+                let _ = game.layout(SCREEN);
+            }
+            // The frame after it takes nothing back.
+            game.update(0.0);
+            assert!(game.waiting_for_peers(), "imgui {imgui}, {view}");
+            assert_eq!(game.team_plan(team), plan, "imgui {imgui}, {view}");
+        }
+        // The city's interior button opens it, still waiting.
+        open_view(&mut game, "city");
+        if imgui {
+            screen.click(&mut game, Target::OpenInterior);
+        } else {
+            game.handle_click(
+                button_cursor(&game, Target::OpenInterior),
+                SCREEN,
+                ClickMode::Normal,
             );
         }
-        // Looking stays open.
-        let looking = |t: Target| {
-            matches!(
-                t,
-                Target::OpenInterior
-                    | Target::OpenBarracks
-                    | Target::OpenCity
-                    | Target::ToggleYields
-            )
-        };
-        for button in layout.buttons.iter().filter(|b| looking(b.target)) {
-            let target = button.target;
-            assert_ne!(button.state(), ButtonState::Disabled, "{view}: {target:?}");
-        }
-        // Clicking every button, or dragging a queue row, changes nothing.
-        let targets: Vec<Target> = changing.iter().map(|b| b.target).collect();
-        for target in targets {
-            let at = button_cursor(&game, target);
-            game.handle_click(at, SCREEN, ClickMode::Normal);
-            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
-        }
-        if let Some(row) = layout.queue_items.first() {
-            let body = (row.min + Vec2::new(row.body_max_x, row.max.y)) / 2.0;
-            let at = to_ui(body, SCREEN);
-            assert!(!game.start_queue_drag_at(at, SCREEN), "{view}: no dragging");
-        }
+        game.update(0.0);
+        assert!(game.interior_view.is_some(), "imgui {imgui}");
+        assert!(game.waiting_for_peers(), "imgui {imgui}: {}", game.notice);
+        assert!(game.take_outbox().is_empty(), "imgui {imgui}");
     }
-    assert!(game.waiting_for_peers());
+}
+
+/// A button on `view`'s panel (one of `WAITING_VIEWS`) that changes the
+/// plan: a build in the city or Barracks, or the unit's Hold.
+fn waiting_order(view: &str) -> Target {
+    match view {
+        "city" => Target::Gather,
+        "barracks" => Target::BarracksBuild(BuildUnit::Melee),
+        _ => Target::Unit(UnitAction::Hold),
+    }
 }
 
 #[test]
-fn waiting_for_the_others_the_imgui_panels_show_but_change_nothing() {
-    let mut game = waiting_guest();
-    let team = game.local_team;
-    let plan = game.team_plan(team);
-    let mut screen = ImGuiScreen::new();
-    for view in WAITING_VIEWS {
-        open_view(&mut game, view);
-        screen.settle(&mut game);
-        let drawn: Vec<Target> = imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
-            drawn
-                .iter()
-                .map(|&(target, ..)| target)
-                .filter(|t| t.changes_plan())
-                .collect()
-        });
-        assert!(!drawn.is_empty(), "{view}: something to refuse");
-        for target in drawn {
-            // Some of a long list scroll out of sight as others are tried.
-            screen.settle(&mut game);
-            if screen.button(target).is_none() {
-                continue;
-            }
-            screen.click(&mut game, target);
-            assert_eq!(game.team_plan(team), plan, "{view}: {target:?}");
-        }
-        // Looking stays open: the city's interior button still works. (A
-        // click on a card half scrolled out of the catalog can land on the
-        // button under it, which may have opened the Barracks.)
-        if view == "city" {
+fn waiting_for_the_others_an_order_in_the_panels_takes_the_turn_back() {
+    for imgui in [false, true] {
+        for view in ["city", "barracks", "unit"] {
+            let mut game = waiting_guest();
+            let team = game.local_team;
+            let sent = game.team_plan(team);
+            let _ = game.take_outbox();
             open_view(&mut game, view);
-            screen.click(&mut game, Target::OpenInterior);
-            assert!(game.interior_view.is_some());
+            let target = waiting_order(view);
+            let what = format!("imgui {imgui}, {view}: {target:?}");
+            // Shown ready to press, as while planning.
+            if imgui {
+                screen_click(&mut game, target);
+            } else {
+                let button = find_button(&game, target);
+                assert_ne!(button.state(), ButtonState::Disabled, "{what}");
+                game.handle_click(button_cursor(&game, target), SCREEN, ClickMode::Normal);
+            }
+            game.update(0.0);
+            assert!(!game.waiting_for_peers(), "{what}: {}", game.notice);
+            assert_ne!(game.team_plan(team), sent, "{what}: the order stands");
+            assert!(
+                matches!(
+                    &game.take_outbox()[..],
+                    [crate::game::NetMessage::Withdraw { turn: 1 }]
+                ),
+                "{what}"
+            );
+            // The End Turn button ends it again, sending the plan anew.
+            let label = find_button(&game, Target::EndTurn).label;
+            assert!(!label.starts_with("WAITING"), "{what}: {label}");
+            game.leave_city_view();
+            game.set_selection(Vec::new());
+            game.activate_target(Target::EndTurn);
+            assert!(game.waiting_for_peers(), "{what}: {}", game.notice);
+            let now = game.team_plan(team);
+            assert!(
+                matches!(
+                    &game.take_outbox()[..],
+                    [crate::game::NetMessage::Plan(plan)] if *plan == now
+                ),
+                "{what}"
+            );
         }
     }
-    assert!(game.waiting_for_peers());
+}
+
+/// Clicks `target`'s ImGui button in a fresh ImGui screen.
+fn screen_click(game: &mut GameState, target: Target) {
+    ImGuiScreen::new().click(game, target);
 }
 
 #[test]
@@ -3578,7 +3662,10 @@ fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
     for imgui in [false, true] {
         // Classic: it names the wait, and offers to take the turn back.
         let button = find_button(&game, Target::EndTurn);
-        assert_eq!(button.label, "WAITING FOR THE OTHERS");
+        assert_eq!(
+            button.label, "WAITING FOR BLUE",
+            "the host, which has no plan yet"
+        );
         assert_eq!(button.hint, "TAKE BACK");
         assert_eq!(button.state(), ButtonState::Ready);
         let tip = line_strings(game.tooltip_lines(&button).into_iter().map(|(_, l)| l));
@@ -3849,18 +3936,20 @@ fn a_crowded_imgui_city_panel_scrolls_to_every_row() {
 }
 
 #[test]
-fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
+fn waiting_for_the_others_the_city_workers_list_takes_orders_too() {
     use crate::game::workers::{FieldWorker, WorkerJob};
-    let mut game = waiting_guest();
-    let team = game.local_team;
-    let city = game.cities.iter().position(|c| c.team == team).unwrap();
-    let pos = game.cities[city].pos;
+    let mut waiting = waiting_guest();
+    let team = waiting.local_team;
+    let city = waiting.cities.iter().position(|c| c.team == team).unwrap();
+    let pos = waiting.cities[city].pos;
     // A worker held at home, one out on a road, and a road waiting: the
     // city tray's scrolling list of workers and jobs has every kind of row.
-    let [out, waiting] = [pos.neighbors()[0], pos.neighbors()[3]];
-    game.cities[city].held_workers = 1;
-    game.cities[city].workers = game.cities[city].workers.max(1);
-    game.field_workers.push(FieldWorker {
+    // They're in the plan sent: the turn is taken back and ended again.
+    waiting.take_back_turn();
+    let [out, road] = [pos.neighbors()[0], pos.neighbors()[3]];
+    waiting.cities[city].held_workers = 1;
+    waiting.cities[city].workers = waiting.cities[city].workers.max(1);
+    waiting.field_workers.push(FieldWorker {
         id: 9_000,
         team,
         home: city,
@@ -3870,65 +3959,54 @@ fn waiting_for_the_others_the_city_workers_list_changes_nothing() {
         work_left: Some(2),
         recalled: false,
     });
-    game.cities[city]
+    waiting.cities[city]
         .worker_jobs
-        .push(WorkerJob::on_tile(waiting, JobKind::Road));
-    let plan = game.team_plan(team);
+        .push(WorkerJob::on_tile(road, JobKind::Road));
+    waiting.end_planning();
+    assert!(waiting.waiting_for_peers(), "{}", waiting.notice);
+    let _ = waiting.take_outbox();
+    let sent = waiting.team_plan(team);
+    // The camera can go to the worker, and the turn stays ended.
+    let mut game = waiting.clone();
     game.open_city(city);
-    let changing = [
-        Target::ReleaseWorker,
-        Target::RecallWorker(9_000),
-        Target::WorkerJobRemove(0),
-    ];
-    // Classic: shown, disabled, and a click does nothing; the camera can
-    // still go to the worker.
-    for target in changing {
-        // The list may scroll: the job's row is its last.
-        game.cities[city].worker_scroll = if target == Target::WorkerJobRemove(0) {
-            99
-        } else {
-            0
-        };
-        assert_eq!(
-            find_button(&game, target).state(),
-            ButtonState::Disabled,
-            "{target:?}"
-        );
-        game.handle_click(button_cursor(&game, target), SCREEN, ClickMode::Normal);
-        assert_eq!(game.team_plan(team), plan, "{target:?}");
-    }
     game.cities[city].worker_scroll = 0;
     let show = find_button(&game, Target::ShowWorker(9_000));
     assert_ne!(show.state(), ButtonState::Disabled);
-    // ImGui: the same.
-    let mut screen = ImGuiScreen::new();
-    for target in changing {
-        screen.click(&mut game, target);
-        assert_eq!(game.team_plan(team), plan, "{target:?}");
+    game.handle_click(
+        button_cursor(&game, Target::ShowWorker(9_000)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    game.update(0.0);
+    assert!(game.waiting_for_peers(), "{}", game.notice);
+    // Each worker order takes it back, in both presentations.
+    for imgui in [false, true] {
+        for target in [
+            Target::ReleaseWorker,
+            Target::RecallWorker(9_000),
+            Target::WorkerJobRemove(0),
+        ] {
+            let mut game = waiting.clone();
+            game.open_city(city);
+            if imgui {
+                screen_click(&mut game, target);
+            } else {
+                // The list may scroll: the job's row is its last.
+                game.cities[city].worker_scroll = if target == Target::WorkerJobRemove(0) {
+                    99
+                } else {
+                    0
+                };
+                let button = find_button(&game, target);
+                assert_ne!(button.state(), ButtonState::Disabled, "{target:?}");
+                game.handle_click(button_cursor(&game, target), SCREEN, ClickMode::Normal);
+            }
+            game.update(0.0);
+            let what = format!("imgui {imgui}: {target:?}");
+            assert!(!game.waiting_for_peers(), "{what}: {}", game.notice);
+            assert_ne!(game.team_plan(team), sent, "{what}: the order stands");
+        }
     }
-    assert!(game.waiting_for_peers());
-}
-
-#[test]
-fn a_frozen_plan_locks_a_waiting_queue_row_like_any_other() {
-    let mut game = city_view();
-    game.stockpiles[Team::Blue.index()] = Stock::default();
-    let city = game.selected_city.unwrap();
-    game.queue_build(city, Build::Unit(BuildUnit::Siege));
-    game.queue_build(city, Build::Gather);
-    let mut panel = PanelBuilder::default();
-    game.city_queue_panel(city, usize::MAX, &mut panel);
-    // Waiting for the others' plans, nothing in the queue can change.
-    panel.freeze_plan();
-    let rows: Vec<(bool, bool)> = panel
-        .rows
-        .iter()
-        .filter_map(|row| match row {
-            Row::QueueItem(item) => Some((item.waiting, item.locked)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(rows, [(true, true), (false, true)]);
 }
 
 /// The middle of each of the open city's priority chips, first to last,
@@ -4538,6 +4616,27 @@ fn ui_text_uses_only_the_shared_glyphs() {
                 "{} uses {ch:?} (U+{:04X}): add it to UI_PUNCTUATION (font.rs) \
                  or spell it in ASCII",
                 file.display(),
+                ch as u32
+            );
+        }
+    }
+    // The same goes for the text files (`text/`, read by `strings.rs`), and
+    // there no character outside printable ASCII is anything else.
+    let texts: Vec<_> = crate::game::strings::texts().entries().collect();
+    assert!(!texts.is_empty());
+    for (tag, entry) in texts {
+        let fields = [
+            Some(&entry.text),
+            entry.hover_text.as_ref(),
+            entry.tooltip.as_ref(),
+        ];
+        for ch in fields.into_iter().flatten().flat_map(|text| text.chars()) {
+            assert!(
+                (' '..='~').contains(&ch)
+                    || crate::game::font::UI_PUNCTUATION.contains(&ch)
+                    || crate::game::map_icons::inline_icon(ch).is_some(),
+                "[{tag}] in text/ uses {ch:?} (U+{:04X}): add it to UI_PUNCTUATION \
+                 (font.rs) or spell it in ASCII",
                 ch as u32
             );
         }

@@ -11,7 +11,7 @@ use super::action_icons::{self, ICON_BUTTON_SIZE};
 use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
 use super::network_menu::NetField;
 use super::text::fit_text;
-use super::tooltips::{PLAN_SENT, Subject};
+use super::tooltips::Subject;
 use super::*;
 use crate::game::settings::{Control, Setting};
 use crate::game::{font, map_icons};
@@ -2345,6 +2345,9 @@ struct ButtonGrid {
     height: f32,
     /// Each button's lines, in the order of the buttons.
     lines: Vec<Vec<String>>,
+    /// For each button whose hint has lines of its own (under its label),
+    /// the first of them.
+    hint_from: Vec<Option<usize>>,
 }
 
 /// The least width of a button with text.
@@ -2375,6 +2378,7 @@ fn button_grid(
             width: ICON_BUTTON_SIZE,
             height: ICON_BUTTON_SIZE,
             lines: vec![vec![String::new()]; buttons.len()],
+            hint_from: vec![None; buttons.len()],
         };
     }
     let pad = style.frame_padding[0];
@@ -2407,23 +2411,24 @@ fn button_grid(
         .fold(MIN_BUTTON_WIDTH, f32::max);
     let columns = columns_of(widest);
     let width = ((available - spacing * (columns - 1) as f32) / columns as f32).max(1.0);
-    let lines: Vec<Vec<String>> = text
+    let wrap = |line: &String| -> Vec<String> {
+        wrap_spans(ui, &vec![(line.clone(), TEXT)], width - 2.0 * pad)
+            .into_iter()
+            .map(|row| row.into_iter().map(|(text, _)| text).collect::<String>())
+            .collect()
+    };
+    let (lines, hint_from): (Vec<Vec<String>>, Vec<Option<usize>>) = text
         .iter()
         .map(|text| {
             let mut lines = one_line(text);
             if compact && needs(&lines) > width {
                 lines = vec![text.0.clone(), text.1.clone()];
             }
-            lines
-                .iter()
-                .flat_map(|line| {
-                    wrap_spans(ui, &vec![(line.clone(), TEXT)], width - 2.0 * pad)
-                        .into_iter()
-                        .map(|row| row.into_iter().map(|(text, _)| text).collect::<String>())
-                })
-                .collect()
+            // The hint on lines of its own: where they start.
+            let hint_from = (lines.len() == 2).then(|| wrap(&lines[0]).len());
+            (lines.iter().flat_map(wrap).collect(), hint_from)
         })
-        .collect();
+        .unzip();
     let most = lines.iter().map(Vec::len).max().unwrap_or(1);
     let least = if compact { 28.0 } else { 48.0 };
     ButtonGrid {
@@ -2431,6 +2436,7 @@ fn button_grid(
         width,
         height: (most as f32 * ui.text_line_height()).max(least),
         lines,
+        hint_from,
     }
 }
 
@@ -3047,6 +3053,20 @@ fn note_status_control(_ui: &Ui, _text: &str) {
     });
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests only: each button ImGui drew short (`short_style`) this
+    /// thread.
+    pub(super) static SHORT_BUTTONS: std::cell::RefCell<Vec<Target>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Tests only: notes that the button for `target` is drawn short.
+fn note_short_button(_target: Target) {
+    #[cfg(test)]
+    SHORT_BUTTONS.with_borrow_mut(|drawn| drawn.push(_target));
+}
+
 /// Tests only: notes where the button for `target` just went.
 fn note_drawn_button(_ui: &Ui, _target: Target) {
     #[cfg(test)]
@@ -3147,7 +3167,20 @@ fn note_button_label(_ui: &Ui, _text: &str) {
 /// don't; otherwise a blank button with the lines drawn over it, centered,
 /// or from the left with `left` set.
 fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) -> bool {
-    if !lines.iter().any(|line| has_icons(line)) {
+    rich_button_hinted(ui, id, lines, size, left, None)
+}
+
+/// `rich_button`, with its lines from the first of `hint` on (a card's
+/// price, under its label) in `hint`'s color.
+fn rich_button_hinted(
+    ui: &Ui,
+    id: &str,
+    lines: &[String],
+    size: [f32; 2],
+    left: bool,
+    hint: Option<(usize, Color)>,
+) -> bool {
+    if hint.is_none() && !lines.iter().any(|line| has_icons(line)) {
         let label = lines.join("\n");
         let clicked = ui.button_with_size(format!("{label}###{id}"), size);
         note_button_label(ui, &label);
@@ -3168,6 +3201,10 @@ fn rich_button(ui: &Ui, id: &str, lines: &[String], size: [f32; 2], left: bool) 
                 min[0] + (max[0] - min[0]) * 0.03
             } else {
                 min[0] + (max[0] - min[0] - width) / 2.0
+            };
+            let color = match hint {
+                Some((from, hint)) if index >= from => hint,
+                _ => color,
             };
             let faded = [
                 color[0],
@@ -3205,7 +3242,15 @@ fn clipped_to(min: [f32; 2], max: [f32; 2], draw: impl FnOnce()) {
 /// of them lines their right parts up (the building catalog's prices).
 /// When the two don't fit side by side with a gap between, `right` is left
 /// out (the button's tooltip gives it) and `left` shortened to what fits.
-fn split_button(ui: &Ui, id: &str, left: &str, indent: f32, right: &str, size: [f32; 2]) -> bool {
+/// `right` comes with its own color, if it has one (a short card's price).
+fn split_button(
+    ui: &Ui,
+    id: &str,
+    left: &str,
+    indent: f32,
+    (right, right_color): (&str, Option<Color>),
+    size: [f32; 2],
+) -> bool {
     let clicked = ui.button_with_size(format!("###{id}"), size);
     let (min, max) = (ui.item_rect_min(), ui.item_rect_max());
     let disabled = ui.clone_style().alpha < 1.0;
@@ -3230,6 +3275,7 @@ fn split_button(ui: &Ui, id: &str, left: &str, indent: f32, right: &str, size: [
     clipped_to(min, max, || {
         draw_rich(ui, [left_x, top], &left, color, disabled);
         if !right.is_empty() {
+            let color = right_color.map_or(color, |c| [c[0], c[1], c[2], color[3]]);
             draw_rich(
                 ui,
                 [max[0] - pad - right_width, top],
@@ -3241,6 +3287,47 @@ fn split_button(ui: &Ui, id: &str, left: &str, indent: f32, right: &str, size: [
     });
     clicked
 }
+
+/// The style of a button drawn short (`ButtonSpec::drawn_short`), pushed
+/// until the tokens drop: a red rim, and a dark red ground unless it's
+/// queued (gold). Its price goes red too (`short_price`).
+fn short_style<'ui>(
+    ui: &'ui Ui,
+    spec: &ButtonSpec,
+) -> (
+    Vec<::imgui::ColorStackToken<'ui>>,
+    Option<::imgui::StyleStackToken<'ui>>,
+) {
+    if !spec.drawn_short() {
+        return (Vec::new(), None);
+    }
+    let mut colors = vec![ui.push_style_color(StyleColor::Border, SHORT_BORDER_COLOR)];
+    if spec.state() != ButtonState::Queued {
+        colors.push(ui.push_style_color(StyleColor::Button, IMGUI_SHORT_BG));
+        colors.push(ui.push_style_color(StyleColor::ButtonHovered, IMGUI_SHORT_HOVER_BG));
+    }
+    note_short_button(spec.target);
+    (
+        colors,
+        Some(ui.push_style_var(StyleVar::FrameBorderSize(2.0))),
+    )
+}
+
+/// The color of a short button's price (`short_style`), if it's short.
+fn short_price(spec: &ButtonSpec) -> Option<Color> {
+    spec.drawn_short().then(|| {
+        if spec.state() == ButtonState::Queued {
+            SHORT_QUEUED_PRICE
+        } else {
+            SHORT_PRICE
+        }
+    })
+}
+
+/// A short button's ground in ImGui, whose buttons are lighter than
+/// classic's: a faint warm red, and a little brighter hovered.
+const IMGUI_SHORT_BG: Color = [0.068, 0.046, 0.046, 1.0];
+const IMGUI_SHORT_HOVER_BG: Color = [0.12, 0.08, 0.08, 1.0];
 
 /// The least room between a split button's text and its edges.
 const SPLIT_PAD: f32 = 6.0;
@@ -3867,10 +3954,12 @@ impl GameState {
                 }
                 _ => None,
             };
+            let _short = short_style(ui, spec);
             let disabled = spec.unavailable.is_some();
             let _disabled = ui.begin_disabled(disabled);
             let id = format!("{:?}", spec.target);
-            if rich_button(ui, &id, &grid.lines[index], size, false) {
+            let hint = grid.hint_from[index].zip(short_price(spec));
+            if rich_button_hinted(ui, &id, &grid.lines[index], size, false, hint) {
                 actions.push(Action::Button(scope, spec.target));
             }
             note_drawn_button(ui, spec.target);
@@ -3894,7 +3983,7 @@ impl GameState {
             }
             if let Some(kind) = reorder
                 && !disabled
-                && !self.is_resolving()
+                && !self.is_playing_out()
             {
                 // Scoped to the panel, so one city's chips can't reorder
                 // another's.
@@ -3946,17 +4035,6 @@ impl GameState {
         subject: Subject,
         actions: &mut Vec<Action>,
     ) {
-        // With the plan sent, what would change it shows disabled, as the
-        // classic panels do (`Layout::dock_panel`).
-        let frozen;
-        let panel = if self.plan_frozen() {
-            let mut copy = panel.clone();
-            copy.freeze_plan();
-            frozen = copy;
-            &frozen
-        } else {
-            panel
-        };
         let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in flat_rows(&panel.rows) {
             match row {
@@ -4095,6 +4173,7 @@ impl GameState {
                                     )),
                                     _ => None,
                                 };
+                                let _short = short_style(ui, spec);
                                 let _disabled = ui.begin_disabled(spec.unavailable.is_some());
                                 let width = ui.content_region_avail()[0].max(80.0);
                                 let hint = visible_button_hint(&spec.hint, false);
@@ -4102,7 +4181,9 @@ impl GameState {
                                     action_icons::production_unit_icon(spec.target).is_some();
                                 let indent = if has_icon { CARD_ICON_ROOM } else { 0.0 };
                                 let id = format!("{:?}", spec.target);
-                                if split_button(ui, &id, &spec.label, indent, hint, [width, 28.0]) {
+                                let price = short_price(spec);
+                                let size = [width, 28.0];
+                                if split_button(ui, &id, &spec.label, indent, (hint, price), size) {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
                                 note_drawn_button(ui, spec.target);
@@ -4154,7 +4235,7 @@ impl GameState {
                     }
                     drop(_background);
                     drop(_align);
-                    if !item.locked && !self.is_resolving() {
+                    if !self.is_playing_out() {
                         let name = match item.kind {
                             QueueKind::City => "city-queue",
                             QueueKind::Barracks => "barracks-queue",
@@ -4186,19 +4267,14 @@ impl GameState {
                     ui.same_line();
                     let _remove_color =
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
-                    let _disabled = ui.begin_disabled(item.locked);
                     let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
                         actions.push(Action::Button(scope, remove));
                     }
                     note_button_label(ui, "X");
                     note_drawn_button(ui, remove);
-                    if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                        let locked = item.locked.then_some(PLAN_SENT);
-                        show_tooltip(
-                            ui,
-                            &self.subject_tooltip_lines(remove, "X", locked, subject),
-                        );
+                    if ui.is_item_hovered() {
+                        show_tooltip(ui, &self.subject_tooltip_lines(remove, "X", None, subject));
                     }
                 }
             }

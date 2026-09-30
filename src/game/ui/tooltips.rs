@@ -12,8 +12,8 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, Building, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane, MAX_CITY_POPULATION,
-    MIN_CITY_DISTANCE, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION, SETTLER_SHORTCUT, UNITS_PER_DEPOSIT,
-    WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
+    MIN_CITY_DISTANCE, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION, SETTLER_SHORTCUT, Stock,
+    UNITS_PER_DEPOSIT, WORKER_SHORTCUT, delivered_share, stock_icons, turns_icon,
 };
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, WOOD_ICON};
@@ -25,10 +25,6 @@ use glam::Vec2;
 
 /// A tooltip's lines, each with its text size.
 pub(super) type TooltipLines = Vec<(u32, Line)>;
-
-/// Why a button that would change the plan is off while a network game
-/// waits for the others' plans.
-pub(super) const PLAN_SENT: &str = "YOUR ORDERS ARE SENT - THE WAITING BUTTON TAKES THEM BACK";
 
 /// What a button's tooltip describes it for: the unit (a group's first
 /// member) and the city (or Barracks) of the panel the button is in. The
@@ -73,15 +69,29 @@ impl GameState {
         format!(" · {left} OF {cap} LEFT")
     }
 
+    /// What `city`'s side can still spend this turn, once its queues have
+    /// paid for what they start (`forecast`'s `spare`): what its build
+    /// cards are priced against (`build_shortfall`).
+    pub(super) fn card_spare(&self, city: usize) -> Stock {
+        self.forecast(self.cities[city].team).spare
+    }
+
+    /// What the stockpile is short of to pay for `build` queued in `city`
+    /// this turn, given what its side can still spend (`spare`, from
+    /// `card_spare`): nothing when it can pay now. The one test of a build
+    /// card's affordability: the card is drawn short (`ButtonSpec::short`)
+    /// and its tooltip cautions (`shortfall_text`) exactly when this isn't
+    /// nothing.
+    pub(super) fn build_shortfall(&self, spare: Stock, city: usize, build: Build) -> Stock {
+        spare.shortfall(self.queue_price(city, build))
+    }
+
     /// What the stockpile is short of to pay for `build` in `city` this
-    /// turn, on top of what its queues start (`forecast`'s `spare`), if
-    /// anything: queued, it waits until the side can pay.
+    /// turn (`build_shortfall`), if anything: queued, it waits until the
+    /// side can pay.
     fn shortfall_text(&self, build: Build, city: Option<usize>) -> Option<String> {
         let city = city?;
-        let short = self
-            .forecast(self.local_team)
-            .spare
-            .shortfall(self.queue_price(city, build));
+        let short = self.build_shortfall(self.card_spare(city), city, build);
         (short != Default::default()).then(|| {
             format!(
                 "SHORT OF {} THIS TURN: QUEUED, IT WAITS UNTIL PAID",
@@ -832,7 +842,7 @@ impl GameState {
                     "TAKE BACK END TURN".into(),
                     "CLICK".into(),
                     "YOUR ORDERS ARE SENT. TAKE THEM BACK TO CHANGE THEM, THEN END THE TURN AGAIN: \
-                     UNTIL EVERYONE HAS ENDED IT."
+                     UNTIL EVERYONE HAS ENDED IT. GIVING AN ORDER TAKES THEM BACK TOO."
                         .into(),
                     None,
                 ),

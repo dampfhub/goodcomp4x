@@ -159,6 +159,7 @@ pub struct Renderer {
     imgui_renderer: Option<ImGuiRenderer>,
     framebuffers: Vec<vk::Framebuffer>,
     texture: Texture,
+    sprites: Texture,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
@@ -194,7 +195,12 @@ pub struct Renderer {
 impl Renderer {
     /// # Safety
     /// `window` must outlive the returned renderer.
-    pub unsafe fn new(window: &Window, atlas: &Atlas, imgui: &mut ImGuiContext) -> Result<Self> {
+    pub unsafe fn new(
+        window: &Window,
+        atlas: &Atlas,
+        sprites: &Atlas,
+        imgui: &mut ImGuiContext,
+    ) -> Result<Self> {
         let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let window_size = window.inner_size().into();
@@ -244,6 +250,17 @@ impl Renderer {
             )
         }?;
 
+        let sprites = unsafe {
+            Texture::new(
+                &vk_instance,
+                &logical_device,
+                physical_device,
+                command_pool,
+                graphics_queue,
+                sprites,
+            )
+        }?;
+
         let sample_cap = msaa::sample_cap();
         let samples = unsafe {
             msaa::pick_samples(
@@ -285,7 +302,7 @@ impl Renderer {
             pipeline::create_graphics_pipeline(
                 &logical_device,
                 render_pass,
-                texture.set_layout,
+                &[texture.set_layout, sprites.set_layout],
                 samples,
             )
         }?;
@@ -333,6 +350,7 @@ impl Renderer {
             imgui_renderer: Some(imgui_renderer),
             framebuffers,
             texture,
+            sprites,
             vertex_buffers,
             vertex_limit: usize::MAX,
             vertices_trimmed: false,
@@ -641,7 +659,7 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.texture.set],
+                &[self.texture.set, self.sprites.set],
                 &[],
             );
             // Without a buffer, `fit_ranges` left every range empty.
@@ -748,7 +766,7 @@ impl Renderer {
                 pipeline::create_graphics_pipeline(
                     &self.device,
                     self.render_pass,
-                    self.texture.set_layout,
+                    &[self.texture.set_layout, self.sprites.set_layout],
                     next_samples,
                 )
             }?;
@@ -824,6 +842,7 @@ impl Drop for Renderer {
                 self.device.destroy_render_pass(render_pass, None);
             }
             self.texture.destroy(&self.device);
+            self.sprites.destroy(&self.device);
             self.sync.destroy(&self.device);
             if let Some(readback) = self.readback.take() {
                 readback.destroy(&self.device);

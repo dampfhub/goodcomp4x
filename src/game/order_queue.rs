@@ -37,7 +37,7 @@ impl GameState {
     /// the others'. Returns whether a move was taken off.
     pub(super) fn unqueue_move(&mut self, hex: Hex) -> bool {
         let members = self.selection();
-        if self.is_resolving() {
+        if self.is_playing_out() {
             return false;
         }
         // The latest turn onto `hex`; on a tie, the first in the selection.
@@ -129,7 +129,7 @@ impl GameState {
     /// queued.
     pub(super) fn queue_move(&mut self, target: Hex) -> bool {
         let members = self.selection();
-        if members.is_empty() || self.is_resolving() {
+        if members.is_empty() || self.is_playing_out() {
             return false;
         }
         let naval = self.units[members[0]].is_naval();
@@ -406,7 +406,7 @@ impl GameState {
         let fog = self.fog();
         let water = self.explored_by(target, &fog) && self.grid.terrain(target).is_water();
         if members.is_empty()
-            || self.is_resolving()
+            || self.is_playing_out()
             || !(self.known_passable(target, false, &fog) || water)
         {
             return false;

@@ -66,7 +66,7 @@ more citizens and everything else that eats it (troops, workers).
   paid Grow's price, so the ones left are paid for exactly what they cost now.
 - **Ruins:** Harvest gives the side 8 food and Supplies 4 wood and 2 metal, into the stockpile.
 - **Turn gating:** a player city with an empty queue holds up the turn (it can always Gather);
-  one whose items all wait doesn't.
+  one whose items all wait doesn't, and gathers by itself meanwhile (Round 9).
 - **AI** (`plan_ai_cities`): a city with an empty queue queues one build it can pay for this
   turn, counting what its other queues start (`forecast`'s spare stockpile), so what it queues is
   paid and started this turn: a Worker if it has none; then Grow. A queue whose items all wait
@@ -86,7 +86,8 @@ more citizens and everything else that eats it (troops, workers).
   icon with each resource's change a turn. The city tray shows what the city delivers and eats,
   the build worked with its turns left and what the first item waits for, a one-line Grow card,
   and cards whose hints are the price and turns in icons, never dimmed for the price (at a
-  Barracks, dimmed when locked); a card's tooltip says what the side is short of this turn.
+  Barracks, dimmed when locked) but drawn short, with a red rim and price, when the side can't
+  pay for them this turn; a card's tooltip says what the side is short of this turn.
   Queue rows show turns left, or, tinted red, what they wait for; a waiting city has a badge
   over its tower on the map with the missing resources' icons. Whether an item waits is judged
   on the stockpile as this turn's economy will find it (`forecast`: now, plus the turn's income,
@@ -650,3 +651,35 @@ first troop still comes at turn 9 and the army at turn 20 is 3.4 against 3.5, bu
 turn 40 falls from 6.4 to 5.0 and at turn 60 from 8.9 to 7.7. Growth is unchanged, and a
 capped Barracks leaves wood in the stockpile. The tables, and why 3 and 1, are in
 [economy/supply-237-tempo.md](economy/supply-237-tempo.md).
+
+## Round 9: a city with nothing to work gathers (#334)
+
+From a playtest: a city whose queued item waits for the stockpile let the player end the turn
+and then sat idle. Now a city whose own queue works nothing in a turn's economy gathers by
+itself, as if Gather were chosen (`auto_gather`, in `work_queues`; the rule is in
+`game-rules.md`, Gathering by itself). The panels say so for the player's cities
+(`gathers_this_turn`), and `simulation.rs` checks every turn that each city either worked its
+queue or gathered, never both nor neither.
+
+Measured with `economy_report` against `main` at 602d11b (60 turns, seeds 0-7; World with 1,
+4, 5 and 6 AI sides):
+
+- **The AI's own play hardly changes.** It queues only what it can pay for (else a Gather), so
+  its cities gather by themselves in at most 1% of their turns (a Settler whose income didn't
+  come, a captured city's empty queue). First troop (turn 9-12), army at turn 20 (3.0-3.5) and
+  growth (population 3.0-3.5 at turn 20) are the same before and after.
+- **Queueing ahead is what it pays off for.** `REPORT_QUEUE_AHEAD=1` has every side queue a
+  Melee (or a Grow) where the AI would gather, whatever the stockpile holds, as a player
+  planning ahead does; those queues wait in 18-34% of city turns. With the rule off and on:
+
+| game | first troop | army at turn 20 | trained by turn 40 | population at turn 20 |
+|---|---|---|---|---|
+| cities | 14 / 14 | 3.0 / 3.5 | 6.0 / 8.5 | 3.0 / 3.5 |
+| world1 | 10 / 11 | 2.8 / 2.9 | 6.3 / 6.6 | 3.3 / 3.2 |
+| world4 | 11 / 11 | 2.5 / 2.9 | 6.2 / 6.4 | 3.0 / 3.0 |
+| world5 | 10 / 10 | 2.9 / 3.2 | 6.2 / 6.6 | 3.0 / 3.0 |
+| world6 | 11 / 11 | 2.4 / 3.0 | 6.0 / 6.6 | 3.1 / 3.1 |
+
+Waiting no longer costs the turns it waits: the army at turn 20 is 0.1-0.6 larger, and the
+first troop comes about when it did. Queueing ahead is still slower than paying as you go (the
+AI's army at turn 20 is 3.2-3.5 in the same worlds), since a waiting head holds up the queue.

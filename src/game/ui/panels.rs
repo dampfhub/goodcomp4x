@@ -9,7 +9,7 @@ use super::{
     REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
-use crate::game::city::{Lane, MAX_CITY_POPULATION, Stock, turns_icon};
+use crate::game::city::{GATHER_YIELD, Lane, MAX_CITY_POPULATION, Stock, stock_icons, turns_icon};
 use crate::game::font;
 use crate::game::scenario::Scenario;
 use crate::game::unit::Team;
@@ -340,7 +340,13 @@ impl GameState {
             }
             let status = self.queue_status(i, Lane::City);
             let worked = self.worked_item(i, Lane::City, &status);
-            let queue = self.hover_queue_text(worked, city.queue.is_empty());
+            let queue = match worked {
+                // Everything queued waits: it gathers by itself.
+                None if status.gathers && !city.queue.is_empty() => {
+                    format!("GATHERING {}", stock_icons(GATHER_YIELD))
+                }
+                _ => self.hover_queue_text(worked, city.queue.is_empty()),
+            };
             panel.text(
                 SMALL,
                 vec![(

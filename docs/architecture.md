@@ -75,6 +75,29 @@ cost frame time.
 While a city interior is open, `build_vertices` draws its tactical grid and
 copies in place of the exterior world; the exterior camera is restored on exit.
 
+## Repeated world artwork
+
+`game/sprites.rs` rasterizes the existing map icons and terrain decorations once into a
+linear RGBA atlas. Each occurrence is six vertices, in the original painter order and world
+batch; no per-icon draw calls or texture switches are needed. ImGui and inline UI icons keep
+their existing vector path. The raster uses 2x2 supersampling, 224 pixels across the artwork,
+16-pixel cell gutters and five mip levels. Colors stay premultiplied through rasterization,
+mip generation and filtering; the shader converts back to straight alpha for blending.
+The renderer accepts one-channel font and four-channel sprite atlases without game knowledge.
+
+Yield-row layouts and their small meshes are cached by the food/wood/metal tuple and zoom
+detail mode, bounded to
+256 entries. This caches artwork, not game state: fog memory and current yields are still
+queried every frame. World culling uses the actual viewport aspect, with a margin for artwork
+extending beyond hex centers; headless callers keep a conservative default.
+
+Run `cargo test --release world_overlay_report -- --ignored --nocapture` to measure the
+F4/F10/Alt workload at the default and maximum camera heights. The report excludes first-use
+atlas/layout initialization and measures CPU geometry generation, not total frame time.
+`cargo run -- --screenshot world.png --scenario world --seed 3 --world-overlay --size 2560x1440`
+provides a reproducible GPU check. Geometry-budget tests prevent repeated artwork from returning
+to millions of vertices.
+
 ## A turn
 
 1. **Planning.** Input calls `GameState` methods in `orders.rs`, `group.rs`, `order_queue.rs`,
@@ -88,11 +111,11 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    step of `RESOLUTION_ORDER` is
    queued as a `Step::Units`, followed by `Step::Workers`.
    In a network game `end_planning` sends the side's plan instead (`submit_plan`,
-   `docs/multiplayer.md`). While it waits for the others' plans, `is_resolving` refuses every
-   change to the plan, but looking (selecting, opening views) waits only for `is_playing_out`,
-   and the panels show the controls that would change the plan disabled
-   (`PanelBuilder::freeze_plan`). The End Turn button then takes the plan back
-   (`take_back_turn`) until the host resolves the turn.
+   `docs/multiplayer.md`). While it waits for the others' plans (`is_resolving` holds, so the
+   End Turn button waits), orders and looking alike wait only for `is_playing_out`; an order
+   that changes the plan takes the turn back (`take_back_on_new_orders`, checked each frame in
+   `update` and before each message in `receive`), as the End Turn button does
+   (`take_back_turn`), until the host resolves the turn.
 3. **Resolution** (`update`, `turn.rs`): one step every `STEP_INTERVAL` (0.6 s), or all at once
    with instant playback (F8). Each unit step resolves one unit type's moves or attacks
    simultaneously; an animal step (`animals.rs`) first decides where the wild's animals of that
@@ -111,7 +134,8 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    Cannery and Smelter collection, `city/logistics.rs`) to its side's stockpile
    (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, has each queue pay
    for the item it starts and gives it a turn's work (`work_queues`: the first item paid for or
-   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`) and
+   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`; a
+   city whose own queue works nothing gathers by itself, `auto_gather`) and
    completes builds, growth included; builds were queued unpaid (`queue_build`), by the
    player's clicks or the AI's `plan_ai_cities`; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
@@ -129,7 +153,17 @@ The rules each step applies are in `game-rules.md`.
 settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL` under its
 `group`'s heading, each an integer in its `range` changed with the `control` it names (a
 checkbox, a slider or a choice of named values), so a new setting is a field and its `Setting`
-entry in that one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
+entry in that one file, and its words in `text/menus.ini`; both UI presentations pick it up
+(`docs/ui-system.md`).
+
+## Game text (`text/`)
+
+The game's words are moving out of the code into tagged entries in `text/*.ini` (#341; so far
+the settings menu). `src/game/strings.rs` embeds the files, reads them once on first use, and
+gives an entry's text, tooltip or hover text by tag (`text!`, `tooltip!`, `hover_text!`),
+filling named placeholders. Its tests check the files against every macro call in `src/`, so a
+missing, unused or mismatched entry fails `cargo test`, not the game. The format is in
+`docs/text.md`. `switch_scenario` and
 `load_state` carry the settings, and whether the menu is open, over into the new game.
 
 ## Between sessions (`src/persist.rs`)

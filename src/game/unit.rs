@@ -119,8 +119,8 @@ impl UnitType {
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
     /// once anything reaches it. Scouts give up fighting for speed and sight.
-    /// Of the animals, a wolf pack runs down scouts and settlers but folds
-    /// before troops, and a bear beats a lone melee troop.
+    /// Of the animals, a wolf pack runs down scouts and settlers and bloodies
+    /// a lone troop, and a bear beats a lone melee troop.
     pub fn stats(self) -> UnitStats {
         let (max_hp, attack, defense, move_range, attack_range) = match self {
             UnitType::Melee => (100.0, 22.0, 20.0, 1, 1),
@@ -132,8 +132,8 @@ impl UnitType {
             UnitType::PatrolGalley => (115.0, 23.0, 17.0, 3, 1),
             UnitType::LandingCraft => (125.0, 8.0, 15.0, 2, 1),
             UnitType::BombardShip => (105.0, 30.0, 12.0, 2, 3),
-            UnitType::Wolf => (70.0, 20.0, 10.0, 2, 1),
-            UnitType::Bear => (130.0, 26.0, 18.0, 1, 1),
+            UnitType::Wolf => (80.0, 24.0, 12.0, 2, 1),
+            UnitType::Bear => (130.0, 28.0, 20.0, 1, 1),
         };
         UnitStats {
             max_hp,
@@ -238,7 +238,7 @@ pub struct Unit {
     /// after combat. Any other order drops it.
     pub planned_unload: Option<Hex>,
     /// An animal's den (`animals.rs`): it never leaves its territory, the
-    /// hexes within `TERRITORY_RADIUS` of it. `None` for everyone else.
+    /// hexes within `animals::territory` of it. `None` for everyone else.
     pub home: Option<Hex>,
 }
 
