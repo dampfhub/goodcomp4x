@@ -24,9 +24,11 @@ file holds.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
   `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
   `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable (a
-  double-click on its title bar or grip resets its place or size), dockable
-  and boxable (Ctrl) like Selection, Debug or the turn strip (`UNITS`). Only static chrome,
-  such as the status bar, may be a fixed `ui.window` with its own flags.
+  double-click on its title bar or grip resets its place or size), dockable (to the other
+  panels and to the game window's edges) and boxable (Ctrl) like Selection, Debug or the turn
+  strip (`UNITS`). Only static chrome, such as the status bar, may be a fixed `ui.window` with
+  its own flags. The game window's dockspace must keep passing the mouse through to the map
+  (`draw_game_dockspace`; `imgui_a_panel_docks_to_the_window_edge_and_the_map_keeps_the_mouse`).
 - **Classic placement.** Place persistent panels with `Layout::dock_panel(panel, Zone::..)`
   (zones in `dock.rs`); never position one by hand or compute offsets from another panel's
   size. `layout()` docks the persistent panels and `layout_with_hover()` adds the hover panels;

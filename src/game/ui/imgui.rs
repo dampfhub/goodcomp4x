@@ -317,11 +317,16 @@ fn native_window(title: &str) -> *mut ::imgui::sys::ImGuiWindow {
     unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) }
 }
 
-fn queue_dock_relation() -> Option<QueueDockRelation> {
-    dock_relation("Selection", "Production Queue")
+fn queue_dock_relation(dockspace: u32) -> Option<QueueDockRelation> {
+    dock_relation("Selection", "Production Queue", dockspace)
 }
 
-fn dock_relation(anchor: &str, other: &str) -> Option<QueueDockRelation> {
+/// Where `other` is docked beside `anchor`, when the two share a dock
+/// node outside the game window's dockspace (`dockspace`, its id). Panels
+/// docked in the game window stay where they are when they hide and show
+/// again (ImGui keeps their empty node), and Debug's place there is kept
+/// by view (`track_debug_edge`), so these relations leave them alone.
+fn dock_relation(anchor: &str, other: &str, dockspace: u32) -> Option<QueueDockRelation> {
     let selection = native_window(anchor);
     let queue = native_window(other);
     if selection.is_null() || queue.is_null() {
@@ -332,6 +337,8 @@ fn dock_relation(anchor: &str, other: &str) -> Option<QueueDockRelation> {
         || !queue.Active
         || selection.DockNode.is_null()
         || queue.DockNode.is_null()
+        || in_dockspace(selection, dockspace)
+        || in_dockspace(queue, dockspace)
     {
         return None;
     }
@@ -412,6 +419,218 @@ unsafe fn node_contains(
         current = unsafe { (*current).ParentNode };
     }
     false
+}
+
+/// Whether `window` is docked in the dockspace `dockspace` (an id).
+fn in_dockspace(window: &::imgui::sys::ImGuiWindow, dockspace: u32) -> bool {
+    let mut node = window.DockNode;
+    if node.is_null() || dockspace == 0 {
+        return false;
+    }
+    unsafe {
+        while !(*node).ParentNode.is_null() {
+            node = (*node).ParentNode;
+        }
+        (*node).ID == dockspace
+    }
+}
+
+/// Whether `title`'s window, hidden a while, goes back to its place docked
+/// in the game window (`dockspace`) as it shows again: ImGui keeps its
+/// empty node there and docks it back as it begins, unless it's given a
+/// position, which would undock it.
+fn returns_to_game_dock(title: &str, dockspace: u32) -> bool {
+    if dockspace == 0 {
+        return false;
+    }
+    let window = native_window(title);
+    unsafe {
+        let dock_id = if window.is_null() {
+            // Not shown yet this session: where the saved settings
+            // (`imgui.ini`) dock it, as ImGui reads them as it begins.
+            let name = std::ffi::CString::new(title).expect("ImGui window title");
+            let settings =
+                ::imgui::sys::igFindWindowSettings(::imgui::sys::igImHashStr(name.as_ptr(), 0, 0));
+            if settings.is_null() {
+                return false;
+            }
+            (*settings).DockId
+        } else if (*window).DockNode.is_null() {
+            (*window).DockId
+        } else {
+            return false;
+        };
+        if dock_id == 0 {
+            return false;
+        }
+        let mut node = ::imgui::sys::igDockBuilderGetNode(dock_id);
+        if node.is_null() || !(*node).ChildNodes[0].is_null() {
+            return false;
+        }
+        while !(*node).ParentNode.is_null() {
+            node = (*node).ParentNode;
+        }
+        (*node).ID == dockspace
+    }
+}
+
+/// Where a panel is docked in the game window (#333): the side of the map
+/// (the dockspace's central node) its part of the dockspace is on, and how
+/// wide (left, right) or tall (up, down) that part is, in pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EdgeDock {
+    side: ::imgui::sys::ImGuiDir,
+    extent: f32,
+}
+
+impl EdgeDock {
+    fn axis(self) -> usize {
+        match self.side {
+            ::imgui::sys::ImGuiDir_Left | ::imgui::sys::ImGuiDir_Right => 0,
+            _ => 1,
+        }
+    }
+
+    /// The same place, give or take the pixels a split rounds off.
+    fn matches(a: Option<Self>, b: Option<Self>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => a.side == b.side && (a.extent - b.extent).abs() < 3.0,
+            (a, b) => a.is_none() && b.is_none(),
+        }
+    }
+
+    fn side_text(self) -> &'static str {
+        match self.side {
+            ::imgui::sys::ImGuiDir_Left => "left",
+            ::imgui::sys::ImGuiDir_Right => "right",
+            ::imgui::sys::ImGuiDir_Up => "up",
+            _ => "down",
+        }
+    }
+
+    fn from_text(side: &str, extent: &str) -> Option<Self> {
+        let side = match side {
+            "left" => ::imgui::sys::ImGuiDir_Left,
+            "right" => ::imgui::sys::ImGuiDir_Right,
+            "up" => ::imgui::sys::ImGuiDir_Up,
+            "down" => ::imgui::sys::ImGuiDir_Down,
+            _ => return None,
+        };
+        let extent = extent
+            .parse::<f32>()
+            .ok()
+            .filter(|e| e.is_finite() && *e > 0.0)?;
+        Some(Self { side, extent })
+    }
+}
+
+/// The game window's dockspace `dockspace` and its central node, the map,
+/// if ImGui has them.
+fn game_dock_nodes(
+    dockspace: u32,
+) -> Option<(
+    *mut ::imgui::sys::ImGuiDockNode,
+    *mut ::imgui::sys::ImGuiDockNode,
+)> {
+    if dockspace == 0 || unsafe { ::imgui::sys::igGetCurrentContext() }.is_null() {
+        return None;
+    }
+    let root = unsafe { ::imgui::sys::igDockBuilderGetNode(dockspace) };
+    if root.is_null() {
+        return None;
+    }
+    let central = unsafe { (*root).CentralNode };
+    (!central.is_null()).then_some((root, central))
+}
+
+/// Where `title`'s window is docked in the game window (`dockspace`), if
+/// it is: the part of the dockspace holding it that sits beside the map,
+/// which may hold other panels too.
+fn edge_dock(title: &str, dockspace: u32) -> Option<EdgeDock> {
+    let (_, central) = game_dock_nodes(dockspace)?;
+    let window = native_window(title);
+    if window.is_null() || !in_dockspace(unsafe { &*window }, dockspace) {
+        return None;
+    }
+    unsafe {
+        let mut branch = (*window).DockNode;
+        while !(*branch).ParentNode.is_null() && !node_contains((*branch).ParentNode, central) {
+            branch = (*branch).ParentNode;
+        }
+        let parent = (*branch).ParentNode;
+        if parent.is_null() || node_contains(branch, central) {
+            return None;
+        }
+        let sibling = if (*parent).ChildNodes[0] == branch {
+            (*parent).ChildNodes[1]
+        } else {
+            (*parent).ChildNodes[0]
+        };
+        if sibling.is_null() {
+            return None;
+        }
+        let (branch, sibling) = (&*branch, &*sibling);
+        Some(if (*parent).SplitAxis == ::imgui::sys::ImGuiAxis_X {
+            EdgeDock {
+                side: if branch.Pos.x < sibling.Pos.x {
+                    ::imgui::sys::ImGuiDir_Left
+                } else {
+                    ::imgui::sys::ImGuiDir_Right
+                },
+                extent: branch.Size.x,
+            }
+        } else {
+            EdgeDock {
+                side: if branch.Pos.y < sibling.Pos.y {
+                    ::imgui::sys::ImGuiDir_Up
+                } else {
+                    ::imgui::sys::ImGuiDir_Down
+                },
+                extent: branch.Size.y,
+            }
+        })
+    }
+}
+
+/// Asks ImGui to dock `title`'s window beside the map in the game window
+/// (`dockspace`), on `edge`'s side and as wide or tall as it says, as a
+/// drop there would; ImGui does it as the next frame begins. `freed` is
+/// room the map gets back first (the panel's own, when it's leaving
+/// another side of it). Whether it could ask.
+fn dock_to_edge(title: &str, dockspace: u32, edge: EdgeDock, freed: f32) -> bool {
+    let Some((root, central)) = game_dock_nodes(dockspace) else {
+        return false;
+    };
+    let window = native_window(title);
+    let host = unsafe { (*root).HostWindow };
+    if window.is_null() || host.is_null() {
+        return false;
+    }
+    let room = unsafe {
+        let size = (*central).Size;
+        [size.x, size.y][edge.axis()] + freed
+    };
+    if room <= 1.0 {
+        return false;
+    }
+    // ImGui gives the split's first child (left or up) this share.
+    let share = (edge.extent / room).clamp(0.05, 0.95);
+    let ratio = match edge.side {
+        ::imgui::sys::ImGuiDir_Left | ::imgui::sys::ImGuiDir_Up => share,
+        _ => 1.0 - share,
+    };
+    unsafe {
+        ::imgui::sys::igDockContextQueueDock(
+            ::imgui::sys::igGetCurrentContext(),
+            host,
+            central,
+            window,
+            edge.side,
+            ratio,
+            false,
+        );
+    }
+    true
 }
 
 fn opposite_dock_direction(direction: ::imgui::sys::ImGuiDir) -> ::imgui::sys::ImGuiDir {
@@ -596,6 +815,23 @@ pub struct ImGuiLayoutState {
     before_click: [Option<(bool, bool)>; SLOT_COUNT],
     /// The game's `generation` at the last frame (`game_changed`).
     game_generation: Option<u32>,
+    /// The id of the game window's dockspace (`draw_game_dockspace`).
+    game_dock_id: u32,
+    /// Where Debug is docked in the game window, by view, when it is
+    /// (#333). A view that follows Default's Debug follows its docking too
+    /// (`debug_edge_for_view`), and RESET gives it back.
+    debug_view_edges: std::collections::HashMap<ViewScope, EdgeDock>,
+    /// Where Debug is docked in the game window now, as last seen once
+    /// ImGui had carried out what the layout asked (`track_debug_edge`):
+    /// a change from it is the player's.
+    debug_edge_now: Option<EdgeDock>,
+    /// Where the layout is putting Debug in the game window (none: out of
+    /// it), and how many more times to ask ImGui, until it's there
+    /// (`place_debug_edge`).
+    debug_edge_target: Option<(Option<EdgeDock>, u8)>,
+    /// Frames to wait for ImGui to do the last thing asked of Debug's
+    /// docking before looking again.
+    debug_edge_settling: u8,
 }
 
 impl ImGuiLayoutState {
@@ -678,7 +914,12 @@ impl ImGuiLayoutState {
             && (!window.manual || window.pos == default.floating_pos);
         let same_size = window.sized == placed(default.floating_size)
             && (!window.sized || window.floating_size == default.floating_size);
-        if same_place && same_size {
+        // And docked in the game window as Default's is, or neither (#333).
+        let same_edge = EdgeDock::matches(
+            self.debug_view_edges.get(&view).copied(),
+            self.debug_view_edges.get(&ViewScope::Default).copied(),
+        );
+        if same_place && same_size && same_edge {
             self.debug_view_overrides.remove(&view);
         }
     }
@@ -695,6 +936,7 @@ impl ImGuiLayoutState {
         self.debug_view_overrides.remove(&view);
         self.debug_view_geometry.remove(&view);
         self.debug_view_boxes.remove(&view);
+        self.debug_view_edges.remove(&view);
         // Every kind of selection shown in the view: in City / Building,
         // an open interior as well as a city and a Barracks.
         self.debug_context_relations
@@ -709,15 +951,8 @@ impl ImGuiLayoutState {
         if self.active_view != view || self.debug_layout_scope != Some(BoxScope::View(view)) {
             return;
         }
-        let debug = native_window("Debug");
-        if !debug.is_null() && unsafe { !(*debug).DockNode.is_null() } {
-            unsafe {
-                ::imgui::sys::igDockContextQueueUndockWindow(
-                    ::imgui::sys::igGetCurrentContext(),
-                    debug,
-                )
-            };
-        }
+        // Default's docking in the game window, or out of any dock.
+        let kept = self.place_debug_edge(self.debug_edge_for_view(view));
         let mut inherited = self.debug_geometry_for_view(view);
         inherited.docked = false;
         inherited.pos = inherited.floating_pos;
@@ -726,7 +961,117 @@ impl ImGuiLayoutState {
         self.pending_debug_box = None;
         self.debug_attached = false;
         self.debug_restore_attempts = 0;
-        self.debug_reposition = true;
+        self.debug_reposition = !kept;
+    }
+
+    /// Where Debug docks in the game window in `view`: its own place, or
+    /// Default's while the view follows Default's Debug, as its floating
+    /// placement does (`debug_geometry_for_view`).
+    fn debug_edge_for_view(&self, view: ViewScope) -> Option<EdgeDock> {
+        let own = view == ViewScope::Default || self.debug_view_overrides.contains(&view);
+        let view = if own { view } else { ViewScope::Default };
+        self.debug_view_edges.get(&view).copied()
+    }
+
+    /// The same for a layout scope: while arranging the boxes every view
+    /// shares, the active view's (a change then goes to every view).
+    fn debug_edge_for_scope(&self, scope: BoxScope) -> Option<EdgeDock> {
+        match scope {
+            BoxScope::View(view) => self.debug_edge_for_view(view),
+            BoxScope::Outer => self.debug_edge_for_view(self.active_view),
+        }
+    }
+
+    /// Docks Debug in the game window where `edge` says, or with no edge
+    /// takes it out of any dock, unless it's so already. Returns whether it
+    /// was, and stays as it is.
+    fn place_debug_edge(&mut self, edge: Option<EdgeDock>) -> bool {
+        let debug = native_window("Debug");
+        let docked = !debug.is_null() && unsafe { !(*debug).DockNode.is_null() };
+        let now = edge_dock("Debug", self.game_dock_id);
+        if EdgeDock::matches(now, edge) && (edge.is_some() || !docked) {
+            self.debug_edge_now = now;
+            self.debug_edge_target = None;
+            return true;
+        }
+        self.debug_edge_target = Some((edge, 4));
+        self.request_debug_edge(edge);
+        false
+    }
+
+    /// Asks ImGui to take Debug out of any dock and, with an edge, to
+    /// dock it there in the game window; it does so as the next frame
+    /// begins (`track_debug_edge` checks, and asks again if it must).
+    fn request_debug_edge(&mut self, edge: Option<EdgeDock>) {
+        let debug = native_window("Debug");
+        let now = edge_dock("Debug", self.game_dock_id);
+        if !debug.is_null() && unsafe { !(*debug).DockNode.is_null() } {
+            unsafe {
+                ::imgui::sys::igDockContextQueueUndockWindow(
+                    ::imgui::sys::igGetCurrentContext(),
+                    debug,
+                )
+            };
+        }
+        if let Some(edge) = edge {
+            // Its room on the same axis comes back to the map first.
+            let freed = now
+                .filter(|now| now.axis() == edge.axis())
+                .map_or(0.0, |now| now.extent);
+            dock_to_edge("Debug", self.game_dock_id, edge, freed);
+        }
+        self.debug_edge_settling = 2;
+    }
+
+    /// After the panels are drawn: notes where Debug is docked in the game
+    /// window once ImGui has done what the layout asked, and takes any
+    /// other change as the player's, for the layout being arranged. In
+    /// Default it's every view's that follows Default; in another view it's
+    /// that view's own, which then stops following Default's Debug (as
+    /// moving it does); while arranging the boxes every view shares, it's
+    /// every view's.
+    fn track_debug_edge(&mut self) {
+        let now = edge_dock("Debug", self.game_dock_id);
+        // Putting it where the layout has it: done once it's there (or,
+        // taking it out, once it's out of the game window: it may go on
+        // into a box), else asked again a few times.
+        if let Some((edge, tries)) = self.debug_edge_target {
+            if EdgeDock::matches(now, edge) || tries == 0 {
+                self.debug_edge_target = None;
+                self.debug_edge_settling = 0;
+                self.debug_edge_now = now;
+            } else if self.debug_edge_settling > 0 {
+                self.debug_edge_settling -= 1;
+            } else {
+                self.debug_edge_target = Some((edge, tries - 1));
+                self.request_debug_edge(edge);
+            }
+            return;
+        }
+        if now.is_some() {
+            // Docked: dragged out later, it stays where it's dropped.
+            self.debug_reposition = false;
+        }
+        if self.defer_geometry || EdgeDock::matches(now, self.debug_edge_now) {
+            return;
+        }
+        self.debug_edge_now = now;
+        let views = match self.debug_layout_scope {
+            None => return,
+            Some(BoxScope::Outer) => vec![ViewScope::Default, ViewScope::City, ViewScope::Troop],
+            Some(BoxScope::View(view)) => {
+                if view != ViewScope::Default {
+                    self.debug_view_overrides.insert(view);
+                }
+                vec![view]
+            }
+        };
+        for view in views {
+            match now {
+                Some(edge) => self.debug_view_edges.insert(view, edge),
+                None => self.debug_view_edges.remove(&view),
+            };
+        }
     }
 
     fn debug_geometry_for_view(&self, view: ViewScope) -> WindowGeometry {
@@ -1039,20 +1384,21 @@ impl ImGuiLayoutState {
             }
             self.debug_view_overrides.clear();
         }
-        let debug = native_window("Debug");
-        if !debug.is_null() && unsafe { !(*debug).DockNode.is_null() } {
-            let shared_outer = self.outer_boxes.iter().any(|b| {
-                b.scope == BoxScope::Outer && Some(b.id) == self.outer_box_for_window("Debug")
-            });
-            if !shared_outer {
-                unsafe {
-                    ::imgui::sys::igDockContextQueueUndockWindow(
-                        ::imgui::sys::igGetCurrentContext(),
-                        debug,
-                    )
-                };
-            }
-        }
+        let shared_outer = self.outer_boxes.iter().any(|b| {
+            b.scope == BoxScope::Outer && Some(b.id) == self.outer_box_for_window("Debug")
+        });
+        let view_box = match desired {
+            BoxScope::View(view) => self.debug_view_boxes.get(&view).copied(),
+            BoxScope::Outer => None,
+        };
+        // Out of the dock it was in, unless it's in a box every view shares,
+        // and docked in the game window where this layout has it (#333),
+        // unless it goes in one of the view's boxes.
+        let kept = !shared_outer
+            && self.place_debug_edge(
+                self.debug_edge_for_scope(desired)
+                    .filter(|_| view_box.is_none()),
+            );
         let mut restored = match desired {
             BoxScope::Outer => self.debug_outer_geometry,
             BoxScope::View(view) => self.debug_geometry_for_view(view),
@@ -1064,12 +1410,9 @@ impl ImGuiLayoutState {
             restored.place_by_player();
         }
         self.windows[DEBUG] = restored;
-        self.debug_reposition = true;
+        self.debug_reposition = !kept;
         self.debug_layout_scope = Some(desired);
-        self.pending_debug_box = match desired {
-            BoxScope::View(view) => self.debug_view_boxes.get(&view).copied(),
-            BoxScope::Outer => None,
-        };
+        self.pending_debug_box = view_box;
     }
 
     fn outer_box_for_window(&self, title: &str) -> Option<u32> {
@@ -1144,11 +1487,12 @@ impl ImGuiLayoutState {
         }
         let Some(context) = context else {
             self.debug_outer_relation = self.pinned.iter().find_map(|pin| {
-                dock_relation(&pin.title(), "Debug").map(|relation| (*pin, relation))
+                dock_relation(&pin.title(), "Debug", self.game_dock_id)
+                    .map(|relation| (*pin, relation))
             });
             return;
         };
-        if let Some(relation) = dock_relation("Selection", "Debug") {
+        if let Some(relation) = dock_relation("Selection", "Debug", self.game_dock_id) {
             self.debug_context_relations.insert(context, relation);
             self.debug_restore_attempts = 0;
             self.debug_attached = true;
@@ -1161,6 +1505,17 @@ impl ImGuiLayoutState {
                 self.debug_restore_attempts = 0;
                 return;
             };
+            // Docked in the game window, Debug stays where the view has it
+            // there (`place_debug_edge`), and a Selection docked there
+            // takes no Debug beside it this way.
+            let in_game_window = |title: &str| {
+                let window = native_window(title);
+                !window.is_null() && in_dockspace(unsafe { &*window }, self.game_dock_id)
+            };
+            if in_game_window("Debug") || in_game_window("Selection") {
+                self.debug_restore_attempts = 0;
+                return;
+            }
             let selection = native_window("Selection");
             let debug = native_window("Debug");
             if !selection.is_null() && !debug.is_null() {
@@ -1200,7 +1555,7 @@ impl ImGuiLayoutState {
             self.queue_restore_attempts = 2;
         }
         self.pair_visible = true;
-        if let Some(relation) = queue_dock_relation() {
+        if let Some(relation) = queue_dock_relation(self.game_dock_id) {
             self.queue_dock_relation = Some(relation);
             self.queue_restore_attempts = 0;
             return;
@@ -1217,6 +1572,13 @@ impl ImGuiLayoutState {
         let selection = native_window("Selection");
         let queue = native_window("Production Queue");
         if selection.is_null() || queue.is_null() {
+            return;
+        }
+        // Either docked in the game window: ImGui puts them back there.
+        if unsafe {
+            in_dockspace(&*selection, self.game_dock_id) || in_dockspace(&*queue, self.game_dock_id)
+        } {
+            self.queue_restore_attempts = 0;
             return;
         }
         let queue_has_node = unsafe { !(*queue).DockNode.is_null() };
@@ -1590,6 +1952,13 @@ impl ImGuiLayoutState {
             if let Some(id) = self.debug_view_boxes.get(&view) {
                 lines.push(format!("debug_box {name} {id}"));
             }
+            if let Some(edge) = self.debug_view_edges.get(&view) {
+                lines.push(format!(
+                    "debug_edge {name} {} {}",
+                    edge.side_text(),
+                    edge.extent
+                ));
+            }
         }
         let mut contexts: Vec<_> = self.selection_geometries.iter().collect();
         contexts.sort_by(|a, b| a.0.cmp(b.0));
@@ -1638,7 +2007,7 @@ impl ImGuiLayoutState {
                         layout.debug_outer_geometry = geometry;
                     }
                 }
-                "debug_view" | "debug_override" | "debug_box" => {
+                "debug_view" | "debug_override" | "debug_box" | "debug_edge" => {
                     let Some(view) = values.first().and_then(|v| view_from_text(v)) else {
                         continue;
                     };
@@ -1650,6 +2019,13 @@ impl ImGuiLayoutState {
                         }
                         "debug_override" => {
                             layout.debug_view_overrides.insert(view);
+                        }
+                        "debug_edge" => {
+                            if let (Some(side), Some(extent)) = (values.get(1), values.get(2))
+                                && let Some(edge) = EdgeDock::from_text(side, extent)
+                            {
+                                layout.debug_view_edges.insert(view, edge);
+                            }
                         }
                         _ => {
                             if let Some(id) = number(1) {
@@ -2873,8 +3249,16 @@ const SPLIT_PAD: f32 = 6.0;
 const CARD_ICON_CENTER: f32 = 19.0;
 const CARD_ICON_ROOM: f32 = 2.0 * CARD_ICON_CENTER + 2.0;
 
-fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
+/// The game window below the status bar as a dockspace (#333): a panel
+/// dragged to one of its edges docks there, and to the other panels
+/// docked there. The rest of it, the map, is the central node, which
+/// takes no docking and passes the mouse through
+/// (`PassthruCentralNode`: ImGui leaves a hole in the host window where it
+/// is, so clicks, drags, the wheel and hovering there reach the game).
+/// Returns the dockspace's id.
+fn draw_game_dockspace(ui: &Ui, viewport: Vec2) -> u32 {
     let _padding = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
+    let mut id = 0;
     ui.window("Game dockspace")
         .flags(
             WindowFlags::NO_TITLE_BAR
@@ -2894,13 +3278,9 @@ fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
             Condition::Always,
         )
         .build(|| unsafe {
-            let id = ::imgui::sys::igGetID_Str(c"GameDockspace".as_ptr());
-            // Keep the viewport host for the status-bar safe area, but don't
-            // offer map-wide edge targets. Those compete with the four targets
-            // on a panel and can turn a bottom drop into a screen-wide split.
+            id = ::imgui::sys::igGetID_Str(c"GameDockspace".as_ptr());
             let flags = ::imgui::sys::ImGuiDockNodeFlags_PassthruCentralNode
-                | ::imgui::sys::ImGuiDockNodeFlags_NoDockingInCentralNode
-                | ::imgui::sys::ImGuiDockNodeFlags_NoSplit;
+                | ::imgui::sys::ImGuiDockNodeFlags_NoDockingInCentralNode;
             ::imgui::sys::igDockSpace(
                 id,
                 ::imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
@@ -2908,6 +3288,7 @@ fn draw_game_dockspace(ui: &Ui, viewport: Vec2) {
                 std::ptr::null(),
             );
         });
+    id
 }
 
 fn draw_outer_boxes(
@@ -3402,8 +3783,10 @@ impl GameState {
         // While ImGui is moving a panel or showing docking targets it owns the
         // geometry. Applying our automatic position here makes edge previews
         // oscillate between the two layout systems.
-        let resized =
-            !layout.windows[slot].docked && !layout.defer_geometry && dock_debug_now.is_none();
+        let resized = !layout.windows[slot].docked
+            && !layout.defer_geometry
+            && dock_debug_now.is_none()
+            && !returns_to_game_dock(title, layout.game_dock_id);
         if resized {
             window = window
                 .position(position.to_array(), condition)
@@ -3839,7 +4222,7 @@ impl GameState {
         if layout.game_changed(self.generation) {
             layout.clear_captured_panels();
         }
-        draw_game_dockspace(ui, viewport);
+        layout.game_dock_id = draw_game_dockspace(ui, viewport);
         // Dear ImGui applies a dock drop in NewFrame, before these windows are
         // submitted. Observe that new dock state now; otherwise our cached
         // floating geometry can undo a valid split on its first frame.
@@ -4270,6 +4653,7 @@ impl GameState {
         if !layout.editing_outer {
             layout.maintain_debug_scope(selection.map(|(kind, _)| kind));
         }
+        layout.track_debug_edge();
         layout.track_captured_panels();
         let selection_box = layout.outer_box_for_window("Selection");
         if selection_box != layout.last_selection_outer_box
@@ -4377,6 +4761,20 @@ impl ImGuiLayoutState {
             .position(|slot| *slot == title)
             .expect("a panel's title");
         (self.windows[slot].manual, self.windows[slot].sized)
+    }
+
+    /// Tests only: the side of the map ("left", "right", "up", "down") the
+    /// panel titled `title` is docked on in the game window, and how wide
+    /// or tall its part of it is, if it's docked there.
+    pub(super) fn window_edge(&self, title: &str) -> Option<(&'static str, f32)> {
+        edge_dock(title, self.game_dock_id).map(|edge| (edge.side_text(), edge.extent))
+    }
+
+    /// Tests only: the side Debug docks on in the game window in the
+    /// layout's `view` ("default", "city", "troop"), as saved.
+    pub(super) fn debug_edge_saved(&self, view: &str) -> Option<&'static str> {
+        let view = view_from_text(view).expect("a view");
+        self.debug_edge_for_view(view).map(EdgeDock::side_text)
     }
 }
 
@@ -4956,6 +5354,11 @@ mod tests {
         layout.debug_view_overrides.insert(ViewScope::Troop);
         layout.debug_view_boxes.insert(ViewScope::City, 3);
         layout.selection_geometries.insert("unit".into(), placed);
+        let edge = EdgeDock {
+            side: ::imgui::sys::ImGuiDir_Right,
+            extent: 330.5,
+        };
+        layout.debug_view_edges.insert(ViewScope::Default, edge);
 
         let read = ImGuiLayoutState::from_text(&layout.to_text());
         let same = |a: &WindowGeometry, b: &WindowGeometry| {
@@ -4989,6 +5392,8 @@ mod tests {
         assert!(read.debug_view_overrides.contains(&ViewScope::Troop));
         assert_eq!(read.debug_view_boxes.get(&ViewScope::City), Some(&3));
         assert!(same(&read.selection_geometries["unit"], &placed));
+        assert_eq!(read.debug_view_edges.get(&ViewScope::Default), Some(&edge));
+        assert!(!read.debug_view_edges.contains_key(&ViewScope::City));
     }
 
     #[test]
