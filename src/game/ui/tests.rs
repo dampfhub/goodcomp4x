@@ -1036,6 +1036,43 @@ fn clicking_the_open_city_enters_interior_and_escape_returns() {
     assert_eq!(game.camera.half_height, exterior_camera.half_height);
 }
 
+/// #337: the City view's Barracks, and the Barracks view's city, are
+/// clickable on the map in both presentations: no panel keeps the click
+/// (ImGui's `want_capture_mouse`, classic's `click_ui`), and the click
+/// opens the other view.
+#[test]
+fn the_city_and_its_barracks_open_each_other_from_the_map_in_both_presentations() {
+    for imgui in [true, false] {
+        let mut game = city_view();
+        game.units.clear();
+        let city = game.selected_city.unwrap();
+        let barracks = Hex::new(-3, 1);
+        game.cities[city].barracks = Some(barracks);
+        let mut screen = imgui.then(ImGuiScreen::new);
+        let mut click = |game: &mut GameState, hex: Hex| {
+            game.update(10.0);
+            let at = hex_cursor(game, hex);
+            if let Some(screen) = screen.as_mut() {
+                screen.settle(game);
+                assert!(!screen.captures_mouse_at(game, at), "{hex:?}");
+                game.handle_map_click(at, SCREEN, ClickMode::Normal);
+            } else {
+                game.handle_click(at, SCREEN, ClickMode::Normal);
+            }
+        };
+        click(&mut game, barracks);
+        assert_eq!(game.selected_barracks, Some(city), "imgui {imgui}");
+        assert_eq!(game.selected_city, None);
+        let center = game.cities[city].pos;
+        click(&mut game, center);
+        assert_eq!(game.selected_city, Some(city), "imgui {imgui}");
+        assert_eq!(game.selected_barracks, None);
+        assert_eq!(game.interior_view, None);
+        click(&mut game, barracks);
+        assert_eq!(game.selected_barracks, Some(city), "imgui {imgui}");
+    }
+}
+
 #[test]
 fn yields_show_only_for_the_open_city_and_toggle() {
     let mut game = city_view();

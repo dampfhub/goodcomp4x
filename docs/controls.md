@@ -144,22 +144,25 @@ orders shows disabled.
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the first item in the queue |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks with no view open | Open the barracks view (its own queue of all five unit types, how many Cavalry and Armored its deposits still allow, and your supply) |
+| See Barracks, or left-click your barracks (with no view open, or from any city or barracks view) | Open the barracks view (its own queue of all five unit types, how many Cavalry and Armored its deposits still allow, and your supply) |
 | Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |
 | Backspace in the interior | Clear the selected copy's orders |
 | Escape / V / Return to City in the interior | Return to the city view |
-| Open City (in the barracks view) | Go back to the city view |
+| Open City (in the barracks view), or left-click one of your cities from a barracks view or another city's view | Go back to the city view, or open that city |
 | Space / Escape / click off the map | Close the city or barracks view |
 | Tab | Close the city or barracks view |
 
 While a city view is open, map clicks manage tiles, except a click on one of your units' tokens
 (its disc or hexagon as drawn, not the rest of its hex), which selects that unit and closes the
-view. The barracks view works the same way: a token click selects the unit, and any other map
-click leaves the view open. While something is being placed for the city's workers, or the
-manager is picked up, every click is theirs, token or not. Clicking the city center enters the
-interior map; its clicks control only the interior copies.
+view, and a click on one of your cities or barracks, which opens that one's view (as it does
+with no view open). The barracks view works the same way: a token click selects the unit, a click
+on a city or barracks opens it, and any other map click leaves the view open. Other buildings
+(a Work Camp, Railhead, Smelter) have no view of their own, so a click on one stays the open
+view's. While something is being placed for the city's workers, or the manager is picked up,
+every click is theirs, on a token, a city or a barracks alike. Clicking the open city's own
+center enters the interior map; its clicks control only the interior copies.
 
 ## Camera, game and testing
 

@@ -227,54 +227,65 @@ impl GameState {
         })
     }
 
+    /// The player's city on `hex` (`false`), or the city whose Barracks
+    /// stands there (`true`). These are the structures with a view of
+    /// their own; a building placed on its site (a Work Camp, Railhead,
+    /// Smelter) has none.
+    fn own_structure_at(&self, hex: Hex) -> Option<(usize, bool)> {
+        self.cities
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.team == self.local_team)
+            .find_map(|(i, c)| {
+                if c.pos == hex {
+                    Some((i, false))
+                } else if c.barracks == Some(hex) {
+                    Some((i, true))
+                } else {
+                    None
+                }
+            })
+    }
+
     /// A click on `hex` while a view may be open, off any unit's token.
     pub(in crate::game) fn city_click(&mut self, hex: Hex) -> bool {
         if self.interior_view.is_some() {
             self.interior_click(hex);
             return true;
         }
-        // A structure menu owns map clicks off a unit's token
+        // The open city's own center opens its interior.
+        if let Some(i) = self.selected_city
+            && hex == self.cities[i].pos
+        {
+            self.open_city_interior(i);
+            return true;
+        }
+        // One of the player's cities or Barracks opens its view, from
+        // nothing selected or from another view (#337), unless the open
+        // city is moving a manager, which takes every click.
+        if self.moving_manager.is_none()
+            && let Some((city, barracks)) = self.own_structure_at(hex)
+        {
+            if barracks {
+                self.open_barracks(city);
+            } else {
+                self.open_city(city);
+            }
+            return true;
+        }
+        // A structure menu owns the other map clicks off a unit's token
         // (`city_click_at`) until its explicit exit action.
         if self.selected_barracks.is_some() {
             self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
             return true;
         }
-        if self.selected_city.is_none() {
-            if let Some(i) = self
-                .cities
-                .iter()
-                .position(|c| c.barracks == Some(hex) && c.team == self.local_team)
-            {
-                self.open_barracks(i);
-                return true;
-            }
-            if let Some(i) = self
-                .cities
-                .iter()
-                .position(|c| c.pos == hex && c.team == self.local_team)
-            {
-                self.open_city(i);
-                return true;
-            }
+        let Some(i) = self.selected_city else {
             return false;
-        }
-        let i = self.selected_city.unwrap();
-        if hex == self.cities[i].pos {
-            self.open_city_interior(i);
-            return true;
-        }
+        };
         // The plan is sent: citizens stay where they are, but another of the
-        // player's cities can be looked at.
+        // player's cities can still be looked at (above).
         if self.is_resolving() {
-            if let Some(other) = self
-                .cities
-                .iter()
-                .position(|c| c.pos == hex && c.team == self.local_team)
-            {
-                self.open_city(other);
-            } else {
-                self.notice = WAITING_NOTICE.into();
-            }
+            self.notice = WAITING_NOTICE.into();
             return true;
         }
         // City management owns map clicks off a unit's token, so citizens
