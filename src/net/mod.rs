@@ -201,10 +201,15 @@ impl Session {
     /// `--host`: listens on `port` and starts a new world for `players`
     /// people (the AI playing the rest, as `settings` ask).
     pub fn host(port: u16, players: usize, settings: &Settings) -> Result<(Session, GameState)> {
+        Self::host_with(port, || GameState::host_game(players, settings))
+    }
+
+    /// `host`, with the game `host_game` makes once the port is open.
+    fn host_with(port: u16, host_game: impl FnOnce() -> GameState) -> Result<(Session, GameState)> {
         let listener = TcpListener::bind((LISTEN_ADDRESS, port))
             .with_context(|| format!("can't listen on port {port}"))?;
         listener.set_nonblocking(true)?;
-        let game = GameState::host_game(players, settings);
+        let game = host_game();
         let code = game.join_code().unwrap_or_default().to_string();
         log::info!(
             "hosting on port {port} for {} more players; they join with code {code}",
@@ -428,7 +433,7 @@ fn shown_lan_address(ip: IpAddr) -> Option<IpAddr> {
 mod tests {
     use super::*;
     use crate::game::BuildUnit;
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::time::Instant;
 
     /// Joins `host` with `code` on a thread, pumping the host meanwhile.
@@ -460,6 +465,12 @@ mod tests {
             world_ai: 1,
             ..Settings::default()
         }
+    }
+
+    /// A host listening on a free port, on the tests' fixed world
+    /// (`host_test_game`).
+    fn host(players: usize, settings: &Settings) -> (Session, GameState) {
+        Session::host_with(0, || GameState::host_test_game(players, settings)).expect("listens")
     }
 
     /// Pumps every game's session and plays out its turn until `done`, or
@@ -495,7 +506,7 @@ mod tests {
 
     #[test]
     fn a_turn_plays_out_over_an_encrypted_connection() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) =
             join(&mut host_net, &mut host, &code.to_lowercase()).expect("joins, in any case");
@@ -534,7 +545,7 @@ mod tests {
 
     #[test]
     fn a_wrong_code_is_turned_away_and_counted() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let error = join(&mut host_net, &mut host, "WRONG1")
             .err()
             .expect("refused");
@@ -552,7 +563,7 @@ mod tests {
 
     #[test]
     fn too_many_wrong_codes_stop_the_host_listening() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         for _ in 0..MAX_REFUSALS {
             assert!(join(&mut host_net, &mut host, "NOPE00").is_err());
         }
@@ -562,7 +573,7 @@ mod tests {
 
     #[test]
     fn garbage_and_silence_hold_up_no_real_guest() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let port = host_net.port().unwrap();
         let before = host.checksum();
         // A silent connection and one that sends garbage (from the same
@@ -580,25 +591,44 @@ mod tests {
 
     #[test]
     fn one_address_can_hold_only_a_few_joins_at_once() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let port = host_net.port().unwrap();
-        let silent: Vec<TcpStream> = (0..MAX_HANDSHAKES_PER_ADDRESS + 2)
+        let mut silent: Vec<TcpStream> = (0..MAX_HANDSHAKES_PER_ADDRESS + 2)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();
-        let local = IpAddr::from([127, 0, 0, 1]);
-        pump_host_until(&mut host_net, &mut host, |n| {
-            n.joining.lock().unwrap().get(&local) == Some(&MAX_HANDSHAKES_PER_ADDRESS)
-        });
-        for _ in 0..200 {
+        for stream in &silent {
+            stream.set_nonblocking(true).unwrap();
+        }
+        // How the host answered each connection: a join it took starts the
+        // handshake (the host speaks first), one it turned away is closed.
+        // Neither depends on how long this takes: a join the host took
+        // stays counted only until `JOIN_TIMEOUT`, which a loaded machine
+        // could outlast, but the handshake it started stays in the stream.
+        let mut answers: Vec<Option<bool>> = vec![None; silent.len()];
+        let start = Instant::now();
+        while answers.contains(&None) {
+            assert!(start.elapsed() < Duration::from_secs(20), "{answers:?}");
             host_net.pump(&mut host);
+            for (stream, answer) in silent.iter_mut().zip(&mut answers) {
+                if answer.is_none() {
+                    *answer = match stream.read(&mut [0; 8]) {
+                        Ok(read) => Some(read > 0),
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => None,
+                        // Reset, or aborted: closed.
+                        Err(_) => Some(false),
+                    };
+                }
+            }
             thread::sleep(Duration::from_millis(1));
         }
+        let taken = answers.iter().filter(|&&a| a == Some(true)).count();
         assert_eq!(
-            host_net.joining.lock().unwrap().get(&local),
-            Some(&MAX_HANDSHAKES_PER_ADDRESS),
-            "the rest were turned away"
+            taken, MAX_HANDSHAKES_PER_ADDRESS,
+            "the rest were turned away: {answers:?}"
         );
-        drop(silent);
+        let local = IpAddr::from([127, 0, 0, 1]);
+        let joining = host_net.joining.lock().unwrap().get(&local).copied();
+        assert!(joining <= Some(MAX_HANDSHAKES_PER_ADDRESS), "{joining:?}");
     }
 
     #[test]
@@ -607,7 +637,7 @@ mod tests {
             world_ai: 3,
             ..Settings::default()
         };
-        let (mut host_net, mut host) = Session::host(0, 3, &settings).expect("listens");
+        let (mut host_net, mut host) = host(3, &settings);
         let code = host.join_code().unwrap().to_string();
         let (mut red_net, mut red) = join(&mut host_net, &mut host, &code).expect("Red joins");
         let (mut green_net, mut green) =
@@ -659,7 +689,7 @@ mod tests {
 
     #[test]
     fn a_host_that_is_gone_says_so() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) = join(&mut host_net, &mut host, &code).expect("joins");
         drop(host_net);
@@ -707,7 +737,7 @@ mod tests {
             world_ai: 3,
             ..Settings::default()
         };
-        let (mut host_net, mut host) = Session::host(0, 3, &settings).expect("listens");
+        let (mut host_net, mut host) = host(3, &settings);
         let code = host.join_code().unwrap().to_string();
         let (mut red_net, mut red) = join(&mut host_net, &mut host, &code).expect("Red joins");
         let (mut green_net, mut green) =
@@ -746,7 +776,7 @@ mod tests {
 
     #[test]
     fn a_guest_that_plays_the_turn_out_first_may_send_its_next_plan() {
-        let (mut host_net, mut host) = Session::host(0, 2, &small()).expect("listens");
+        let (mut host_net, mut host) = host(2, &small());
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) = join(&mut host_net, &mut host, &code).expect("joins");
         end_turn_building(&mut guest, None);

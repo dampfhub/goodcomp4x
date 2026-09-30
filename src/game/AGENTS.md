@@ -21,7 +21,7 @@ behavior.
 | `unit.rs` | `Team` (the sides, and `Team::Wild`, the animals' owner, which is no side), `UnitType`, base stats, `Unit` and its state-aware `stats()` |
 | `animals.rs` | animals (wolf packs, bears) and their dens: roaming and hunting within a territory and hunting range by kind (`territory`, `hunting_range`), decided as each animal step begins (`plan_animal_moves`, `plan_animal_attacks`) without the game's RNG (`roam_key`); a kill's bounty (`reward_hunts`), clearing dens and dens adding animals up to their cap (`resolve_dens`, `den_cap`, at each turn's end) |
 | `ai.rs` | the AI, playing every side but the player's (`ai_teams`) |
-| `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
+| `multiplayer.rs` | network play in lockstep (`docs/multiplayer.md`): the `Message`s, a side's `TeamPlan` (`team_plan`, `apply_plan`), hosting a world and seating players (`host_game`, or `host_game_seeded` for a given world; `welcome`, `join_game`, `open_seats`, `seat_left`), `receive` and `check_plan` (every message checked before it touches the game), `checksum` |
 | `city/mod.rs` | `City` (its citizens as `Cluster`s: a manager and its workers), `Site`, `Good` and `Priorities` (a city's priority order), city tuning constants (barracks HP and defense, the population cap as `MAX_MANAGERS` clusters of `CLUSTER_SIZE`), setup of the city scenarios (`setup_cities`, `setup_frontier`, `setup_world`) |
 | `city/logistics.rs` | roads and Canoe House river corridors, logistics routes (`routes_from_by`), `delivered_share`, tile yields, Mill food share, Cannery/Smelter collection, city income (as food, wood and metal) and Barracks income |
 | `city/rail.rs` | Railhead road connectivity and long-range transfer eligibility; city center is the origin terminal |
@@ -171,3 +171,9 @@ Each module's tests live in its own `#[cfg(test)] mod tests` (`mod.rs`, `city/te
 methods input uses, and assert on state. `cargo test` needs no GPU or window. A new rule that
 constrains the board (occupancy, HP, population...) belongs in `simulation.rs`'s
 `check_invariants` too, so every scenario exercises it.
+
+Network-game tests host a fixed world, never a random one (`host_test_game`, and the tests'
+own helpers, on `test_seed()`), so a test plays the same game every run. `MP_SEED=<n> cargo
+test multiplayer` (or `net::`, or any test that hosts) runs them on another world instead, to
+catch a test that leans on its map: a fixture should find what it needs (a unit with room to
+move, a free hex) on any world.

@@ -2073,7 +2073,7 @@ fn no_queue_changes_while_a_turn_plays_out() {
 #[test]
 fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
     use crate::game::{NetMessage, PROTOCOL_VERSION, Settings};
-    let mut host = GameState::host_game(2, &Settings::default());
+    let mut host = GameState::host_test_game(2, &Settings::default());
     let (seat, welcome) = host.welcome(&NetMessage::Hello {
         version: PROTOCOL_VERSION,
     });
@@ -2084,7 +2084,7 @@ fn a_cleared_queue_makes_a_plan_that_passes_the_checks() {
     // earlier turn would leave them: the city's, some paid for and work done
     // on its head, and its Barracks'.
     // The Barracks beside it on no tile its citizens work, or the plan
-    // would be refused for those tiles (the world is new every run).
+    // would be refused for those tiles (on any world `MP_SEED` picks).
     let c = &guest.cities[city];
     let barracks = c
         .pos
