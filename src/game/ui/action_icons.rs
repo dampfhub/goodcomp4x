@@ -3,7 +3,7 @@
 use glam::Vec2;
 
 use super::{Target, UnitAction};
-use crate::game::city::{BuildUnit, Good};
+use crate::game::city::{Build, Good};
 use crate::game::mesh;
 use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
@@ -215,18 +215,11 @@ fn food(center: Vec2, r: f32, color: [f32; 4], out: &mut Vec<Vertex>) {
 
 /// City-production card pictogram, shared by both UI presentations.
 pub(super) fn production_unit_icon(target: Target) -> Option<UnitIcon> {
-    Some(match target {
-        Target::Build(BuildUnit::Melee) => UnitIcon::Sword,
-        Target::Build(BuildUnit::Ranged) => UnitIcon::Bow,
-        Target::Build(BuildUnit::Cavalry) => UnitIcon::HorseHead,
-        Target::Build(BuildUnit::Siege) => UnitIcon::Catapult,
-        Target::Build(BuildUnit::Armored) => UnitIcon::Shield,
-        Target::Build(BuildUnit::PatrolGalley) => UnitIcon::Galley,
-        Target::Build(BuildUnit::LandingCraft) => UnitIcon::LandingCraft,
-        Target::Build(BuildUnit::BombardShip) => UnitIcon::BombardShip,
-        Target::BuildWorker => UnitIcon::Shovel,
-        Target::BuildScout => UnitIcon::Spyglass,
-        Target::BuildSettler => UnitIcon::Flag,
+    UnitIcon::of_build(match target {
+        Target::Build(unit) => Build::Unit(unit),
+        Target::BuildWorker => Build::Worker,
+        Target::BuildScout => Build::Scout,
+        Target::BuildSettler => Build::Settler,
         _ => return None,
     })
 }

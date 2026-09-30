@@ -675,30 +675,6 @@ impl GameState {
         }
     }
 
-    /// What `city` waits for, if the first item of either of its queues
-    /// waits for the stockpile (`waiting_items`): for each resource, the
-    /// most either is short of it.
-    pub(in crate::game) fn city_waits_for(
-        &self,
-        forecast: &QueueForecast,
-        city: usize,
-    ) -> Option<Stock> {
-        [Lane::City, Lane::Barracks]
-            .into_iter()
-            .filter_map(|lane| forecast.lane(city, lane))
-            .filter_map(|lane| {
-                self.waiting_items(lane)
-                    .first()
-                    .filter(|&&(index, _)| index == 0)
-                    .map(|&(_, short)| short)
-            })
-            .reduce(|a, b| Stock {
-                food: a.food.max(b.food),
-                wood: a.wood.max(b.wood),
-                metal: a.metal.max(b.metal),
-            })
-    }
-
     /// Debug panel: switches between fixed build times and production
     /// speeding builds (`work_rate`).
     pub fn toggle_production_speedup(&mut self) {

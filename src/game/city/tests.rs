@@ -519,7 +519,9 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     assert_eq!(short.len(), 1);
     assert_eq!(short[0].0, 0);
     assert!(short[0].1.metal > 0, "the Siege waits for metal");
-    assert_eq!(g.city_waits_for(&forecast, 0), Some(short[0].1));
+    let head = g.head_wait(lane).expect("the Siege waits");
+    assert_eq!(head.waits_for, WaitsFor::Stock(short[0].1));
+    assert!(!head.idle, "the queue works the Melee");
 
     let expected = g.expected_stock(Team::Blue);
     g.resolve_economy();
@@ -535,7 +537,7 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     assert_eq!(g.cities[0].queue[0], Queued::worked(siege, WORK_PER_TURN));
     assert_eq!(g.cities[0].queue[1], Queued::worked(melee, WORK_PER_TURN));
     assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Siege.price());
-    assert_eq!(g.city_waits_for(&g.forecast(Team::Blue), 0), None);
+    assert!(g.head_waits(&g.forecast(Team::Blue)).is_empty());
 }
 
 #[test]
@@ -565,11 +567,15 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
     assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, Some(0));
     assert_eq!(forecast.lane(0, Lane::Barracks).unwrap().worked, None);
     assert_eq!(forecast.lane(other, Lane::City).unwrap().worked, None);
-    assert!(
-        g.city_waits_for(&forecast, 0).is_some(),
-        "its Barracks waits"
-    );
-    assert!(g.city_waits_for(&forecast, other).is_some());
+    let waits = |city, lane| {
+        forecast
+            .lane(city, lane)
+            .and_then(|lane| g.head_wait(lane))
+            .is_some()
+    };
+    assert!(waits(0, Lane::Barracks), "its Barracks waits");
+    assert!(!waits(0, Lane::City));
+    assert!(waits(other, Lane::City));
 
     g.resolve_economy();
     assert!(g.cities[0].queue[0].paid);
@@ -879,7 +885,8 @@ fn a_city_waiting_for_the_stockpile_gathers_until_it_can_pay() {
     let melee = Queued::new(Build::Unit(BuildUnit::Melee));
     let forecast = g.forecast(Team::Blue);
     assert!(g.gathers_this_turn(&forecast, 0));
-    assert!(g.city_waits_for(&forecast, 0).is_some());
+    let head = g.head_waits(&forecast);
+    assert!(head.len() == 1 && head[0].idle, "{head:?}");
     let expected = g.expected_stock(Team::Blue);
     g.resolve_economy();
     assert_eq!(g.cities[0].queue, [melee], "it waits, unpaid");

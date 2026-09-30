@@ -5,6 +5,7 @@
 
 use glam::Vec2;
 
+use super::city::Build;
 use super::fast_hash::HashMap;
 use super::mesh;
 use super::unit::UnitType;
@@ -61,6 +62,18 @@ impl UnitIcon {
             UnitType::BombardShip => Self::BombardShip,
             UnitType::Wolf => Self::WolfHead,
             UnitType::Bear => Self::BearHead,
+        }
+    }
+
+    /// The pictogram of what `build` turns out, if it's a unit or a worker:
+    /// a production card's and a map production tag's (`draw.rs`). A
+    /// Settler is its flag, not the Melee body it walks in.
+    pub(super) fn of_build(build: Build) -> Option<Self> {
+        match build {
+            Build::Settler => Some(Self::Flag),
+            Build::Worker => Some(Self::Shovel),
+            Build::Grow | Build::Gather => None,
+            Build::Unit(_) | Build::Scout => build.unit_type().map(Self::of),
         }
     }
 }
