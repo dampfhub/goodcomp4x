@@ -56,6 +56,7 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
 | `src/game/` | all game state, rules, AI, drawing and UI | `src/game/AGENTS.md` |
 | `src/game/ui/` | screen-space UI, both presentations (ImGui and classic) | `src/game/ui/AGENTS.md` |
 | `shaders/` | GLSL, compiled by `build.rs` | `src/renderer/AGENTS.md` |
+| `text/` | the game's text by tag (so far the settings menu), read by `src/game/strings.rs` | `docs/text.md` |
 | `docs/` | architecture, rules, controls, design proposals, history | `docs/README.md` |
 | `tools/board/` | work-board wrapper (`board.mjs`) and its config | `.agents/skills/board/SKILL.md` |
 | `tools/commit-msg-lint.mjs` | refuses commit messages that close an issue by accident | its header comment |
