@@ -5310,7 +5310,7 @@ fn imgui_a_panel_docks_to_the_window_edge_and_the_map_keeps_the_mouse() {
 
     // Kept with the layout, for the next session.
     let saved = ImGuiLayoutState::from_text(&screen.layout.to_text());
-    assert_eq!(saved.debug_edge_saved("default"), Some("left"));
+    assert_eq!(saved.edge_saved("default", "Debug"), Some("left"));
 }
 
 /// #333: panels other than Debug docked at the window's edge go back
@@ -5379,8 +5379,8 @@ fn imgui_debug_docked_to_the_window_edge_follows_the_views_layout() {
     // Taken out in Troop: Troop's own layout now.
     screen.undock_onto_the_map(&mut game, "Debug");
     assert_eq!(debug_side(&screen), None);
-    assert_eq!(screen.layout.debug_edge_saved("troop"), None);
-    assert_eq!(screen.layout.debug_edge_saved("default"), Some("right"));
+    assert_eq!(screen.layout.edge_saved("troop", "Debug"), None);
+    assert_eq!(screen.layout.edge_saved("default", "Debug"), Some("right"));
 
     // Default still has it docked; Troop still hasn't.
     game.clear_selection();
@@ -5394,7 +5394,177 @@ fn imgui_debug_docked_to_the_window_edge_follows_the_views_layout() {
     assert!(screen.layout.request_reset_active_view());
     screen.settle(&mut game);
     assert_eq!(debug_side(&screen), Some("right"));
-    assert_eq!(screen.layout.debug_edge_saved("troop"), Some("right"));
+    assert_eq!(screen.layout.edge_saved("troop", "Debug"), Some("right"));
+}
+
+/// #360: every panel's docking in the game window belongs to the view's
+/// layout. The city tray docked in City / Building stays there, and isn't
+/// docked in Troop, which follows Default's; the turn strip docked in
+/// Default is docked in Troop too, and in City / Building until that view
+/// has its own; the next session has the same; and RESET gives City /
+/// Building Default's again.
+#[test]
+fn imgui_every_panels_docking_in_the_game_window_belongs_to_the_view() {
+    let mut game = city_view();
+    let city = game.selected_city.unwrap();
+    let unit = player_units(&game)[0];
+    let mut screen = ImGuiScreen::new();
+    let side = |screen: &ImGuiScreen, title| screen.layout.window_edge(title).map(|(s, _)| s);
+    // Each view by what's selected: City / Building, Default, Troop.
+    let nothing = |game: &mut GameState| {
+        game.exit_structure_menu();
+        game.clear_selection();
+    };
+    let open_city = |game: &mut GameState| {
+        nothing(game);
+        game.open_city(city);
+    };
+    let troop = |game: &mut GameState| {
+        nothing(game);
+        game.set_selection(vec![unit]);
+    };
+
+    // The turn strip docked on the left in Default.
+    nothing(&mut game);
+    screen.dock_to_window_edge(&mut game, "Units", "left");
+    assert_eq!(side(&screen, "Units"), Some("left"));
+    assert!(screen.layout.has_own_docking("default"));
+    // City / Building follows Default's, and docks the city tray on the
+    // right: its own docking from then on.
+    open_city(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Units"), Some("left"));
+    assert!(!screen.layout.has_own_docking("city"));
+    screen.dock_to_window_edge(&mut game, "Selection", "right");
+    assert_eq!(side(&screen, "Selection"), Some("right"));
+    assert!(screen.layout.has_own_docking("city"));
+    assert_eq!(screen.layout.edge_saved("city", "Selection"), Some("right"));
+    assert_eq!(screen.layout.edge_saved("default", "Selection"), None);
+
+    // Troop follows Default: the strip docked, the unit's tray floating as
+    // it did before, not as tall as the window.
+    troop(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Units"), Some("left"));
+    assert_eq!(side(&screen, "Selection"), None);
+    let (_, tray) = imgui_panel("Selection");
+    assert!(tray.y < SCREEN.y / 2.0, "floating as before: {tray}");
+    // And back: City / Building has its own again.
+    open_city(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Selection"), Some("right"));
+    assert_eq!(side(&screen, "Units"), Some("left"));
+    // Default never had the tray docked.
+    nothing(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Units"), Some("left"));
+
+    // The next session, as `App` saves and loads the layout and ImGui's
+    // settings, has the same.
+    let mut ini = String::new();
+    screen.context.save_ini_settings(&mut ini);
+    let layout = screen.layout.to_text();
+    drop(screen);
+    let mut screen = ImGuiScreen::new();
+    screen.context.load_ini_settings(&ini);
+    screen.layout = ImGuiLayoutState::from_text(&layout);
+    open_city(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Selection"), Some("right"));
+    troop(&mut game);
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Selection"), None);
+    assert_eq!(side(&screen, "Units"), Some("left"));
+
+    // RESET in City / Building: Default's docking, the tray floating.
+    open_city(&mut game);
+    screen.settle(&mut game);
+    assert!(screen.layout.request_reset_active_view());
+    screen.settle(&mut game);
+    assert_eq!(side(&screen, "Selection"), None);
+    assert_eq!(side(&screen, "Units"), Some("left"));
+    assert!(!screen.layout.has_own_docking("city"));
+    let (_, tray) = imgui_panel("Selection");
+    assert!(tray.y < SCREEN.y - 100.0, "floating: {tray}");
+}
+
+/// #360: Debug floating where each view has it goes there as the view
+/// changes: moved in Troop, it's there in Troop and where it was in
+/// Default.
+#[test]
+fn imgui_a_floating_debug_goes_where_each_view_has_it() {
+    let mut game = GameState::city_scenario();
+    game.clear_selection();
+    let unit = player_units(&game)[0];
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    let (home, size) = imgui_panel("Debug");
+    game.set_selection(vec![unit]);
+    screen.settle(&mut game);
+    assert_eq!(imgui_panel("Debug").0, home, "Troop follows Default");
+    screen.hold_ctrl(&mut game, true);
+    screen.settle(&mut game);
+    let grab = home + Vec2::new(size.x / 2.0, 8.0);
+    screen.drag(&mut game, grab, grab + Vec2::new(-400.0, 150.0));
+    screen.hold_ctrl(&mut game, false);
+    screen.settle(&mut game);
+    let (moved, _) = imgui_panel("Debug");
+    assert_ne!(moved, home, "dragged");
+    for _ in 0..2 {
+        game.clear_selection();
+        screen.settle(&mut game);
+        assert_eq!(imgui_panel("Debug").0, home, "Default's");
+        game.set_selection(vec![unit]);
+        screen.settle(&mut game);
+        assert_eq!(imgui_panel("Debug").0, moved, "Troop's");
+    }
+}
+
+/// #356: the city tray and its queue docked one over the other, the queue
+/// with less of the room, come back the same way round when they show
+/// again, however ImGui kept them while hidden: the split put back
+/// (`maintain_queue_dock`) isn't turned over.
+#[test]
+fn imgui_a_queue_docked_under_the_city_tray_keeps_its_share_when_it_comes_back() {
+    let mut game = city_view();
+    // Something queued, so the queue shows.
+    game.activate_target(Target::Build(BuildUnit::Melee));
+    let city = game.selected_city.unwrap();
+    let unit = player_units(&game)[0];
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    imgui::dock_beside("Selection", "Production Queue", "down", 0.3);
+    screen.settle(&mut game);
+    let heights = || {
+        let (tray_at, tray) = imgui_panel("Selection");
+        let (queue_at, queue) = imgui_panel("Production Queue");
+        assert!(queue_at.y > tray_at.y, "the queue under the tray");
+        queue.y / (tray.y + queue.y)
+    };
+    let share = heights();
+    assert!((share - 0.3).abs() < 0.05, "docked with 30%: {share}");
+    for forgotten in [false, true, false, true] {
+        game.press_escape();
+        screen.settle(&mut game);
+        if forgotten {
+            // ImGui dropped the split while both were hidden.
+            imgui::forget_docking("Selection");
+            imgui::forget_docking("Production Queue");
+        } else {
+            // A unit in the tray alone meanwhile.
+            game.set_selection(vec![unit]);
+            screen.settle(&mut game);
+            game.clear_selection();
+            screen.settle(&mut game);
+        }
+        game.open_city(city);
+        screen.settle(&mut game);
+        let back = heights();
+        assert!(
+            (back - share).abs() < 0.02,
+            "forgotten {forgotten}: {share} came back as {back}"
+        );
+    }
 }
 
 /// Every view of `game` whose buttons can be off, named: nothing selected

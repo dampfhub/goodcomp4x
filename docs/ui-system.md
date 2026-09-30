@@ -60,17 +60,31 @@ being dragged does ImGui take the hole away, to show the drop targets. A panel
 docked there that hides (the city tray when the city closes, Inspect off a
 hover) keeps its empty node, and ImGui docks it back as it shows again, so
 `render_imgui_window` gives such a panel no position that frame, which would
-undock it (`returns_to_game_dock`). Debug's docking there belongs to the
-view's layout, like its floating place: `debug_view_edges` keeps, by view,
-the side of the map it's docked on and its width or height (`EdgeDock`,
-saved as `debug_edge` lines); a view that follows Default's Debug follows
-this too (`debug_edge_for_view`); switching views or RESET docks or undocks
-it to match (`place_debug_edge`, which asks ImGui again for a few frames until
-it's done), and any other change is the player's, for the layout being
-arranged (`track_debug_edge`, which in City / Building or Troop makes the view
-stop following Default's, as moving Debug does). The relations that put
-Selection, Queue and Debug back beside each other (`dock_relation`) leave
-panels docked in the game window alone.
+undock it (`returns_to_game_dock`). **What's docked there belongs to the
+view's layout** (#360): each view keeps the tree of the dockspace's nodes
+(`DockTree`: splits with their sizes, panels as tabs, the map; saved as
+`dock <view>` lines, each view's in `view_docks`). City / Building and Troop
+have none, and follow Default's (`docking_for_view`), until the player
+changes theirs. As each frame begins, before the dockspace is drawn,
+`update_game_dock` reads the tree back from ImGui (`game_dock_tree`, hidden
+panels included by the node they go back to) and takes a change from what the
+layout left as the player's, for the view shown (while editing Outer, for
+every view: Default's, which the others then follow; in City / Building or
+Troop a change to Debug's docking also makes the view's Debug its own, as
+moving it does). When the view changes, or RESET asks for Default's, it
+builds that view's tree with ImGui's dock builder (`build_game_dock`): every
+panel docked in the game window comes out, the nodes are split again and the
+view's panels docked in them, a hidden one to show there when it next does.
+A panel it takes out goes back where it last floated (`floating_before`,
+`reposition`), and one a box shown in the view holds, or Debug when it goes in
+one of the view's boxes, is left where it is. A layout saved before this
+(no `dock` lines, perhaps `debug_edge` lines for Debug by view) takes what
+ImGui's settings dock there as every view's, with Debug placed by view
+(`adopt_legacy_docking`). The relations that put Selection, Queue and Debug
+back beside each other (`dock_relation`) leave panels docked in the game
+window alone; outside it, a relation keeps the moved panel's share of the
+pair, which `split_ratio` turns into the ratio ImGui gives the split's first
+part (#356).
 Docked rectangles are reserved in the automatic layout, and floating windows
 are clamped below the status bar. Docking uses a transparent drag payload so
 the chosen split target stays visible, and floating sizes are preserved across
@@ -202,12 +216,11 @@ updates views that still inherit; moving it while editing Outer applies the
 position to all views and clears local overrides. Outer boxes keep one
 position across all views.
 In City / Building or Troop, **Ctrl+Shift+R** (or the status-bar Reset button)
-clears that view's Debug position, its docking in the game window, and the contextual dock relations of every
-kind of selection shown in it (`SelectionKind::view`: an open interior's too,
-in City / Building) so it inherits
-Default again, docked in the game window or not as Default has it. It leaves the
-view's boxes and other panels in place (a panel docked in the game window other
-than Debug stays docked: only Debug's placement is kept by view).
+clears that view's Debug position, its docking in the game window (every
+panel's), and the contextual dock relations of every kind of selection shown
+in it (`SelectionKind::view`: an open interior's too, in City / Building) so it
+inherits Default again: Debug where Default has it, and the panels docked in
+the game window as Default has them. It leaves the view's boxes in place.
 One floating panel resets on its own by a double-click: on its title bar, it
 goes back where its view's layout places it and keeps its size
 (`ImGuiLayoutState::reset_position`); on its resize grip, back to the size the

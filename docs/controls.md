@@ -196,11 +196,11 @@ center enters the interior map; its clicks control only the interior copies.
 | F10 | Toggle fog of war (on by default) |
 | F11 | Switch between the ImGui and classic UI presentations; cancel any drag in progress |
 | Ctrl (held, ImGui) | Show panel title bars and resize grips for rearranging |
-| Ctrl held, drag a panel onto an edge of the game window (ImGui) | Dock it there, along that edge below the top bar; the rest of the window stays the map, which takes clicks, drags, the wheel and hovering as before. Drag it (Ctrl held) onto the map to float it again, or drag the line between it and the map to resize it. A docked panel that hides (the city tray when the city closes) comes back there |
+| Ctrl held, drag a panel onto an edge of the game window (ImGui) | Dock it there, along that edge below the top bar; the rest of the window stays the map, which takes clicks, drags, the wheel and hovering as before. Drag it (Ctrl held) onto the map to float it again, or drag the line between it and the map to resize it. A docked panel that hides (the city tray when the city closes) comes back there. What's docked there, and where, belongs to the view (Default, City / Building, Troop): switching view docks the panels as that view has them, and City / Building and Troop have Default's until you change theirs |
 | Double-click a panel's title bar (ImGui, Ctrl held or collapsed) | Put the panel back where its view's layout places it, keeping its size; the arrow alone collapses it. A docked panel (in the game window, a box or beside another) has no title bar of its own and no reset: the dock places it |
 | Double-click a panel's resize grip (ImGui, Ctrl held) | Put the panel back to the size its view's layout gives it, keeping its place |
-| Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement to Default, docked in the game window or not as Default has it |
-| EDIT VIEW, + BOX, RESET (ImGui, top bar beside MENU) | After the VIEW label naming the current view (in a narrow window only the layer button's tooltip names it): EDIT VIEW switches between arranging this view and the boxes shared by every view (EDIT OUTER); + BOX adds an empty box to the layer being edited; RESET is Ctrl+Shift+R |
+| Ctrl+Shift+R in City / Building or Troop (ImGui) | Reset that view's Debug placement and its docking in the game window (every panel's) to Default's |
+| EDIT VIEW, + BOX, RESET (ImGui, top bar beside MENU) | After the VIEW label naming the current view (in a narrow window only the layer button's tooltip names it): EDIT VIEW switches between arranging this view and the boxes shared by every view (EDIT OUTER, where docking a panel in the game window docks it so in every view); + BOX adds an empty box to the layer being edited; RESET is Ctrl+Shift+R |
 | Hover the top bar's notice (ImGui) | Show all of it when it was too long for the bar and ends in "…" |
 
 Attack arrows appear only when both ends are in sight; damage numbers appear only on visible tiles.
@@ -277,7 +277,7 @@ between sessions (`network.txt`); the join code isn't.
 
 Settings are also kept between sessions, saved as soon as one changes. On quitting, the game
 also saves the window's size (and whether it's maximized), the UI presentation (F11), and the
-ImGui panels as you arranged them: where each is, its size, which are docked or collapsed, and
+ImGui panels as you arranged them: where each is, its size, which are docked or collapsed (in the game window, each view's own), and
 the boxes. The next session opens the same way. An explicit `--size` sets only this run's window size;
 it does not replace the saved size or maximized state. They're kept in `%APPDATA%\riskofcivlike`
 (`~/.config/riskofcivlike` elsewhere); delete that folder to start over from the defaults.
