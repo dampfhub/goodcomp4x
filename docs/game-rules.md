@@ -680,10 +680,10 @@ only).
   pastures (3/1) have fixed yields.
 - **Logistics:** each worked tile's goods travel its shortest route to the city, counted in hexes
   moved: a step onto a road or a city hex, or along a Canoe House river, counts half a hex, and any
-  other step one hex, whatever its terrain. Delivery is 100% at up to 1 hex, 75% at up to 2, 50%
-  at up to 3 and 25% at up to 4; a tile farther than 4 is out of reach. So every tile beside a
+  other step one hex, whatever its terrain. Delivery is 100% at up to 2 hexes and 75% from there
+  through 4 hexes; a tile farther than 4 is out of reach. So every tile beside a
   city delivers 100%, and roads extend reach: a tile 2 hexes out along a road delivers like one
-  beside the city, and one 4 hexes out along it 75%. Enemy units, contested hexes, enemy cities and mountains block
+  beside the city, and one 4 hexes out along it also delivers 100%. Enemy units, contested hexes, enemy cities and mountains block
   routes, and an enemy on the city blocks them all. Routes are recalculated every time they're
   used.
 - **Managers and workers:** population is at most 28, worked as up to four **clusters**, each a

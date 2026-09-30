@@ -33,7 +33,7 @@ use super::{GameState, PLAYER_TEAM};
 const TURNS: u32 = 40;
 
 /// The seeds every `cargo test` plays, unless `SIM_SEED` or `SIM_SEEDS` is set.
-const DEFAULT_SEEDS: [u64; 3] = [1, 2, 3];
+const DEFAULT_SEEDS: [u64; 4] = [1, 2, 3, 4];
 
 /// The seeds to play: `SIM_SEED` alone, seeds `0..SIM_SEEDS`, or `DEFAULT_SEEDS`.
 fn seeds() -> Vec<u64> {

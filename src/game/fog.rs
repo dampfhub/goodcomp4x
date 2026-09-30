@@ -770,12 +770,11 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_unseen_enemy_on_a_route_hex_still_cuts_goods() {
+    fn an_unseen_enemy_on_a_route_hex_changes_the_real_route() {
         // Accepted: an enemy on a route hex that isn't a worked tile stays
-        // hidden, but the city's real income, rings and route notice (all
-        // from `routes`) show the goods it cuts off.
+        // hidden, but the city's real route detours around it.
         let (mut game, city, worked) = worked_tile_behind_the_mountain();
-        let full = game.income(city);
+        let original_cost = game.routes(city).costs[&worked];
         let blocker = Hex::new(4, -1);
         game.units
             .push(Unit::new(51, blocker, Team::Red, UnitType::Melee));
@@ -784,17 +783,14 @@ pub(super) mod tests {
         assert!(fog.sees(worked) && !fog.sees(blocker));
         assert!(!fog.shows(&game.units[0]));
         // The goods detour south of the mountain, through the marsh at
-        // (2, 1) and (3, 1): two hexes off the road, so a quarter arrives.
+        // (2, 1) and (3, 1): two hexes off the road. Both routes now
+        // deliver 75%, though the real route still responds to the blocker.
         assert_eq!(
             game.routes(city).path_from(worked),
             [(5, 0), (4, 0), (3, 1), (2, 1), (2, 0), (1, 0), (0, 0)].map(|(q, r)| Hex::new(q, r))
         );
+        assert_eq!(original_cost, 6);
         assert_eq!(game.routes(city).costs.get(&worked), Some(&8));
-        assert!(
-            game.income(city).food + game.income(city).production() < full.food + full.production(),
-            "{:?} vs {full:?}",
-            game.income(city)
-        );
     }
 
     #[test]
