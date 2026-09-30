@@ -144,7 +144,7 @@ fn threat_reach(enemy: &Unit) -> Option<i32> {
 }
 
 /// The hexes within `radius` of `center`, on the map or not.
-fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
+pub(super) fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
     (-radius..=radius).flat_map(move |dq| {
         ((-radius).max(-dq - radius)..=radius.min(-dq + radius))
             .map(move |dr| Hex::new(center.q + dq, center.r + dr))

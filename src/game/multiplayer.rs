@@ -27,7 +27,7 @@ use super::city::{
 use super::hex::Hex;
 use super::settings::{ANIMALS_MANY, Settings};
 use super::strings::text;
-use super::terrain::Resource;
+use super::terrain::{Feature, Resource};
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
 
@@ -35,7 +35,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 35;
+pub const PROTOCOL_VERSION: u32 = 36;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -1789,6 +1789,14 @@ impl GameState {
             .collect();
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
+        // Workers cut forests (`JobKind::CutForest`), and only that changes
+        // the ground: how many are left catches a cut one machine missed.
+        let forests = self
+            .grid
+            .all_hexes()
+            .filter(|&hex| self.grid.tile(hex).feature == Some(Feature::Forest))
+            .count();
+        forests.hash(&mut h);
         for den in &self.dens {
             (den.pos, den.cap, den.next_in).hash(&mut h);
         }

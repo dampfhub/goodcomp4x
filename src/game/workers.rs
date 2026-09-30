@@ -19,10 +19,10 @@ use std::collections::VecDeque;
 use glam::Vec2;
 
 use super::GameState;
-use super::city::{Building, Site, Stock, stock_icons};
+use super::city::{BuildUnit, Building, Site, Stock, stock_icons};
 use super::fast_hash::HashMap;
 use super::hex::{Hex, edge};
-use super::terrain::Terrain;
+use super::terrain::{Feature, Terrain};
 use super::unit::{Team, Unit};
 
 /// Hexes a worker walks per turn.
@@ -42,11 +42,19 @@ pub(super) const FORT_DEFENSE: f32 = 1.5;
 pub(super) const FARM_FOOD: i32 = 2;
 pub(in crate::game) const MINE_METAL: i32 = 2;
 pub(super) const LUMBER_MILL_WOOD: i32 = 1;
+/// Cutting a forest (`JobKind::CutForest`): the wood it puts in its side's
+/// stockpile at once, once, when done; its turns of work; and its price, the
+/// workers' food. The tile is left without its forest.
+pub(super) const CUT_FOREST_WOOD: i32 = 10;
+const CUT_FOREST_TURNS: u32 = 2;
+const CUT_FOREST_PRICE: Stock = Stock::whole(2, 0, 0);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
     Road,
     Improve,
+    /// Takes a tile's forest off for a lump of wood (`CUT_FOREST_WOOD`).
+    CutForest,
     Wall,
     Gate,
     Outpost,
@@ -56,9 +64,10 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 6] = [
+    pub const ALL: [JobKind; 7] = [
         JobKind::Road,
         JobKind::Improve,
+        JobKind::CutForest,
         JobKind::Wall,
         JobKind::Gate,
         JobKind::Outpost,
@@ -69,6 +78,7 @@ impl JobKind {
         match self {
             Self::Road => "ROAD",
             Self::Improve => "IMPROVE",
+            Self::CutForest => "CUT FOREST",
             Self::Wall => "WALL",
             Self::Gate => "GATE",
             Self::Outpost => "OUTPOST",
@@ -83,6 +93,7 @@ impl JobKind {
         match self {
             Self::Road => Stock::whole(0, 2, 0),
             Self::Improve => Stock::whole(0, 4, 0),
+            Self::CutForest => CUT_FOREST_PRICE,
             Self::Wall => Stock::whole(0, 3, 0),
             Self::Gate => Stock::whole(0, 3, 2),
             Self::Outpost => Stock::whole(0, 6, 0),
@@ -96,6 +107,7 @@ impl JobKind {
         match self {
             Self::Road | Self::Wall => 2,
             Self::Improve => 3,
+            Self::CutForest => CUT_FOREST_TURNS,
             Self::Gate | Self::Outpost => 3,
             Self::Fort => 4,
             Self::Build(building) => building.turns() as u32,
@@ -106,6 +118,7 @@ impl JobKind {
         match self {
             Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
             Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, FARM BY FRESH WATER.",
+            Self::CutForest => "+10 WOOD AT ONCE, AND THE FOREST IS GONE FOR GOOD.",
             Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
             Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
             Self::Outpost => "SEES 2 HEXES AROUND IT.",
@@ -116,7 +129,7 @@ impl JobKind {
 
     pub(super) fn structure(self) -> Option<StructureKind> {
         match self {
-            Self::Road | Self::Improve | Self::Build(_) => None,
+            Self::Road | Self::Improve | Self::CutForest | Self::Build(_) => None,
             Self::Wall => Some(StructureKind::Wall),
             Self::Gate => Some(StructureKind::Gate),
             Self::Outpost => Some(StructureKind::Outpost),
@@ -334,6 +347,21 @@ impl GameState {
         }
     }
 
+    /// Why a forest can't be cut at `hex`, or `None` if it can: it needs a
+    /// forest (not jungle), and no building or improvement on the tile
+    /// (`improved`), whose yield stands on the forest.
+    fn cut_forest_problem(&self, hex: Hex, building: bool, improved: bool) -> Option<&'static str> {
+        if self.grid.tile(hex).feature != Some(Feature::Forest) {
+            Some("NO FOREST TO CUT HERE")
+        } else if building {
+            Some("A BUILDING STANDS HERE")
+        } else if improved {
+            Some("THIS TILE IS IMPROVED ALREADY")
+        } else {
+            None
+        }
+    }
+
     /// Why city `city`'s workers can't do `job`, or `None` if they can.
     pub(super) fn job_problem(&self, city: usize, job: WorkerJob) -> Option<&'static str> {
         let team = self.cities[city].team;
@@ -381,6 +409,9 @@ impl GameState {
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
                 None => self.improvement(hex).err(),
             },
+            JobKind::CutForest => {
+                self.cut_forest_problem(hex, building, self.sites.contains_key(&hex))
+            }
             _ if building => Some("A BUILDING STANDS HERE"),
             _ if self.structures.contains_key(&hex) => Some("A STRUCTURE STANDS HERE"),
             _ => None,
@@ -538,6 +569,7 @@ impl GameState {
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
                 None => self.improvement(hex).err(),
             },
+            JobKind::CutForest => self.cut_forest_problem(hex, building, site.is_some()),
             _ if building => Some("A BUILDING STANDS HERE"),
             _ if structure => Some("A STRUCTURE STANDS HERE"),
             _ => None,
@@ -1174,6 +1206,12 @@ impl GameState {
                     );
                 }
             }
+            JobKind::CutForest => {
+                if self.grid.tile(hex).feature == Some(Feature::Forest) {
+                    self.grid.clear_feature(hex);
+                    *self.stock_mut(team) += Stock::whole(0, CUT_FOREST_WOOD, 0);
+                }
+            }
             kind => {
                 if let Some(kind) = kind.structure() {
                     let structure = Structure { kind, team };
@@ -1273,9 +1311,17 @@ impl GameState {
     }
 
     /// The AI's workers: each city with idle workers and nothing queued
-    /// improves the tiles it works, then puts roads on them, but none where
-    /// `unsafe_tile` says an animal would attack it (`animals.rs`).
+    /// takes the first job of these it can pay for and do:
+    /// - cutting a forest it works where a farm could go once it's gone
+    ///   (fresh water, open ground): a lump of wood now, and food after;
+    /// - while its side is short of wood (less than a Melee's), cutting the
+    ///   nearest forest in its workers' reach that no city works;
+    /// - improving the tiles it works, then roads on them.
+    ///
+    /// None where `unsafe_tile` says an animal would attack (`animals.rs`),
+    /// and only on ground its side has seen.
     pub(super) fn plan_ai_workers(&mut self, team: Team, unsafe_tile: impl Fn(Hex) -> bool) {
+        let short_of_wood = self.stock(team).wood < BuildUnit::Melee.price().wood;
         for city in 0..self.cities.len() {
             let c = &self.cities[city];
             if c.team != team || c.workers == 0 || !c.worker_jobs.is_empty() {
@@ -1283,17 +1329,38 @@ impl GameState {
             }
             let stock = self.stock(team);
             let worked: Vec<Hex> = c.worked().filter(|&hex| !unsafe_tile(hex)).collect();
-            let job = [JobKind::Improve, JobKind::Road]
-                .into_iter()
-                .find_map(|kind| {
-                    worked.iter().find_map(|&hex| {
-                        let job = WorkerJob::on_tile(hex, kind);
-                        (stock.covers(kind.price())
-                            && self.job_problem(city, job).is_none()
-                            && !self.job_taken(team, job))
-                        .then_some(job)
-                    })
-                });
+            let forest = |hex: Hex| self.grid.tile(hex).feature == Some(Feature::Forest);
+            let farmland_once_cut = |hex: Hex| {
+                let tile = self.grid.tile(hex);
+                forest(hex)
+                    && !tile.hills
+                    && tile.terrain != Terrain::Snow
+                    && self.grid.has_fresh_water(hex)
+            };
+            let cut = |hex| WorkerJob::on_tile(hex, JobKind::CutForest);
+            let mut jobs: Vec<WorkerJob> = worked
+                .iter()
+                .copied()
+                .filter(|&hex| farmland_once_cut(hex))
+                .map(cut)
+                .collect();
+            if short_of_wood {
+                let seen = &self.side_memory[team.index()];
+                let mut woods: Vec<Hex> = super::ai::within(c.pos, WORKER_REACH)
+                    .filter(|&hex| forest(hex) && seen.contains_key(&hex) && !unsafe_tile(hex))
+                    .filter(|&hex| !self.cities.iter().any(|other| other.works(hex)))
+                    .collect();
+                woods.sort_by_key(|h| (h.distance(c.pos), h.q, h.r));
+                jobs.extend(woods.into_iter().map(cut));
+            }
+            for kind in [JobKind::Improve, JobKind::Road] {
+                jobs.extend(worked.iter().map(|&hex| WorkerJob::on_tile(hex, kind)));
+            }
+            let job = jobs.into_iter().find(|&job| {
+                stock.covers(job.kind.price())
+                    && self.job_problem(city, job).is_none()
+                    && !self.job_taken(team, job)
+            });
             if let Some(job) = job {
                 let _ = self.try_queue_job(city, job);
             }
@@ -1306,6 +1373,7 @@ mod tests {
     use super::*;
     use crate::game::PLAYER_TEAM;
     use crate::game::city::Build;
+    use crate::game::terrain::Tile;
     use crate::game::turn::{Phase, Step};
     use crate::game::unit::UnitType;
 
@@ -2118,6 +2186,124 @@ mod tests {
         assert!(!game.cities[red].worker_jobs.is_empty());
         game.resolve_workers();
         assert!(game.field_workers.iter().any(|w| w.team == Team::Red));
+    }
+
+    /// `cities()` with a forest on `hex`.
+    fn forest_at(game: &mut GameState, hex: Hex) {
+        let tile = game.grid.tile(hex);
+        game.grid.set_tile(
+            hex,
+            Tile {
+                feature: Some(Feature::Forest),
+                ..tile
+            },
+        );
+    }
+
+    /// Cutting a forest is paid when placed, takes its turns, and then puts
+    /// its wood in the stockpile once and leaves the tile bare: plains that
+    /// give 2 food instead of 2 wood.
+    #[test]
+    fn cutting_a_forest_gives_a_lump_of_wood_and_bares_the_tile() {
+        let mut game = cities();
+        let hex = bare_tile(&game, 1);
+        assert_eq!(
+            game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
+            Some("NO FOREST TO CUT HERE")
+        );
+        forest_at(&mut game, hex);
+        assert_eq!(game.grid.unimproved_yield(hex), (0, 2, 0));
+        let before = game.stock(PLAYER_TEAM);
+        queue(&mut game, hex, JobKind::CutForest);
+        assert_eq!(game.stock(PLAYER_TEAM), before - CUT_FOREST_PRICE);
+        // A turn to walk there, then its turns of work.
+        game.resolve_workers();
+        assert_eq!(game.field_workers[0].pos, hex);
+        for _ in 1..CUT_FOREST_TURNS {
+            game.resolve_workers();
+            assert_eq!(game.grid.tile(hex).feature, Some(Feature::Forest));
+        }
+        let paid = game.stock(PLAYER_TEAM);
+        game.resolve_workers();
+        assert_eq!(game.grid.tile(hex).feature, None);
+        assert_eq!(game.grid.unimproved_yield(hex), (2, 0, 0));
+        assert_eq!(
+            game.stock(PLAYER_TEAM),
+            paid + Stock::whole(0, CUT_FOREST_WOOD, 0)
+        );
+        // Once only: there's no forest left to cut.
+        assert_eq!(
+            game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
+            Some("NO FOREST TO CUT HERE")
+        );
+        assert!(
+            JobKind::CutForest
+                .description()
+                .contains(&format!("+{CUT_FOREST_WOOD} WOOD"))
+        );
+    }
+
+    #[test]
+    fn an_improved_forest_is_not_cut() {
+        let mut game = cities();
+        let hex = bare_tile(&game, 1);
+        forest_at(&mut game, hex);
+        let (food, production, label) = game.improvement(hex).unwrap();
+        assert_eq!(label, "LUMBER MILL");
+        game.sites.insert(
+            hex,
+            Site {
+                team: PLAYER_TEAM,
+                food,
+                production,
+                label,
+            },
+        );
+        assert_eq!(
+            game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
+            Some("THIS TILE IS IMPROVED ALREADY")
+        );
+        assert!(game.job_unavailable(hex, JobKind::CutForest).is_some());
+    }
+
+    /// The AI cuts a forest it works where a farm could then go, and, short
+    /// of wood, the nearest forest nobody works.
+    #[test]
+    fn the_ai_cuts_forests_it_would_farm_or_when_short_of_wood() {
+        let red = 1;
+        let mut game = cities();
+        assert_eq!(game.cities[red].team, Team::Red);
+        game.sites.retain(|_, site| site.team != Team::Red);
+        let worked = game.cities[red].worked().next().expect("a worked tile");
+        forest_at(&mut game, worked);
+        game.stockpiles[Team::Red.index()] = Stock::whole(20, 20, 20);
+        game.plan_ai_workers(Team::Red, |_| false);
+        assert_eq!(
+            game.cities[red].worker_jobs,
+            [WorkerJob::on_tile(worked, JobKind::CutForest)],
+            "every tile has fresh water here: a farm can follow"
+        );
+
+        // Short of wood, a forest no city works.
+        let mut game = cities();
+        let city = game.cities[red].pos;
+        let spare = city
+            .neighbors()
+            .into_iter()
+            .find(|&h| {
+                game.grid.is_passable(h)
+                    && !game.cities[red].works(h)
+                    && !game.sites.contains_key(&h)
+            })
+            .expect("an unworked tile by Red's city");
+        forest_at(&mut game, spare);
+        game.side_fog(Team::Red);
+        game.stockpiles[Team::Red.index()] = Stock::whole(20, 0, 20);
+        game.plan_ai_workers(Team::Red, |_| false);
+        assert_eq!(
+            game.cities[red].worker_jobs,
+            [WorkerJob::on_tile(spare, JobKind::CutForest)]
+        );
     }
 
     #[test]
