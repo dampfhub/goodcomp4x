@@ -29,6 +29,7 @@ mod settings;
 #[cfg(test)]
 mod simulation;
 mod sprites;
+mod strings;
 mod terrain;
 mod transition;
 mod turn;

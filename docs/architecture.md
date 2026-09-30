@@ -152,7 +152,17 @@ The rules each step applies are in `game-rules.md`.
 settings menu Escape opens (`press_escape`) lists every `Setting` from `Setting::ALL` under its
 `group`'s heading, each an integer in its `range` changed with the `control` it names (a
 checkbox, a slider or a choice of named values), so a new setting is a field and its `Setting`
-entry in that one file; both UI presentations pick it up (`docs/ui-system.md`). `switch_scenario` and
+entry in that one file, and its words in `text/menus.ini`; both UI presentations pick it up
+(`docs/ui-system.md`).
+
+## Game text (`text/`)
+
+The game's words are moving out of the code into tagged entries in `text/*.ini` (#341; so far
+the settings menu). `src/game/strings.rs` embeds the files, reads them once on first use, and
+gives an entry's text, tooltip or hover text by tag (`text!`, `tooltip!`, `hover_text!`),
+filling named placeholders. Its tests check the files against every macro call in `src/`, so a
+missing, unused or mismatched entry fails `cargo test`, not the game. The format is in
+`docs/text.md`. `switch_scenario` and
 `load_state` carry the settings, and whether the menu is open, over into the new game.
 
 ## Between sessions (`src/persist.rs`)
