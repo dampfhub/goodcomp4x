@@ -293,7 +293,9 @@ them.
 - Tile yields sit below the unit spot: wheat stalks for food, logs for wood, then ingots for
   metal, one per point laid out like a die's pips (3 a triangle, 4 a square, 5 a square with one in the
   middle, 6 two rows of three); past 6, one icon and the number. The open city shows them on the tiles it reaches (Y hides them);
-  holding Alt shows them on every explored tile that can be worked.
+  holding Alt shows them on every explored tile that can be worked. Zoomed out past about 16 rows
+  of hexes on screen, the pips are plain shapes in the same colors and layout, since the icons
+  are only a few pixels tall there.
 - Your queued attacks are orange arrows from the attacker (or its ghost) to the target; the AI's
   are hidden. During playback each arrow shoots to its target: a burst is a hit, grey MISS a hex
   with no enemy unit, worker or barracks (an empty city center cannot be targeted), OUT OF RANGE a
