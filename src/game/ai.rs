@@ -18,7 +18,7 @@ use super::fog::{Fog, Sighting};
 use super::hex::Hex;
 use super::settings::ANIMALS_MANY;
 use super::unit::{Team, Unit, UnitType};
-use super::workers::{JobKind, WorkerJob};
+use super::workers::{FARM_FOOD, JobKind, WorkerJob};
 
 /// What an AI side knows as it plans its units: its fog, and what's worth
 /// going for in it. Sets, not lists, as searches ask of every hex they
@@ -691,13 +691,16 @@ impl GameState {
 
     /// What a city on `hex` would have around it, as `fog`'s side knows the
     /// land: each seen hex within `AI_SITE_RADIUS`'s food twice, and its
-    /// wood and metal once. Ground never seen counts nothing.
+    /// wood and metal once, and on ground a farm could go (fresh water,
+    /// `HexGrid::farmable`) a farm's food twice too. Ground never seen
+    /// counts nothing.
     fn site_value(&self, hex: Hex, fog: &Fog) -> i32 {
         within(hex, AI_SITE_RADIUS)
             .filter(|&h| self.grid.contains(h) && self.explored_by(h, fog))
             .map(|h| {
                 let (food, wood, metal) = self.known_yield(h, fog);
-                2 * food + wood + metal
+                let farm = FARM_FOOD * i32::from(self.grid.farmable(h));
+                2 * (food + farm) + wood + metal
             })
             .sum()
     }

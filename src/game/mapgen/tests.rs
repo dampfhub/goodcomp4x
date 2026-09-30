@@ -638,7 +638,7 @@ fn golden_maps_stay_the_same() {
     let hashes = [golden_hash(&generate(7, 5)), golden_hash(&generate(42, 7))];
     assert_eq!(
         hashes,
-        [1683703251667493817, 9046025897880983391],
+        [17779166098088567608, 14202150457915732172],
         "the maps changed: if on purpose, update the hashes and bump PROTOCOL_VERSION"
     );
 }
