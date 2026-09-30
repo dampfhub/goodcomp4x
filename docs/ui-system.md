@@ -227,6 +227,11 @@ Availability is decided only there, where the button is built (a unit's orders
 in `unit_action_unavailable`, a group's when no member can take one), so a
 button and its tooltip can't disagree; the tooltip adds only a caution on a
 button that's on (what the stockpile is short of for a build, which then waits).
+A build card the stockpile can't pay for this turn is `.short(true)`
+(`GameState::build_shortfall`, the one test, which the tooltip's caution uses
+too): still pressable, it's drawn with a red rim, a dark red ground (gold kept
+when queued) and its price in red, in classic (`paint::draw_button`) and ImGui
+(`short_style`, `short_price`); a disabled button is never drawn short.
 A plan sent in a network game makes a plan-changing button's reason
 `PLAN_SENT` (`freeze_plan`). A
 `Layout` owns shapes, buttons, panel hit boxes, scroll regions, and a `Dock`.
