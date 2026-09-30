@@ -5,7 +5,7 @@ use super::text::{
 use super::*;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::{Build, Good, Priorities, Queued, Stock, stock_icons};
+use crate::game::city::{Build, GATHER_YIELD, Good, Priorities, Queued, Stock, stock_icons};
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
@@ -3104,7 +3104,29 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
     }))
     .join(" ");
     assert!(text.contains("SIEGE WAITS FOR"), "{text}");
-    assert!(text.contains("NOTHING IT CAN PAY FOR"), "{text}");
+    // With nothing it can work, it gathers, and the tray, the queue and
+    // the hover panel say so; the queue's row is still drawn where it was.
+    let gathering = format!("GATHERING {}", stock_icons(GATHER_YIELD));
+    assert!(text.contains(&format!("BUILDING {gathering}")), "{text}");
+    let title = queue.rows.iter().find_map(|row| match row {
+        Row::TitleWithButton(line, _) => Some(line_strings([line.clone()]).join(" ")),
+        _ => None,
+    });
+    assert_eq!(title.as_deref(), Some("CITY QUEUE - GATHERING THIS TURN"));
+    let hover = panel_strings(|panel| game.structure_hover_panel(city, false, panel));
+    assert_shows(&hover, &format!("QUEUE: {gathering}"));
+    // Paid for as things stand, it's worked, and nothing says the city gathers.
+    game.fund(game.local_team);
+    let tray = panel_strings(|panel| game.city_tray(city, panel));
+    assert!(
+        !tray.iter().any(|line| line.contains("GATHERING")),
+        "{tray:?}"
+    );
+    let hover = panel_strings(|panel| game.structure_hover_panel(city, false, panel));
+    assert!(
+        !hover.iter().any(|line| line.contains("GATHERING")),
+        "{hover:?}"
+    );
 }
 
 #[test]

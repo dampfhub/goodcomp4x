@@ -17,8 +17,8 @@ mod economy;
 
 use super::animals::{DEN_RETURN_TURNS, TERRITORY_RADIUS};
 use super::city::{
-    Build, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, MIN_CITY_DISTANCE, Queued,
-    WORKERS_PER_MANAGER,
+    Build, BuildUnit, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS,
+    MIN_CITY_DISTANCE, Queued, WORKERS_PER_MANAGER,
 };
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
@@ -78,15 +78,75 @@ fn play_turn(game: &mut GameState) {
     game.plan_ai_turn(PLAYER_TEAM);
     // `resolve_turn` plans the AI team itself.
     game.resolve_turn();
+    play_out(game);
+}
+
+/// Plays out a turn whose plans are all in (`resolve_turn` called), all at once, and checks
+/// that every city spent it (`auto_gather`): its queue worked an item, or, working nothing,
+/// the city gathered by itself, never both. A city taken this turn, or holding a finished
+/// item for want of an open hex, is let be. A failure names the turn; `ReplayHint` names the
+/// game.
+fn play_out(game: &mut GameState) {
+    let before: Vec<(Team, Vec<Queued<Build>>)> = game
+        .cities
+        .iter()
+        .map(|c| (c.team, c.queue.clone()))
+        .collect();
     game.update(0.0);
+    for (i, (team, queue)) in before.iter().enumerate() {
+        let Some(city) = game.cities.get(i) else {
+            continue;
+        };
+        let holding = queue
+            .iter()
+            .any(|q| q.paid && q.progress >= game.city_build_work(i, q.build));
+        if city.team != *team || holding {
+            continue;
+        }
+        let worked = city.queue != *queue;
+        let gathered = game.auto_gathered.contains(&i);
+        assert!(
+            worked != gathered,
+            "turn {}: {team:?} city {} {}: {queue:?}",
+            game.turn,
+            city.id + 1,
+            if worked {
+                "worked its queue and gathered too"
+            } else {
+                "spent its turn on nothing"
+            }
+        );
+    }
+}
+
+/// The cities of `team` queue ahead, as a player would: a city queue left only to gather
+/// trains a Melee instead (or, where it can't, grows), whatever the stockpile holds, and
+/// waits for it, gathering by itself meanwhile (`auto_gather`).
+fn queue_ahead(game: &mut GameState, team: Team) {
+    let melee = Build::Unit(BuildUnit::Melee);
+    for city in 0..game.cities.len() {
+        let c = &game.cities[city];
+        if c.team != team || c.queue.len() != 1 || c.queue[0] != Queued::new(Build::Gather) {
+            continue;
+        }
+        let build = if game.city_build_issue(city, melee).is_none() {
+            melee
+        } else if game.can_grow(city) {
+            Build::Grow
+        } else {
+            continue;
+        };
+        game.take_queue_item(city, 0);
+        game.queue_build(city, build);
+    }
 }
 
 /// Like `play_turn`, but the player's units are ordered through Shift-click queues: each unit
 /// without a queue gets one Shift-click's worth of moves toward the nearest enemy (every
 /// turn it takes to get next to it, up to the default `Settings::max_queued_turns`) and then
 /// an attack on its hex (queued only if in range from where the moves end), as a player would queue
-/// them. The AI still runs the player's cities and workers;
-/// units already following a queue keep their orders.
+/// them. The AI still runs the player's cities and workers, but they queue ahead
+/// (`queue_ahead`); units already following a queue keep their orders.
 fn play_queued_turn(game: &mut GameState) -> usize {
     game.selected = None;
     game.group.clear();
@@ -124,8 +184,9 @@ fn play_queued_turn(game: &mut GameState) -> usize {
         game.queue_attack(target);
     }
     game.selected = None;
+    queue_ahead(game, PLAYER_TEAM);
     game.resolve_turn();
-    game.update(0.0);
+    play_out(game);
     game.units.iter().filter(|u| u.following_queue).count()
 }
 
@@ -159,7 +220,7 @@ fn play_alert_turn(game: &mut GameState, context: &str) -> usize {
         .filter(|&i| game.alert_target(i).is_some())
         .count();
     game.resolve_turn();
-    game.update(0.0);
+    play_out(game);
     for (id, pos) in on_alert {
         if let Some(unit) = game.units.iter().find(|u| u.id == id) {
             assert_eq!(unit.pos, pos, "{context}: {unit} moved while on alert");
@@ -847,15 +908,31 @@ fn queued_orders_against_the_ai_keep_the_board_consistent() {
         let name = format!("{} seed {seed}", scenario.name());
         let starting = game.cities.len();
         let mut followed = 0;
+        // Turns a city of the player's gathered by itself while its queue waited.
+        let mut gathered_waiting = 0;
         for turn in 1..=TURNS {
             followed += play_queued_turn(&mut game);
             let context = format!("{name} queued turn {turn}");
             assert!(!game.is_resolving(), "{context}: the turn did not finish");
             check_invariants(&game, &context);
             check_founding(&game, starting, &context);
+            gathered_waiting += game
+                .auto_gathered
+                .iter()
+                .filter(|&&i| {
+                    game.cities[i].team == PLAYER_TEAM && !game.cities[i].queue.is_empty()
+                })
+                .count();
         }
         // Anti-vacuity: queues were actually carried from turn to turn.
         assert!(followed > 0, "{name}: no unit ever followed a queued turn");
+        // Anti-vacuity: queueing ahead, the player's cities waited, and gathered meanwhile.
+        if matches!(scenario, Scenario::Cities | Scenario::World) {
+            assert!(
+                gathered_waiting > 0,
+                "{name}: no city of the player's gathered while it waited"
+            );
+        }
     });
 }
 

@@ -111,7 +111,8 @@ copies in place of the exterior world; the exterior camera is restored on exit.
    Cannery and Smelter collection, `city/logistics.rs`) to its side's stockpile
    (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, has each queue pay
    for the item it starts and gives it a turn's work (`work_queues`: the first item paid for or
-   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`) and
+   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`; a
+   city whose own queue works nothing gathers by itself, `auto_gather`) and
    completes builds, growth included; builds were queued unpaid (`queue_build`), by the
    player's clicks or the AI's `plan_ai_cities`; each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,

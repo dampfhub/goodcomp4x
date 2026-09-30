@@ -460,7 +460,8 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
     assert!(g.cities[0].queue[0].paid);
     assert_eq!(g.cities[0].queue[0].progress, WORK_PER_TURN);
     assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Melee.price());
-    assert_eq!(g.stock(Team::Red), red, "only the buyer pays");
+    // Only the buyer pays; Red, with nothing queued, gathers.
+    assert_eq!(g.stock(Team::Red), red + GATHER_YIELD);
     // Taken off paid, it refunds its price; its work is lost.
     g.remove_selected_city_queue_item(0);
     assert_eq!(g.stock(Team::Blue), expected);
@@ -486,7 +487,8 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
         g.cities[0].queue[0],
         Queued::new(Build::Unit(BuildUnit::Melee))
     );
-    assert_eq!(g.stock(Team::Blue), expected, "nothing spent");
+    // Nothing spent, and the city gathers while it waits.
+    assert_eq!(g.stock(Team::Blue), expected + GATHER_YIELD);
 
     // Broke, a city still has something to do: gather, for free.
     g.cities[0].queue.clear();
@@ -573,7 +575,8 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
     assert!(g.cities[0].queue[0].paid);
     assert!(!g.cities[0].barracks_queue[0].paid);
     assert!(!g.cities[other].queue[0].paid);
-    assert_eq!(g.stock(Team::Blue).wood, 0);
+    // All spent; the city left waiting gathers.
+    assert_eq!(g.stock(Team::Blue).wood, GATHER_YIELD.wood);
 
     // With wood for one more, the Barracks, next in order, pays.
     g.stockpiles[Team::Blue.index()].wood = BuildUnit::Melee.price().wood - income.wood;
@@ -863,6 +866,83 @@ fn gathering_is_free_and_fills_the_stockpile_in_a_turn() {
     g.complete_builds();
     assert!(g.cities[0].queue.is_empty());
     assert_eq!(g.stock(Team::Blue), start + GATHER_YIELD);
+}
+
+#[test]
+fn a_city_waiting_for_the_stockpile_gathers_until_it_can_pay() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.selected_city = Some(0);
+    // No wood for the Melee: it waits, and the city gathers meanwhile.
+    g.stockpiles[Team::Blue.index()] = Stock::whole(20, 0, 0);
+    g.queue_selected_city_unit(BuildUnit::Melee);
+    let melee = Queued::new(Build::Unit(BuildUnit::Melee));
+    let forecast = g.forecast(Team::Blue);
+    assert!(g.gathers_this_turn(&forecast, 0));
+    assert!(g.city_waits_for(&forecast, 0).is_some());
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(g.cities[0].queue, [melee], "it waits, unpaid");
+    assert_eq!(g.stock(Team::Blue), expected + GATHER_YIELD);
+    assert!(g.notice.contains("GATHERED"), "{}", g.notice);
+
+    // Wood for it: the Melee is paid for and worked, and the city gathers
+    // no more.
+    g.stockpiles[Team::Blue.index()].wood += BuildUnit::Melee.price().wood;
+    assert!(!g.gathers_this_turn(&g.forecast(Team::Blue), 0));
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(
+        g.cities[0].queue,
+        [Queued::worked(Build::Unit(BuildUnit::Melee), WORK_PER_TURN)]
+    );
+    assert_eq!(g.stock(Team::Blue), expected - BuildUnit::Melee.price());
+
+    // A Settler waiting for citizens: nothing else to work, so it gathers,
+    // and the Settler keeps its place.
+    g.cities[0].queue = vec![Queued::new(Build::Settler)];
+    g.cities[0].population = 2;
+    assert!(g.gathers_this_turn(&g.forecast(Team::Blue), 0));
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert_eq!(g.cities[0].queue, [Queued::new(Build::Settler)]);
+    assert_eq!(g.stock(Team::Blue), expected + GATHER_YIELD);
+}
+
+#[test]
+fn a_city_that_spends_its_turn_on_something_does_not_gather_too() {
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.fund(Team::Blue);
+    let start = g.expected_stock(Team::Blue);
+    // Working a Melee: its price, and no yield.
+    g.queue_build(0, Build::Unit(BuildUnit::Melee));
+    assert!(!g.gathers_this_turn(&g.forecast(Team::Blue), 0));
+    g.resolve_economy();
+    assert_eq!(g.stock(Team::Blue), start - BuildUnit::Melee.price());
+    // Gathering by choice yields once, not twice.
+    g.cities[0].queue = vec![Queued::new(Build::Gather)];
+    assert!(!g.gathers_this_turn(&g.forecast(Team::Blue), 0));
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert!(g.cities[0].queue.is_empty());
+    assert_eq!(g.stock(Team::Blue), expected + GATHER_YIELD);
+    // Its Barracks training doesn't count: with the Melee paid for there,
+    // the Grow in the city queue waits, and the city gathers.
+    g.cities[0].barracks = Some(Hex::new(-3, 1));
+    g.queue_barracks(0, BuildUnit::Melee);
+    g.cities[0].queue = vec![Queued::new(Build::Grow)];
+    let price = BuildUnit::Melee.price();
+    g.stockpiles[Team::Blue.index()] = price;
+    let forecast = g.forecast(Team::Blue);
+    assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, None);
+    assert_eq!(forecast.lane(0, Lane::Barracks).unwrap().worked, Some(0));
+    assert!(g.gathers_this_turn(&forecast, 0));
+    let expected = g.expected_stock(Team::Blue);
+    g.resolve_economy();
+    assert!(g.cities[0].barracks_queue[0].paid);
+    assert!(!g.cities[0].queue[0].paid);
+    assert_eq!(g.stock(Team::Blue), expected - price + GATHER_YIELD);
 }
 
 #[test]

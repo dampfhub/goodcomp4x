@@ -22,6 +22,9 @@
 //! - `REPORT_ARMY_FIRST=1`: after the AI plans, a city queue that would only gather trains a
 //!   Melee instead when its side can pay for one (`spend_on_troops`): a side spending on troops
 //!   what the AI banks, for how fast an army can come.
+//! - `REPORT_QUEUE_AHEAD=1`: after the AI plans, every side's cities queue ahead as a player
+//!   would (`queue_ahead`): a city queue that would only gather trains a Melee (or grows)
+//!   instead, whatever the stockpile holds, and waits for it, gathering by itself meanwhile.
 //! - `REPORT_GAME_LINES=1`: also prints each game, a line per side every 5 turns (the
 //!   report of the earlier rounds).
 //! - `SIM_SPEEDUP=1` and `SIM_LIFETIME_CAP=1`: production speeding builds, and the lifetime
@@ -39,14 +42,14 @@ use std::thread;
 
 use super::super::GameState;
 use super::super::city::{
-    Build, BuildUnit, CLUSTER_SIZE, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, Stock,
+    Build, BuildUnit, CLUSTER_SIZE, GATHER_YIELD, Lane, MAX_CITY_POPULATION, MAX_MANAGERS, Stock,
 };
 use super::super::fast_hash::{HashMap, HashSet};
 use super::super::hex::Hex;
 use super::super::unit::{Team, Unit, UnitType};
 use super::super::workers::JobKind;
 use super::super::{PLAYER_TEAM, scenario::Scenario};
-use super::{env_number, seeds, start_with};
+use super::{env_number, queue_ahead, seeds, start_with};
 
 /// Turns per game unless `REPORT_TURNS` says otherwise.
 const REPORT_TURNS: u32 = 60;
@@ -179,6 +182,9 @@ struct LaneUse {
     /// Turns the head item waited unpaid.
     waiting: u32,
     empty: u32,
+    /// City queue: turns it worked nothing, so its city gathered by itself (waiting or
+    /// empty; `auto_gather`).
+    auto_gather: u32,
     /// Barracks: turns training, and turns idle with the resources a Melee lacked.
     training: u32,
     idle: u32,
@@ -604,6 +610,17 @@ impl Observer {
                 self.follow_queue(game, city, lane, turn);
             }
         }
+        // Cities that gathered by themselves, their queues working nothing (`auto_gather`).
+        for &city in &game.auto_gathered {
+            let Some(side) = self.side(game.cities[city].team) else {
+                continue;
+            };
+            side.lanes.auto_gather += 1;
+            let now = side.turns.last_mut().expect("a turn recorded");
+            for (total, amount) in now.gathered.iter_mut().zip(whole(GATHER_YIELD)) {
+                *total += amount;
+            }
+        }
 
         let current: HashSet<JobKey> = Self::current_jobs(game).into_iter().collect();
         let finished: Vec<(JobKey, u32)> = self
@@ -816,6 +833,7 @@ fn spend_on_troops(game: &mut GameState) {
 /// Plays one game of `kind` from `seed` for `turns` turns, as `play_turn` does, watching it.
 fn play(kind: GameKind, seed: u64, turns: u32, game_lines: bool) -> (GameLog, String) {
     let army_first = env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0);
+    let ahead = env_number("REPORT_QUEUE_AHEAD").is_some_and(|n| n > 0);
     let mut game = kind.start(seed);
     let mut observer = Observer::new(&game);
     let mut lines = String::new();
@@ -830,6 +848,11 @@ fn play(kind: GameKind, seed: u64, turns: u32, game_lines: bool) -> (GameLog, St
         game.resolve_turn();
         if army_first {
             spend_on_troops(&mut game);
+        }
+        if ahead {
+            for team in Team::ALL {
+                queue_ahead(&mut game, team);
+            }
         }
         observer.after_plan(&game);
         game.update(0.0);
@@ -1082,6 +1105,10 @@ impl KindReport {
             ("GATHER below the cap", sum(&|l| l.gather_poor)),
             ("waiting", sum(&|l| l.waiting)),
             ("empty", sum(&|l| l.empty)),
+            (
+                "gathering by itself (of waiting and empty)",
+                sum(&|l| l.auto_gather),
+            ),
             ("holding a finished unit", sum(&|l| l.held[0])),
         ] {
             city.push((name.into(), 100.0 * n / city_turns));
@@ -1507,7 +1534,7 @@ fn economy_report() {
     let game_lines = env_number("REPORT_GAME_LINES").is_some_and(|n| n > 0);
     let seeds = seeds();
     println!(
-        "economy_report: {turns} turns, seeds {seeds:?}, games {}{}{}{}",
+        "economy_report: {turns} turns, seeds {seeds:?}, games {}{}{}{}{}",
         kinds.iter().map(|k| k.name()).collect::<Vec<_>>().join(","),
         if env_number("SIM_SPEEDUP").is_some_and(|n| n > 0) {
             ", production speeds builds"
@@ -1521,6 +1548,11 @@ fn economy_report() {
         },
         if env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0) {
             ", army first"
+        } else {
+            ""
+        },
+        if env_number("REPORT_QUEUE_AHEAD").is_some_and(|n| n > 0) {
+            ", queueing ahead"
         } else {
             ""
         },
@@ -1571,10 +1603,11 @@ fn economy_report() {
     }
     if let Ok(path) = std::env::var("REPORT_JSON") {
         let json = format!(
-            "{{\"turns\":{turns},\"speedup\":{},\"lifetime_cap\":{},\"army_first\":{},\"kinds\":[{}]}}\n",
+            "{{\"turns\":{turns},\"speedup\":{},\"lifetime_cap\":{},\"army_first\":{},\"queue_ahead\":{},\"kinds\":[{}]}}\n",
             env_number("SIM_SPEEDUP").is_some_and(|n| n > 0),
             env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0),
             env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0),
+            env_number("REPORT_QUEUE_AHEAD").is_some_and(|n| n > 0),
             reports
                 .iter()
                 .map(KindReport::json)

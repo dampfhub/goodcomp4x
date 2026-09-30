@@ -751,9 +751,19 @@ hostile to every side, and no side's AI plays it (World maps only).
   player city with an empty queue holds up the turn, since it can always Gather; one whose
   items all wait doesn't. Buildings and works placed for workers are still paid when placed
   (see Workers).
+- **Gathering by itself:** a city whose own queue works nothing in a turn's economy (every
+  item in it waits, for the stockpile, supply or citizens, or the queue is empty) gathers, as
+  if Gather were chosen: the Gather yield comes into its side's stockpile once every queue has
+  paid, as a chosen Gather's does, and the waiting items stay as they were. Its Barracks' queue
+  doesn't count: a city whose Barracks trains while its own queue waits still gathers. A city
+  that works anything (a build, a Grow, a chosen Gather, or a finished unit it holds for want
+  of an open hex) doesn't. The rule is the same for every side, the AI's included, and each
+  machine of a network game applies it itself. For the player's cities, as things stand this
+  turn: the city tray says BUILDING GATHERING and the yield, the hover panel QUEUE:
+  GATHERING, and the city queue's title CITY QUEUE - GATHERING THIS TURN.
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
-  gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it wants,
-  gathers instead of standing idle.
+  gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it
+  wants, gathers instead of standing idle, chosen or by itself (above).
 - **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), at
   their own pace: the half-speed rule for troops in a city center doesn't apply to them, and
   neither counts as a troop. A **Settler** (S, or its card) is dear and slow: 30 food and 10
