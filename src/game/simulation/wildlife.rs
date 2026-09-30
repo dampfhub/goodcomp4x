@@ -1,8 +1,8 @@
 //! `animal_report`: not a check but a report to read. It plays AI-vs-AI worlds (the F4
 //! scenario, 4 to 6 AI sides picked by the map's seed, every side the AI's) and measures the
 //! animals (`animals.rs`): how many there are on the map turn by turn, what the sides lose to
-//! them (scouts, settlers, troops and workers), early and later, and how many the sides kill
-//! and how many dens they clear.
+//! them (scouts, settlers, troops and workers), early and later, how many the sides kill, how
+//! many dens they clear and how many cities they found on the land a den held.
 //!
 //! Run it with `cargo test --release animal_report -- --ignored --nocapture`. Its knobs are
 //! environment variables:
@@ -17,13 +17,14 @@
 //! then, and what they strike strikes back only at them), or in another attack step to a unit
 //! that stood next to an animal as the step began with no unit of another side within 3 hexes
 //! (it died of an animal's blow back), or to a worker in the workers' step with an animal
-//! next to it.
+//! next to it. The losses with a stray (`Unit::is_stray`) next to them are counted apart too.
 
 use std::sync::Mutex;
 use std::thread;
 
 use super::super::GameState;
 use super::super::PLAYER_TEAM;
+use super::super::animals::MAX_TERRITORY;
 use super::super::fast_hash::HashSet;
 use super::super::hex::Hex;
 use super::super::scenario::Scenario;
@@ -65,17 +66,21 @@ impl Loss {
 struct Game {
     sides: usize,
     dens_at_start: usize,
-    /// Animals alive at the end of each turn of `ROWS` (0 before it).
-    alive: Vec<(u32, usize)>,
+    /// Animals alive at the end of each turn of `ROWS` (0 before it): those with a den
+    /// (`Unit::home`, cleared or not), and strays.
+    alive: Vec<(u32, usize, usize)>,
     /// The most alive at once.
     most_alive: usize,
-    /// Losses to animals: (turn, what).
-    losses: Vec<(u32, Loss)>,
+    /// Losses to animals: (turn, what, whether a stray was beside it).
+    losses: Vec<(u32, Loss, bool)>,
     killed: usize,
     /// Cities, and troops (scouts and settlers aside), of every side at the end.
     cities: usize,
     troops: usize,
     cleared: usize,
+    /// Cities at the end standing on a cleared den's hex, and within `MAX_TERRITORY` of one.
+    on_dens: usize,
+    near_dens: usize,
 }
 
 /// What stood where as a step began.
@@ -83,7 +88,8 @@ struct Before {
     /// Every unit of a side: (id, team, what it would count as, where).
     units: Vec<(u32, Team, Loss, Hex)>,
     workers: Vec<(u32, Hex)>,
-    animals: Vec<(u32, Hex)>,
+    /// Every animal: (id, where, whether it is a stray).
+    animals: Vec<(u32, Hex, bool)>,
 }
 
 fn before(game: &GameState) -> Before {
@@ -107,7 +113,7 @@ fn before(game: &GameState) -> Before {
         .units
         .iter()
         .filter(|u| u.is_animal())
-        .map(|u| (u.id, u.pos))
+        .map(|u| (u.id, u.pos, u.is_stray()))
         .collect();
     Before {
         units,
@@ -124,11 +130,17 @@ fn unit_ids(game: &GameState) -> HashSet<u32> {
         .collect()
 }
 
-/// The losses to animals in the step `step` that took the board from `was` to `game`.
-fn losses(game: &GameState, was: &Before, step: Step) -> Vec<Loss> {
+/// The losses to animals in the step `step` that took the board from `was` to `game`, each with
+/// whether a stray stood beside it.
+fn losses(game: &GameState, was: &Before, step: Step) -> Vec<(Loss, bool)> {
     let ids = unit_ids(game);
     let workers: HashSet<u32> = game.field_workers.iter().map(|w| w.id).collect();
-    let near_animal = |hex: Hex| was.animals.iter().any(|&(_, at)| at.distance(hex) <= 1);
+    let near_animal = |hex: Hex| was.animals.iter().any(|&(_, at, _)| at.distance(hex) <= 1);
+    let near_stray = |hex: Hex| {
+        was.animals
+            .iter()
+            .any(|&(_, at, stray)| stray && at.distance(hex) <= 1)
+    };
     let mut out = Vec::new();
     match step {
         Step::Units(kind, Phase::Attack) => {
@@ -141,7 +153,7 @@ fn losses(game: &GameState, was: &Before, step: Step) -> Vec<Loss> {
                     .iter()
                     .any(|&(_, t, _, at)| t != team && at.distance(pos) <= 3);
                 if kind.is_animal() || (near_animal(pos) && !rival_near) {
-                    out.push(loss);
+                    out.push((loss, near_stray(pos)));
                 }
             }
             if kind.is_animal() {
@@ -149,7 +161,7 @@ fn losses(game: &GameState, was: &Before, step: Step) -> Vec<Loss> {
                     was.workers
                         .iter()
                         .filter(|(id, _)| !workers.contains(id))
-                        .map(|_| Loss::Worker),
+                        .map(|&(_, pos)| (Loss::Worker, near_stray(pos))),
                 );
             }
         }
@@ -157,7 +169,7 @@ fn losses(game: &GameState, was: &Before, step: Step) -> Vec<Loss> {
             was.workers
                 .iter()
                 .filter(|&&(id, pos)| !workers.contains(&id) && near_animal(pos))
-                .map(|_| Loss::Worker),
+                .map(|&(_, pos)| (Loss::Worker, near_stray(pos))),
         ),
         Step::Units(_, Phase::Move) => {}
     }
@@ -174,6 +186,7 @@ fn play(seed: u64, animals: usize, turns: u32) -> Game {
         dens_at_start: game.dens.len(),
         ..Game::default()
     };
+    let dens: Vec<Hex> = game.dens.iter().map(|d| d.pos).collect();
     let animal_ids = |game: &GameState| -> Vec<u32> {
         game.units
             .iter()
@@ -200,8 +213,11 @@ fn play(seed: u64, animals: usize, turns: u32) -> Game {
                     game.update(0.0);
                 }
             }
-            out.losses
-                .extend(losses(&game, &was, step).into_iter().map(|l| (turn, l)));
+            out.losses.extend(
+                losses(&game, &was, step)
+                    .into_iter()
+                    .map(|(l, s)| (turn, l, s)),
+            );
         }
         assert!(
             !game.is_resolving(),
@@ -211,12 +227,28 @@ fn play(seed: u64, animals: usize, turns: u32) -> Game {
         ever.extend(alive.iter().copied());
         out.most_alive = out.most_alive.max(alive.len());
         if ROWS.contains(&turn) {
-            out.alive.push((turn, alive.len()));
+            let strays = game
+                .units
+                .iter()
+                .filter(|u| u.is_animal() && u.home.is_none())
+                .count();
+            out.alive.push((turn, alive.len() - strays, strays));
         }
     }
     let alive: HashSet<u32> = animal_ids(&game).into_iter().collect();
     out.killed = ever.iter().filter(|id| !alive.contains(id)).count();
     out.cleared = out.dens_at_start - game.dens.len();
+    let cleared: Vec<Hex> = dens
+        .into_iter()
+        .filter(|&pos| game.dens.iter().all(|d| d.pos != pos))
+        .collect();
+    let near = |at: Hex, radius: i32| cleared.iter().any(|d| d.distance(at) <= radius);
+    out.on_dens = game.cities.iter().filter(|c| near(c.pos, 0)).count();
+    out.near_dens = game
+        .cities
+        .iter()
+        .filter(|c| near(c.pos, MAX_TERRITORY))
+        .count();
     out.cities = game.cities.len();
     out.troops = game
         .units
@@ -261,15 +293,21 @@ fn animal_report() {
         mean(&|g| g.sides as f32),
         mean(&|g| g.dens_at_start as f32)
     );
-    print!("  animals alive, mean per world at turn:");
+    print!("  animals alive (with a den + strays), mean per world at turn:");
     for &row in ROWS.iter().filter(|&&r| r <= turns) {
-        let at = |g: &Game| {
+        let at = |g: &Game, stray: bool| {
             g.alive
                 .iter()
-                .find(|(t, _)| *t == row)
-                .map_or(0.0, |(_, a)| *a as f32)
+                .find(|(t, ..)| *t == row)
+                .map_or(0.0, |&(_, den, strays)| {
+                    (if stray { strays } else { den }) as f32
+                })
         };
-        print!("  {row}: {:.1}", mean(&at));
+        print!(
+            "  {row}: {:.1}+{:.1}",
+            mean(&|g| at(g, false)),
+            mean(&|g| at(g, true))
+        );
     }
     println!();
     println!(
@@ -280,14 +318,20 @@ fn animal_report() {
         (format!("turns 1-{EARLY}"), 1..=EARLY),
         (format!("turns {}-{turns}", EARLY + 1), EARLY + 1..=turns),
     ] {
-        print!("  lost to animals, {label}, total (mean per world):");
+        print!("  lost to animals, {label}, total (mean per world) [with a stray beside]:");
         for loss in Loss::ALL {
-            let count = games
-                .iter()
-                .flat_map(|(_, g)| &g.losses)
-                .filter(|(t, l)| range.contains(t) && *l == loss)
-                .count();
-            print!("  {} {count} ({:.2})", loss.name(), count as f32 / n);
+            let lost = || {
+                games
+                    .iter()
+                    .flat_map(|(_, g)| &g.losses)
+                    .filter(|(t, l, _)| range.contains(t) && *l == loss)
+            };
+            let (count, strays) = (lost().count(), lost().filter(|(.., s)| *s).count());
+            print!(
+                "  {} {count} ({:.2}) [{strays}]",
+                loss.name(),
+                count as f32 / n
+            );
         }
         println!();
     }
@@ -297,6 +341,13 @@ fn animal_report() {
         mean(&|g| g.killed as f32),
         games.iter().map(|(_, g)| g.cleared).sum::<usize>(),
         mean(&|g| g.cleared as f32),
+    );
+    println!(
+        "  cities on a cleared den's hex: {} ({:.2} per world); within {MAX_TERRITORY} of one: {} ({:.2} per world)",
+        games.iter().map(|(_, g)| g.on_dens).sum::<usize>(),
+        mean(&|g| g.on_dens as f32),
+        games.iter().map(|(_, g)| g.near_dens).sum::<usize>(),
+        mean(&|g| g.near_dens as f32),
     );
     println!(
         "  at the end, mean per world: {:.1} cities, {:.1} troops",

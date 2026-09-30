@@ -238,7 +238,8 @@ pub struct Unit {
     /// after combat. Any other order drops it.
     pub planned_unload: Option<Hex>,
     /// An animal's den (`animals.rs`): it never leaves its territory, the
-    /// hexes within `animals::territory` of it. `None` for everyone else.
+    /// hexes within `animals::territory` of it. `None` for everyone else,
+    /// and for a stray (an animal with no den, `is_stray`).
     pub home: Option<Hex>,
 }
 
@@ -275,6 +276,12 @@ impl Unit {
     /// Whether it's an animal, owned by the wild (`animals.rs`).
     pub fn is_animal(&self) -> bool {
         self.team == Team::Wild
+    }
+
+    /// Whether it's a stray: an animal with no den to keep to, which a den
+    /// at its cap sent out (`animals.rs`).
+    pub fn is_stray(&self) -> bool {
+        self.is_animal() && self.home.is_none()
     }
 
     pub fn is_naval(&self) -> bool {

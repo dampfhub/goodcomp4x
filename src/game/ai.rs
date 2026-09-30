@@ -165,6 +165,16 @@ const DEN_FIGHT_ROUNDS: usize = 6;
 /// How near one another stray animals (of no den the AI knows of) are
 /// taken as one band (`den_plans`).
 const STRAY_BAND: i32 = 3;
+/// How many turns of a den left alone the AI counts against it
+/// (`den_riddance`): the strays it would send out in that time.
+const DEN_HORIZON_TURNS: u32 = 16;
+/// What one stray is expected to cost the sides about it, in workers'
+/// prices (`Build::Worker`).
+const STRAY_HARM_WORKERS: f32 = 1.0;
+/// What a den's land, open to a city and to workers once the den is
+/// cleared, is worth to a side with a city within `AI_SITE_MAX_DISTANCE`
+/// of it, in settlers' prices (`Build::Settler`).
+const DEN_LAND_SETTLERS: f32 = 0.25;
 
 /// What `stock` is worth to the AI, in whole units of food, wood and metal
 /// alike.
@@ -1048,9 +1058,10 @@ impl GameState {
     /// `guard` (`den_guard`): of its troops within `DEN_FORCE_RANGE` of it
     /// and not `taken` for another den, the nearest few (at most
     /// `DEN_MAX_FORCE`, ties to the lowest id) expected to kill the whole
-    /// guard and lose nobody (`den_fight`) for the most the den is worth
-    /// over what they'd lose: its spoils and the animals' bounties
-    /// (`animals.rs`), less the HP they'd lose, by what it's worth. The
+    /// guard (`den_fight`) for the most the den is worth over what they'd
+    /// lose: its spoils, what else clearing it gains (`den_riddance`) and
+    /// the animals' bounties (`animals.rs`), less the HP they'd lose, by
+    /// what it's worth. The
     /// fewest on a tie; none if no such force comes out ahead. Ships,
     /// scouts, settlers, player-controlled units, units in a contested hex
     /// and those holding ruins aren't sent.
@@ -1077,7 +1088,11 @@ impl GameState {
             })
             .collect();
         near.sort_by_key(|&i| (self.units[i].pos.distance(pos), self.units[i].id));
-        let spoils = if den { worth(DEN_SPOILS) } else { 0.0 };
+        let spoils = if den {
+            worth(DEN_SPOILS) + self.den_riddance(team, pos)
+        } else {
+            0.0
+        };
         let reward = spoils
             + guard
                 .iter()
@@ -1101,6 +1116,27 @@ impl GameState {
         best.map_or_else(Vec::new, |(_, size)| {
             near[..size].iter().map(|&i| self.units[i].id).collect()
         })
+    }
+
+    /// What `team` gains by clearing the den on `den` beyond its spoils,
+    /// in `worth`: the strays it won't send out over `DEN_HORIZON_TURNS`
+    /// (one every `DEN_BREED_TURNS`, in a world that keeps any: the
+    /// Animals setting, which every side knows), each `STRAY_HARM_WORKERS`
+    /// workers' prices; and with a city of its own within
+    /// `AI_SITE_MAX_DISTANCE`, its land, `DEN_LAND_SETTLERS` of a settler's.
+    fn den_riddance(&self, team: Team, den: Hex) -> f32 {
+        let strays = if self.stray_limit > 0 {
+            let harm = STRAY_HARM_WORKERS * worth(Build::Worker.price());
+            (DEN_HORIZON_TURNS / DEN_BREED_TURNS) as f32 * harm
+        } else {
+            0.0
+        };
+        let near = self
+            .cities
+            .iter()
+            .any(|c| c.team == team && c.pos.distance(den) <= AI_SITE_MAX_DISTANCE);
+        let land = DEN_LAND_SETTLERS * worth(Build::Settler.price());
+        strays + if near { land } else { 0.0 }
     }
 
     /// `known_step` for a land unit of `known`'s side, from what it knows
@@ -1763,6 +1799,69 @@ mod tests {
         assert!(moves.contains(&(1, None)), "{moves:?}");
         assert!(moves.contains(&(3, None)), "{moves:?}");
         assert!(moves.contains(&(2, Some(Hex::new(-4, 0)))), "{moves:?}");
+    }
+
+    #[test]
+    fn clearing_a_den_is_worth_the_strays_it_would_send_out_and_its_land() {
+        // Red, three melee troops, and a bear den at (6, 0) with its bear,
+        // which Red has seen.
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        game.make_dens(&[Hex::new(-8, 4), Hex::new(6, 0)], 1);
+        game.dens.remove(0);
+        game.units.retain(|u| u.home != Some(Hex::new(-8, 4)));
+        for (id, pos) in [(2, Hex::new(0, 1)), (3, Hex::new(1, -1))] {
+            game.units
+                .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+        }
+        red_glances_from(&mut game, Hex::new(4, 0));
+        let den = Hex::new(6, 0);
+        // Three troops kill a bear, but for more than its bounty and the
+        // den's spoils: in a world with no strays and no city of its own
+        // near, it leaves the den alone.
+        let fight = [(); 3].map(|_| Unit::new(1, Hex::new(0, 0), Team::Red, UnitType::Melee));
+        let bear = [Unit::new(9, den, Team::Wild, UnitType::Bear)];
+        let loss = den_fight(&fight, &bear, 1.0).expect("won");
+        let spoils = worth(DEN_SPOILS) + worth(bounty(UnitType::Bear));
+        assert!(spoils < loss, "{spoils} {loss}");
+        assert_eq!(game.den_riddance(Team::Red, den), 0.0);
+        assert!(red_den_plans(&mut game)[0].force.is_empty());
+        // Left alone, it sends out strays: clearing it is worth them too.
+        let mut strays = game.clone();
+        strays.stray_limit = 4;
+        let riddance = 2.0 * worth(Build::Worker.price());
+        assert_eq!(strays.den_riddance(Team::Red, den), riddance);
+        assert_eq!(red_den_plans(&mut strays)[0].force, [1, 2, 3]);
+        // With a city of its own near, so is its land, open to settle.
+        game.cities = vec![City::new(0, Team::Red, Hex::new(-4, 0))];
+        let land = worth(Build::Settler.price()) / 4.0;
+        assert_eq!(game.den_riddance(Team::Red, den), land);
+        assert_eq!(red_den_plans(&mut game)[0].force, [1, 2, 3]);
+        // Not with its city farther than it would found another from.
+        game.cities[0].pos = Hex::new(-5, 0);
+        assert_eq!(game.den_riddance(Team::Red, den), 0.0);
+    }
+
+    #[test]
+    fn an_ai_side_forgets_a_cleared_den_once_it_sees_it_gone() {
+        let mut game = red_knows_an_empty_den();
+        let den = Hex::new(6, 0);
+        let own = [];
+        // Cleared by someone else out of Red's sight: Red still remembers
+        // it there, and keeps its sites out of its territory.
+        game.dens.clear();
+        assert_eq!(game.founding_issue(den), None, "free to settle");
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        assert!(known.dens.contains(&den));
+        assert!(!game.known_site(Team::Red, den, &known, &own));
+        // Once it sees the den gone, it forgets it: the land is a site.
+        red_glances_from(&mut game, Hex::new(4, 0));
+        let fog = game.side_fog(Team::Red);
+        let known = game.knowledge(fog);
+        assert!(known.dens.is_empty());
+        assert!(!known.in_den_territory(Hex::new(4, 0)));
+        assert!(game.known_site(Team::Red, den, &known, &own));
     }
 
     #[test]

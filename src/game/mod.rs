@@ -234,6 +234,9 @@ pub struct GameState {
     /// Animal dens not yet cleared (`animals.rs`), in the order the map made
     /// them.
     dens: Vec<animals::Den>,
+    /// The most strays (animals of no den, `animals.rs`) the world keeps at
+    /// once (`animals::stray_limit`), set with its dens.
+    stray_limit: usize,
     /// Workers out on the map; the ones at home are counted by their city
     /// (`workers.rs`).
     field_workers: Vec<workers::FieldWorker>,
@@ -354,6 +357,7 @@ impl GameState {
             refused_sites: Vec::new(),
             ruins: Vec::new(),
             dens: Vec::new(),
+            stray_limit: 0,
             roster_open: None,
             field_workers: Vec::new(),
             structures: HashMap::default(),
