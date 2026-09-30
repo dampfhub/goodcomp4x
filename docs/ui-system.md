@@ -66,8 +66,16 @@ list (`paint::push_chip_icon`). `Zone::BottomCenter` (`dock.rs`) places it:
 centered on the bottom edge if that's free, else beside whatever is in the
 way, else above it. In the classic layout it docks there after the debug
 panel. Its chips are keyed by `RosterKey` (a city's production or idle
-workers, a group of units of one kind, or one unit), which the `Roster*`
-targets carry.
+workers, a city's or Barracks' idle queue, a group of units of one kind, or
+one unit), which the `Roster*` targets carry. An idle queue's chip
+(`RosterKey::Waiting`, from `idle_queues`) is rimmed in `WAITING_TEXT` red
+(`RosterChip::warning`).
+A queue whose first item waits has one account, `GameState::head_wait`
+(`city/economy.rs`: the item, what it waits for, how much the stockpile is
+short, and whether the queue works nothing else, `idle`), which the panels'
+line (`queue::waiting_line`), the turn strip, End Turn's label and tooltip
+and the map read; `queue::idle_word` is the one place the word for an idle
+queue is written.
 The settings menu (`settings_menu.rs`, slot `SETTINGS`) is another: Escape
 opens it (`GameState::press_escape`, `game/settings.rs`) and it shows only
 while open. It is a full panel rather than a fixed modal, so the player can

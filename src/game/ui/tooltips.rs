@@ -3,6 +3,7 @@
 use super::action_icons;
 use super::builder::PanelBuilder;
 use super::paint::draw_shape;
+use super::queue::{queue_place, wait_text};
 use super::text::{ability_text, pending_text, price_hint, signed_quantity, turns_text, wrap};
 use super::{
     BODY, BORDER, Button, DIM_TEXT, FOOD_TEXT, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN,
@@ -846,16 +847,26 @@ impl GameState {
                         .into(),
                     None,
                 ),
-                Target::EndTurn => (
-                    "END TURN".into(),
-                    "SPACE".into(),
-                    if pending_text(self.pending()).is_some() {
-                        "SELECTS WHAT STILL NEEDS ORDERS.".into()
+                Target::EndTurn => {
+                    // The queues that sit idle this turn, each with what
+                    // its first item waits for (`idle_queues`).
+                    let idle = self.idle_queues();
+                    let mut description = if pending_text(self.pending()).is_some() {
+                        "SELECTS WHAT STILL NEEDS ORDERS.".to_string()
                     } else {
-                        "RESOLVES EVERYONE'S ORDERS.".into()
-                    },
-                    None,
-                ),
+                        "RESOLVES EVERYONE'S ORDERS.".to_string()
+                    };
+                    for wait in &idle {
+                        let place = queue_place(self.cities[wait.city].id, wait.lane);
+                        description.push_str(&format!(" {place}: {}.", wait_text(wait)));
+                    }
+                    let caution = match idle.len() {
+                        0 => None,
+                        1 => Some("1 QUEUE WORKS NOTHING THIS TURN".to_string()),
+                        n => Some(format!("{n} QUEUES WORK NOTHING THIS TURN")),
+                    };
+                    ("END TURN".into(), "SPACE".into(), description, caution)
+                }
             };
         let mut lines = vec![(
             BODY,

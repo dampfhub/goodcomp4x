@@ -2266,13 +2266,20 @@ fn roster_width(panel: &PanelBuilder) -> f32 {
 /// map, in a framed square (bright while selected, white while hovered).
 fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, hovered: bool) {
     let draw = ui.get_window_draw_list();
+    // An idle queue's chip is rimmed in the waiting red, like classic's.
     let (bg, border) = if chip.selected {
         (BUTTON_HOVER_BG, ARMED_BORDER_COLOR)
+    } else if chip.warning {
+        (SHORT_BG, WAITING_TEXT)
     } else {
         (BUTTON_BG, BORDER_COLOR)
     };
     let edge = if hovered { TEXT } else { border };
-    let thickness = if chip.selected { ARMED_BORDER } else { BORDER };
+    let thickness = if chip.selected || chip.warning {
+        ARMED_BORDER
+    } else {
+        BORDER
+    };
     draw.add_rect(min, max, bg).filled(true).build();
     draw.add_rect(min, max, edge).thickness(thickness).build();
     let mut vertices = Vec::new();

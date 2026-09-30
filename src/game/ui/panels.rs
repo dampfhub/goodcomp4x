@@ -3,6 +3,7 @@
 use super::builder::{ButtonSpec, PanelBuilder, push_text_row, single_line_button_width};
 use super::dock::Zone;
 use super::paint::fade;
+use super::queue::waiting_line;
 use super::text::{end_turn_label, fit_text, price_hint, stock_spans};
 use super::{
     BODY, DIM_TEXT, END_TURN_HEIGHT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN, NOTICE_TEXT,
@@ -199,7 +200,7 @@ impl GameState {
         let label = if self.is_resolving() {
             self.resolving_label()
         } else {
-            end_turn_label(pending)
+            end_turn_label(pending, self.idle_queues().len())
         };
         let waiting = self.waiting_for_peers();
         let hint = if waiting { "TAKE BACK" } else { "SPACE" };
@@ -320,8 +321,9 @@ impl GameState {
             if let Some((_, _, done)) = worked {
                 panel.bar(done);
             }
-            if let Some(waiting) = self.head_waiting_text(i, Lane::Barracks, &status) {
-                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
+            if let Some(wait) = &status.head {
+                let (size, line) = waiting_line(wait);
+                panel.text(size, line);
             }
         } else {
             panel.text(
@@ -362,8 +364,9 @@ impl GameState {
             if let Some((_, _, done)) = worked {
                 panel.bar(done);
             }
-            if let Some(waiting) = self.head_waiting_text(i, Lane::City, &status) {
-                panel.text(SMALL, vec![(waiting, REDUCED_TEXT)]);
+            if let Some(wait) = &status.head {
+                let (size, line) = waiting_line(wait);
+                panel.text(size, line);
             }
         }
     }

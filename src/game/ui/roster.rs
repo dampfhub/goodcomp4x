@@ -1,6 +1,8 @@
 //! The turn strip ("need orders"): a row of chips for everything the player
 //! still has to see to this turn, civilian tasks first, then military ones:
-//! cities with nothing to build, settlers, and then the military units.
+//! cities with nothing to build, cities and Barracks idle because the first
+//! item of their queue waits (flagged red: `idle_queues`), settlers, and
+//! then the military units.
 //! Units needing orders are grouped by kind, one chip per kind with a count.
 //! Clicking a chip opens its city, or selects its units, and moves the
 //! camera there; Shift-click adds a
@@ -14,8 +16,13 @@
 
 use super::builder::PanelBuilder;
 use super::dock::Zone;
-use super::{ChipIcon, LABEL_TEXT, Layout, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL};
+use super::queue::{idle_word, queue_place, wait_text};
+use super::{
+    ChipIcon, LABEL_TEXT, Layout, Line, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL,
+    WAITING_TEXT,
+};
 use crate::game::GameState;
+use crate::game::city::{HeadWait, Lane};
 use crate::game::unit::UnitType;
 
 /// What a chip in the turn strip stands for.
@@ -23,6 +30,9 @@ use crate::game::unit::UnitType;
 pub(in crate::game) enum RosterKey {
     /// A city with nothing to build, by its id.
     Production(u32),
+    /// A city's queue or its Barracks' that works nothing this turn, its
+    /// first item waiting (`idle_queues`): by the city's id.
+    Waiting(u32, Lane),
     /// The units of one kind that need orders: a unit type, and whether
     /// they're settlers (which use the melee body).
     Group(UnitType, bool),
@@ -55,7 +65,7 @@ impl GameState {
     }
 
     /// Everything the turn strip lists, in its order: cities with nothing to
-    /// build, then the unit groups, settlers first,
+    /// build, idle queues, then the unit groups, settlers first,
     /// each group where its first unit comes in unit order. Nothing while a
     /// turn plays out or a city interior is open.
     pub(super) fn roster_tasks(&self) -> Vec<RosterTask> {
@@ -70,6 +80,12 @@ impl GameState {
                     units: Vec::new(),
                 });
             }
+        }
+        for wait in self.idle_queues() {
+            tasks.push(RosterTask {
+                key: RosterKey::Waiting(self.cities[wait.city].id, wait.lane),
+                units: Vec::new(),
+            });
         }
         let mut groups: Vec<RosterTask> = Vec::new();
         for i in self.roster_units() {
@@ -113,6 +129,23 @@ impl GameState {
                 color: self.local_team.color(),
                 selected: open_city(id),
                 count: 1,
+                warning: false,
+            },
+            RosterKey::Waiting(id, lane) => RosterChip {
+                key: task.key,
+                icon: match lane {
+                    Lane::City => ChipIcon::City,
+                    Lane::Barracks => ChipIcon::Barracks,
+                },
+                color: self.local_team.color(),
+                selected: match lane {
+                    Lane::City => open_city(id),
+                    Lane::Barracks => self
+                        .selected_barracks
+                        .is_some_and(|i| self.cities[i].id == id),
+                },
+                count: 1,
+                warning: true,
             },
             RosterKey::Group(..) | RosterKey::Unit(_) => RosterChip {
                 key: task.key,
@@ -120,6 +153,7 @@ impl GameState {
                 color: self.local_team.color(),
                 selected: task.units.iter().any(|i| selection.contains(i)),
                 count: task.units.len(),
+                warning: false,
             },
         }
     }
@@ -131,9 +165,8 @@ impl GameState {
             return None;
         }
         let selection = self.selection();
-        let waiting: usize = tasks.iter().map(|t| t.units.len().max(1)).sum();
         let mut panel = PanelBuilder::default();
-        panel.text(SMALL, vec![(format!("NEED ORDERS: {waiting}"), LABEL_TEXT)]);
+        panel.text(SMALL, roster_heading(&tasks));
         let chips: Vec<RosterChip> = tasks
             .iter()
             .map(|task| self.roster_chip(task, &selection))
@@ -186,7 +219,7 @@ impl GameState {
                 .into_iter()
                 .find(|t| t.key == key)
                 .map_or_else(Vec::new, |t| t.units),
-            RosterKey::Production(_) => Vec::new(),
+            RosterKey::Production(_) | RosterKey::Waiting(..) => Vec::new(),
         }
     }
 
@@ -197,9 +230,15 @@ impl GameState {
             return;
         }
         match key {
-            RosterKey::Production(id) => {
+            RosterKey::Production(id) | RosterKey::Waiting(id, Lane::City) => {
                 if let Some(city) = self.city_index(id) {
                     self.open_city(city);
+                }
+                return;
+            }
+            RosterKey::Waiting(id, Lane::Barracks) => {
+                if let Some(city) = self.city_index(id) {
+                    self.open_barracks(city);
                 }
                 return;
             }
@@ -249,6 +288,20 @@ impl GameState {
                 "CLICK",
                 "HAS NOTHING TO BUILD. CLICK: OPEN IT.".into(),
             ),
+            RosterKey::Waiting(id, lane) => {
+                let wait = self.idle_queue(id, lane);
+                (
+                    format!("{} {}", queue_place(id, lane), idle_word(lane)),
+                    "CLICK",
+                    match wait {
+                        Some(wait) => format!(
+                            "WORKS NOTHING THIS TURN: {}. CLICK: OPEN IT.",
+                            wait_text(&wait)
+                        ),
+                        None => "CLICK: OPEN IT.".into(),
+                    },
+                )
+            }
             RosterKey::Group(..) => {
                 let units = self.roster_key_units(key);
                 let role = units
@@ -278,6 +331,33 @@ impl GameState {
             }
         }
     }
+}
+
+impl GameState {
+    /// The idle queue a waiting chip stands for, as it is now.
+    fn idle_queue(&self, id: u32, lane: Lane) -> Option<HeadWait> {
+        self.idle_queues()
+            .into_iter()
+            .find(|wait| wait.lane == lane && self.cities[wait.city].id == id)
+    }
+}
+
+/// The turn strip's heading: how many chips need orders (a group counts
+/// its units), and how many queues wait idle, in the waiting red.
+fn roster_heading(tasks: &[RosterTask]) -> Line {
+    let (waiting, orders): (Vec<&RosterTask>, Vec<&RosterTask>) = tasks
+        .iter()
+        .partition(|t| matches!(t.key, RosterKey::Waiting(..)));
+    let orders: usize = orders.iter().map(|t| t.units.len().max(1)).sum();
+    let mut line = Vec::new();
+    if orders > 0 {
+        line.push((format!("NEED ORDERS: {orders}"), LABEL_TEXT));
+    }
+    if !waiting.is_empty() {
+        let gap = if line.is_empty() { "" } else { " · " };
+        line.push((format!("{gap}WAITING: {}", waiting.len()), WAITING_TEXT));
+    }
+    line
 }
 
 /// Adds `chips` to `panel`, `ROSTER_PER_ROW` to a row.

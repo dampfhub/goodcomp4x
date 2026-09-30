@@ -8,9 +8,10 @@ use super::{
     DISABLED_BG, DISABLED_TEXT, GAP, GOLD_TEXT, GROWTH_COLOR, LINE_GAP, PANEL_BG, QUEUED_BG,
     QUEUED_HINT_TEXT, QUEUED_HOVER_BG, QUEUED_TEXT, REDUCED_TEXT, ROSTER_TOKEN_SHARE, SHORT_BG,
     SHORT_BORDER_COLOR, SHORT_HOVER_BG, SHORT_PRICE, SHORT_QUEUED_PRICE, SMALL, Shape, TEXT,
+    WAITING_TEXT,
 };
 use super::{ChipIcon, Target};
-use crate::game::draw::{push_city_tower, push_unit_token};
+use crate::game::draw::{push_barracks_house, push_city_tower, push_unit_token};
 use crate::game::font;
 use crate::game::mesh;
 use crate::renderer::Vertex;
@@ -87,9 +88,12 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
             );
         }
         Shape::UnitChip { min, max, chip } => {
-            // Selected units get the bright armed border, like an armed button.
+            // Selected units get the bright armed border, like an armed
+            // button; an idle queue's chip is rimmed in the waiting red.
             let (bg, border, border_color) = if chip.selected {
                 (BUTTON_HOVER_BG, ARMED_BORDER, ARMED_BORDER_COLOR)
+            } else if chip.warning {
+                (SHORT_BG, ARMED_BORDER, WAITING_TEXT)
             } else {
                 (BUTTON_BG, BORDER, BORDER_COLOR)
             };
@@ -130,6 +134,12 @@ pub(super) fn push_chip_icon(
         ChipIcon::Unit(look) => push_unit_token(center, look, radius, color, out),
         // The tower is 0.84 wide at scale 1.
         ChipIcon::City => push_city_tower(center, 2.0 * radius / 0.84, color, out),
+        // As wide as the tower, and centered on its height (-0.32 to 0.4).
+        ChipIcon::Barracks => {
+            let scale = 2.0 * radius / 0.84;
+            let center = center - Vec2::new(0.0, 0.04 * scale);
+            push_barracks_house(center, scale, color, out);
+        }
     }
 }
 

@@ -33,8 +33,8 @@ pub(in crate::game) use builds::{
     SETTLER_SHORTCUT, WORKER_SHORTCUT,
 };
 pub(in crate::game) use economy::{
-    FOOD_PER_CITIZEN, Lane, STARTING_STOCK, grow_price, resource_icon, stock_icons, stock_words,
-    turns_icon,
+    FOOD_PER_CITIZEN, HeadWait, Lane, STARTING_STOCK, WaitsFor, grow_price, resource_icon,
+    stock_icons, stock_words, turns_icon,
 };
 pub use economy::{Queued, Stock};
 pub(in crate::game) use founding::MIN_CITY_DISTANCE;
