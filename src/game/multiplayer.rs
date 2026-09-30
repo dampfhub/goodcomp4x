@@ -59,6 +59,18 @@ pub const HOST_SEAT: Team = Team::Blue;
 /// The most players a game takes: every side a world can have.
 pub const MAX_PLAYERS: usize = Team::ALL.len();
 
+/// Tests: the map and RNG seed of every hosted game (`host_test_game`):
+/// `TEST_SEED`, or `MP_SEED` to try the tests on another world.
+#[cfg(test)]
+pub fn test_seed() -> u32 {
+    std::env::var("MP_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(TEST_SEED)
+}
+#[cfg(test)]
+const TEST_SEED: u32 = 1;
+
 /// What goes over the wire (`src/net` encodes, seals and frames it).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Message {
@@ -335,12 +347,23 @@ impl GameState {
     /// they join, with AI on the rest (as many as `settings` ask for, and
     /// no fewer than the players need).
     pub fn host_game(players: usize, settings: &Settings) -> GameState {
+        Self::host_game_seeded(players, settings, rand::random(), rand::random())
+    }
+
+    /// `host_game` on the world `map_seed` makes, with the game's RNG
+    /// seeded from `rng_seed`: the same seeds host the same game (the join
+    /// code aside), as tests need.
+    pub fn host_game_seeded(
+        players: usize,
+        settings: &Settings,
+        map_seed: u32,
+        rng_seed: u64,
+    ) -> GameState {
         let players = players.clamp(2, MAX_PLAYERS);
-        let map_seed = rand::random();
         let world = world_settings(settings, map_seed, players);
         let mut game = GameState::world_scenario_with(map_seed, &world);
         let humans = Team::ALL[..players].to_vec();
-        game.seat_players(Role::Host, HOST_SEAT, humans, rand::random());
+        game.seat_players(Role::Host, HOST_SEAT, humans, rng_seed);
         let code: String = (0..CODE_LENGTH)
             .map(|_| CODE_LETTERS[rand::random_range(0..CODE_LETTERS.len())] as char)
             .collect();
@@ -351,6 +374,14 @@ impl GameState {
             lockstep.world = (world.world_ai, world.world_start_city, world.world_animals);
         }
         game
+    }
+
+    /// Tests: `host_game` on a fixed world and RNG (`test_seed`), so a test
+    /// plays the same game every run.
+    #[cfg(test)]
+    pub fn host_test_game(players: usize, settings: &Settings) -> GameState {
+        let seed = test_seed();
+        Self::host_game_seeded(players, settings, seed, u64::from(seed))
     }
 
     /// The code a guest must give to join this hosted game.
@@ -1786,7 +1817,12 @@ mod tests {
     /// A host and a guest, joined, on a two-side world: two machines' games
     /// in one process.
     fn pair() -> (GameState, GameState) {
-        let mut host = GameState::host_game(2, &small());
+        pair_on(test_seed())
+    }
+
+    /// `pair` on the world and RNG `seed` makes.
+    fn pair_on(seed: u32) -> (GameState, GameState) {
+        let mut host = GameState::host_game_seeded(2, &small(), seed, u64::from(seed));
         let (seat, welcome) = host.welcome(&hello(&host));
         assert_eq!(seat, Some(GUEST_SEAT));
         let guest = GameState::join_game(&welcome).expect("joins");
@@ -1848,7 +1884,7 @@ mod tests {
         let mut host = host;
         let again = host.welcome(&hello(&host));
         assert!(matches!(again, (None, Message::Refused(_))));
-        let mut fresh = GameState::host_game(2, &small());
+        let mut fresh = GameState::host_test_game(2, &small());
         let (seat, old) = fresh.welcome(&Message::Hello { version: 0 });
         assert_eq!(seat, None);
         assert!(GameState::join_game(&old).is_err());
@@ -1942,17 +1978,35 @@ mod tests {
     /// its way to the host. Red's city, its Barracks' hex, the unit, and
     /// the plan sent.
     fn red_waiting() -> (GameState, GameState, usize, Hex, usize, TeamPlan) {
-        let (mut host, mut guest) = pair();
+        red_waiting_on(test_seed())
+    }
+
+    /// `red_waiting` on the world and RNG `seed` makes.
+    fn red_waiting_on(seed: u32) -> (GameState, GameState, usize, Hex, usize, TeamPlan) {
+        let (mut host, mut guest) = pair_on(seed);
         let team = GUEST_SEAT;
         let city = city_of(&guest, team);
         let city_pos = guest.cities[city].pos;
-        // Not on a tile a citizen works.
+        // Not on a tile a citizen works, and where there's a choice, not
+        // beside a unit of Red's: on a hemmed-in start it could take the
+        // hex the unit's move needs (seed 192: a Scout between mountains).
         let worked = guest.cities[city].worked().collect::<Vec<_>>();
-        let barracks = city_pos
+        let sites: Vec<Hex> = city_pos
             .neighbors()
             .into_iter()
-            .find(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
-            .unwrap();
+            .filter(|&h| guest.grid.is_passable(h) && !guest.is_occupied(h) && !worked.contains(&h))
+            .collect();
+        let beside_red = |h: Hex| {
+            guest
+                .units
+                .iter()
+                .any(|u| u.team == team && u.pos.distance(h) == 1)
+        };
+        let barracks = sites
+            .iter()
+            .copied()
+            .find(|&h| !beside_red(h))
+            .unwrap_or(sites[0]);
         for game in [&mut host, &mut guest] {
             game.cities[city].barracks = Some(barracks);
             game.fund(team);
@@ -2090,8 +2144,24 @@ mod tests {
 
     #[test]
     fn waiting_for_the_others_any_order_takes_the_turn_back() {
+        any_order_takes_the_turn_back(test_seed());
+    }
+
+    /// The worlds where `red_waiting` once found no unit of Red's to move
+    /// (#358): Red's only unit, its Scout, stands between mountains beside
+    /// its city, and the Barracks took one of its two open hexes.
+    #[test]
+    fn waiting_for_the_others_on_a_hemmed_in_start_any_order_takes_the_turn_back() {
+        for seed in [192, 199] {
+            any_order_takes_the_turn_back(seed);
+        }
+    }
+
+    /// Red, waiting (`red_waiting_on(seed)`), takes its turn back with each
+    /// kind of order, and ends it again.
+    fn any_order_takes_the_turn_back(seed: u32) {
         use super::super::ClickMode;
-        let (host, guest, city, _, unit, plan) = red_waiting();
+        let (host, guest, city, _, unit, plan) = red_waiting_on(seed);
         let pos = guest.units[unit].pos;
         let away = open_hexes(&guest, pos)[1];
         let Priorities([a, b, c]) = guest.cities[city].priorities;
@@ -3685,7 +3755,7 @@ mod tests {
             world_ai: guests + 2,
             ..Settings::default()
         };
-        let mut host = GameState::host_game(guests + 1, &settings);
+        let mut host = GameState::host_test_game(guests + 1, &settings);
         let joined = (0..guests)
             .map(|_| {
                 let (seat, welcome) = host.welcome(&hello(&host));
@@ -3767,7 +3837,7 @@ mod tests {
             world_ai: 3,
             ..Settings::default()
         };
-        let mut host = GameState::host_game(3, &settings);
+        let mut host = GameState::host_test_game(3, &settings);
         let (_, welcome) = host.welcome(&hello(&host));
         let _red = GameState::join_game(&welcome).unwrap();
         assert_eq!(host.open_seats(), [Team::Green]);
@@ -3837,7 +3907,7 @@ mod tests {
 
     #[test]
     fn a_welcome_that_doesnt_add_up_is_refused() {
-        let mut host = GameState::host_game(2, &small());
+        let mut host = GameState::host_test_game(2, &small());
         let (_, welcome) = host.welcome(&hello(&host));
         let Message::Welcome { humans, .. } = &welcome else {
             panic!("{welcome:?}")
