@@ -55,6 +55,37 @@ struct DrawRange {
     count: u32,
 }
 
+/// Trims `ranges` (packed back to back) to `capacity` vertices, repacking
+/// their offsets, and returns how many are left. Later batches layer on top
+/// (overlays, UI) and are usually small, so they keep their vertices first;
+/// earlier ones lose the end of their lists, whole triangles at a time.
+fn fit_ranges(ranges: &mut [DrawRange], capacity: usize) -> usize {
+    let mut room = capacity;
+    for range in ranges.iter_mut().rev() {
+        let kept = (range.count as usize).min(room / 3 * 3);
+        range.count = kept as u32;
+        room -= kept;
+    }
+    let mut used = 0;
+    for range in ranges {
+        range.first = used;
+        used += range.count;
+    }
+    used as usize
+}
+
+/// The capacity to grow a frame slot's vertex buffer to, from `capacity`
+/// vertices, for a frame of `used`: the next power of two, but no more than
+/// `limit` (the largest size not known to fail). `None` keeps the buffer,
+/// and the frame draws what fits.
+fn grow_target(used: usize, capacity: usize, limit: usize) -> Option<usize> {
+    let target = used
+        .next_power_of_two()
+        .max(VERTEX_BUFFER_CAPACITY)
+        .min(limit);
+    (used > capacity && target > capacity).then_some(target)
+}
+
 /// All draw offsets must fit Vulkan's u32 vertex indices before any allocation.
 fn pack_batches(batches: &[DrawBatch]) -> Result<(Vec<DrawRange>, usize)> {
     let mut ranges = Vec::with_capacity(batches.len());
@@ -131,7 +162,15 @@ pub struct Renderer {
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
-    vertex_buffers: Vec<VertexBuffer>,
+    /// `None` while a slot has none: a growth that couldn't allocate even
+    /// the smallest buffer (`write_vertices`).
+    vertex_buffers: Vec<Option<VertexBuffer>>,
+    /// The largest vertex buffer worth trying to allocate: half of the
+    /// smallest that failed.
+    vertex_limit: usize,
+    /// Whether the last frame had to leave vertices out, so the warning
+    /// isn't repeated every frame.
+    vertices_trimmed: bool,
 
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -262,6 +301,7 @@ impl Renderer {
                     physical_device,
                     VERTEX_BUFFER_CAPACITY,
                 )
+                .map(Some)
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -294,6 +334,8 @@ impl Renderer {
             framebuffers,
             texture,
             vertex_buffers,
+            vertex_limit: usize::MAX,
+            vertices_trimmed: false,
             command_pool,
             command_buffers,
             sync,
@@ -394,7 +436,8 @@ impl Renderer {
         if self.command_buffers.is_empty() {
             return unsafe { self.recreate_swapchain() };
         }
-        let ranges = unsafe { self.write_vertices(batches) }?;
+        // SAFETY: this slot's fence was waited on above.
+        let ranges = unsafe { self.write_vertices(batches) };
         // Before acquiring, so a failure here doesn't strand an acquired
         // image. A swapchain rebuilt below makes it the wrong size, but then
         // this frame isn't drawn and the next one prepares a fresh buffer.
@@ -480,38 +523,73 @@ impl Renderer {
 
     /// Packs every batch's vertices back to back into this frame slot's vertex
     /// buffer, returning where each batch landed.
+    ///
     /// Grows the buffer (to the next power of two) when the frame needs more
-    /// room; the caller has already waited on this slot's fence, so the GPU is
-    /// done with the old one.
-    unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Result<Vec<DrawRange>> {
-        let (ranges, used) = pack_batches(batches)?;
-        if used == 0 {
-            return Ok(ranges);
+    /// room. The caller has already waited on this slot's fence, so the GPU is
+    /// done with the old buffer, which is freed first to make room. A size
+    /// that can't be allocated is halved until one can (`vertex_limit`
+    /// remembers it). Never fails: what doesn't fit is left out
+    /// (`fit_ranges`), and logged.
+    ///
+    /// # Safety
+    /// The caller has waited on this frame slot's fence.
+    unsafe fn write_vertices(&mut self, batches: &[DrawBatch]) -> Vec<DrawRange> {
+        // More than u32 vertices: draw none rather than index past them.
+        let (mut ranges, used) = pack_batches(batches).unwrap_or_else(|error| {
+            log::warn!("not drawing this frame's vertices: {error}");
+            (Vec::new(), 0)
+        });
+        let slot = self.current_frame;
+        let capacity = self.vertex_buffers[slot].as_ref().map_or(0, |b| b.capacity);
+        if let Some(mut target) = grow_target(used, capacity, self.vertex_limit) {
+            if let Some(old) = self.vertex_buffers[slot].take() {
+                // SAFETY: the caller waited on this slot's fence, so no
+                // pending GPU work reads its buffer.
+                unsafe { old.destroy(&self.device) };
+            }
+            while target >= VERTEX_BUFFER_CAPACITY {
+                let mib = (target * size_of::<Vertex>()) as f64 / (1024.0 * 1024.0);
+                log::info!("growing vertex buffer to {target} vertices ({mib:.0} MiB)");
+                // SAFETY: the instance, device and physical device are this
+                // renderer's, alive until it drops.
+                let created = unsafe {
+                    create_vertex_buffer(&self.instance, &self.device, self.physical_device, target)
+                };
+                match created {
+                    Ok(buffer) => {
+                        self.vertex_buffers[slot] = Some(buffer);
+                        break;
+                    }
+                    Err(error) => {
+                        log::warn!("a vertex buffer of {target} vertices failed: {error:#}");
+                        target /= 2;
+                        self.vertex_limit = target;
+                    }
+                }
+            }
         }
-
-        let capacity = self.vertex_buffers[self.current_frame].capacity;
-        if used > capacity {
-            let capacity = used.next_power_of_two();
-            log::info!("growing vertex buffer to {capacity} vertices");
+        let capacity = self.vertex_buffers[slot].as_ref().map_or(0, |b| b.capacity);
+        let fitted = fit_ranges(&mut ranges, capacity);
+        let trimmed = fitted < used;
+        if trimmed && !self.vertices_trimmed {
+            log::warn!("vertex buffer full: drawing {fitted} of {used} vertices");
+        }
+        self.vertices_trimmed = trimmed;
+        if let Some(buffer) = &self.vertex_buffers[slot] {
+            // SAFETY: `fit_ranges` keeps every range within the buffer's
+            // capacity and its batch's own length, the buffer stays mapped
+            // until destroyed, and the GPU is done with this slot's buffer
+            // (the caller waited on its fence).
             unsafe {
-                let next = create_vertex_buffer(
-                    &self.instance,
-                    &self.device,
-                    self.physical_device,
-                    capacity,
-                )?;
-                let old = std::mem::replace(&mut self.vertex_buffers[self.current_frame], next);
-                old.destroy(&self.device);
+                for (batch, range) in batches.iter().zip(&ranges) {
+                    buffer
+                        .mapped
+                        .add(range.first as usize)
+                        .copy_from_nonoverlapping(batch.vertices.as_ptr(), range.count as usize);
+                }
             }
         }
-        let dst = self.vertex_buffers[self.current_frame].mapped;
-        unsafe {
-            for (batch, range) in batches.iter().zip(&ranges) {
-                dst.add(range.first as usize)
-                    .copy_from_nonoverlapping(batch.vertices.as_ptr(), range.count as usize);
-            }
-        }
-        Ok(ranges)
+        ranges
     }
 
     unsafe fn record_command_buffer(
@@ -566,12 +644,10 @@ impl Renderer {
                 &[self.texture.set],
                 &[],
             );
-            device.cmd_bind_vertex_buffers(
-                command_buffer,
-                0,
-                &[self.vertex_buffers[self.current_frame].buffer],
-                &[0],
-            );
+            // Without a buffer, `fit_ranges` left every range empty.
+            if let Some(buffer) = &self.vertex_buffers[self.current_frame] {
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &[buffer.buffer], &[0]);
+            }
             device.cmd_set_viewport(command_buffer, 0, &[viewport]);
             device.cmd_set_scissor(command_buffer, 0, &[full_area]);
             for range in ranges.iter().filter(|r| r.count > 0) {
@@ -752,7 +828,7 @@ impl Drop for Renderer {
             if let Some(readback) = self.readback.take() {
                 readback.destroy(&self.device);
             }
-            for buffer in self.vertex_buffers.drain(..) {
+            for buffer in self.vertex_buffers.drain(..).flatten() {
                 buffer.destroy(&self.device);
             }
             self.device.destroy_command_pool(self.command_pool, None);
@@ -922,6 +998,52 @@ mod tests {
         let (ranges, used) = pack_batches(&[]).unwrap();
         assert!(ranges.is_empty());
         assert_eq!(used, 0);
+    }
+
+    #[test]
+    fn growth_doubles_within_the_limit_and_never_shrinks() {
+        const BASE: usize = VERTEX_BUFFER_CAPACITY;
+        // Fits: no growth.
+        assert_eq!(grow_target(BASE, BASE, usize::MAX), None);
+        assert_eq!(grow_target(BASE + 1, BASE, usize::MAX), Some(2 * BASE));
+        assert_eq!(grow_target(5 * BASE, BASE, usize::MAX), Some(8 * BASE));
+        // A slot left without a buffer starts again from the base size.
+        assert_eq!(grow_target(10, 0, usize::MAX), Some(BASE));
+        // After 8 * BASE failed, 4 * BASE is the most worth trying...
+        assert_eq!(grow_target(5 * BASE, BASE, 4 * BASE), Some(4 * BASE));
+        // ...and a buffer already that big stays, drawing what fits.
+        assert_eq!(grow_target(5 * BASE, 4 * BASE, 4 * BASE), None);
+    }
+
+    #[test]
+    fn a_full_buffer_keeps_later_batches_and_whole_triangles() {
+        let range = |count| DrawRange {
+            view_proj: Mat4::IDENTITY,
+            first: 0,
+            count,
+        };
+        let packed = |ranges: &[DrawRange]| {
+            ranges
+                .iter()
+                .map(|r| (r.first, r.count))
+                .collect::<Vec<_>>()
+        };
+        // World then UI: the UI stays whole, the world loses its end.
+        let mut ranges = [range(90), range(12)];
+        assert_eq!(fit_ranges(&mut ranges, 50), 48);
+        assert_eq!(packed(&ranges), [(0, 36), (36, 12)]);
+        // Room for everything: unchanged.
+        let mut ranges = [range(9), range(0), range(6)];
+        assert_eq!(fit_ranges(&mut ranges, 100), 15);
+        assert_eq!(packed(&ranges), [(0, 9), (9, 0), (9, 6)]);
+        // No buffer at all: nothing drawn.
+        let mut ranges = [range(9), range(6)];
+        assert_eq!(fit_ranges(&mut ranges, 0), 0);
+        assert_eq!(packed(&ranges), [(0, 0), (0, 0)]);
+        // Less room than the last batch: part of it, in whole triangles.
+        let mut ranges = [range(9), range(30)];
+        assert_eq!(fit_ranges(&mut ranges, 20), 18);
+        assert_eq!(packed(&ranges), [(0, 0), (0, 18)]);
     }
 
     #[test]
