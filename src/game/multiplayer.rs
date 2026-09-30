@@ -1758,7 +1758,7 @@ impl GameState {
         structures.sort_by_key(|(hex, ..)| (hex.q, hex.r));
         structures.hash(&mut h);
         for den in &self.dens {
-            den.pos.hash(&mut h);
+            (den.pos, den.cap, den.next_in).hash(&mut h);
         }
         for memory in &self.side_memory {
             memory.len().hash(&mut h);

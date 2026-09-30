@@ -165,8 +165,8 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
 | Patrol Galley | 115 | 23 | 17 | 3 | 1 | 3 | Lookout | sailboat |
 | Landing Craft | 125 | 8 | 15 | 2 | - | 2 | Lookout | cargo boat |
 | Bombard Ship | 105 | 30 | 12 | 2 | 3 | 2 | Lookout | gunship |
-| Wolf Pack | 70 | 20 | 10 | 2 | 1 | 2 | - | wolf's head |
-| Bear | 130 | 26 | 18 | 1 | 1 | 2 | - | bear's head |
+| Wolf Pack | 80 | 24 | 12 | 2 | 1 | 2 | - | wolf's head |
+| Bear | 130 | 28 | 20 | 1 | 1 | 2 | - | bear's head |
 
 `Unit::stats()` applies abilities and siege deployment on top of these; everything that asks
 what a unit can do goes through it. Settlers (a planted flag) are civilians with the Melee body,
@@ -562,36 +562,48 @@ every turn end.
 
 ## Animals (`animals.rs`)
 
-Aggressive neutral units that guard dens, so the early map is dangerous and an army pays. They
-belong to the wild, which is no side: no cities, stockpile, fog or plan, never a player's seat,
-hostile to every side, and no side's AI plays it (World maps only).
+Aggressive neutral units that roam around dens and hunt whoever comes near, so the early map is
+dangerous and an army pays. They belong to the wild, which is no side: no cities, stockpile, fog
+or plan, never a player's seat, hostile to every side, and no side's AI plays it (World maps
+only).
 
-- **Kinds:** a Wolf Pack (fast, frail, fierce: it runs down scouts and workers) and a Bear
-  (slow and tough: it beats a lone melee troop). See Units for their stats. Each den keeps one:
-  a wolf den or a bear den, marked with a dark brown rim and a paw print in the hex's
-  bottom-left corner. Out of sight, dens show as last seen, and the tile tooltip names the den.
-- **Territory:** an animal never leaves the hexes within 3 of its den. As its move step begins
-  (wolves after cavalry, bears after melee; see Turn resolution), it goes for the nearest unit
-  or worker out on the map within its territory, as close as its move and its territory allow;
-  with nobody there, it heads home. As its attack step begins, it attacks whoever is in its
-  reach, in its territory or not: the nearest unit, then the weakest, then the lowest hex (q,
-  then r); with no unit, a worker. It decides on the real board as its step begins, the same on
-  every machine; ties go to staying put, then the lowest hex.
+- **Kinds:** a Wolf Pack (fast and fierce: it runs down scouts and workers, and two of them
+  bloody a lone troop) and a Bear (slow and tough: it beats a lone melee troop). See Units for
+  their stats. On open ground a wolf pack's bite takes about 35 HP from a melee troop and 52
+  from a scout, and a bear's about 41 from a melee troop. Each den keeps one kind: a wolf den
+  or a bear den, marked with a dark brown rim and a paw print in the hex's bottom-left corner.
+  Out of sight, dens show as last seen, and the tile tooltip names the den.
+- **Territory:** an animal never leaves the hexes around its den: within 4 for a wolf pack,
+  within 3 for a bear.
+- **Hunting:** as its move step begins (wolves after cavalry, bears after melee; see Turn
+  resolution), an animal goes for the nearest unit or worker out on the map within its hunting
+  range of it (4 hexes for a wolf pack, 3 for a bear) that it could strike from its territory
+  (within its territory plus one of its den), as close as its move and its territory allow;
+  ties go to staying put, then the lowest hex (q, then r).
+- **Roaming:** with nobody to hunt, it roams: it moves every turn it can, to a hex it can reach
+  in its territory picked by a hash of the turn, the animal and the hex. That looks random but
+  is the same on every machine, and draws nothing from the game's random numbers.
+- **Attacking:** as its attack step begins, it attacks whoever is in its reach, in its territory
+  or not: the nearest unit, then the weakest, then the lowest hex (q, then r); with no unit, a
+  worker. It decides on the real board as its step begins, the same on every machine.
 - **Never cities:** an animal never enters or attacks a city center or anyone standing on one,
   never goes into a city's interior, and never captures anything: it doesn't step onto a worker
   (it attacks it), a worker that shares its hex is killed, and it never holds ruins (a side's
   count pauses while one stands on them). No city can be founded on a den.
+- **Dens breed:** a den starts with one animal and keeps up to two (three with many animals;
+  see How many). While it has fewer, it adds another every 8 turns, on the den itself, or as
+  soon after as nothing stands on the den; a den whose animals die fills up again the same way.
+  The tile tooltip says how many it keeps, how far they roam and hunt, what clearing it gives,
+  and when the next comes.
 - **Hunting pays:** the side that kills an animal gets +3 food (a wolf pack) or +5 food (a
   bear) for its stockpile at once; if several sides' blows land in the step that kills it, the
   one that dealt the most damage that step gets it (the earliest in `Team::ALL` on a tie).
 - **Clearing a den:** a side that ends a turn with a unit (anything but a settler; scouts count)
   on a den clears it, for +6 food and 2 metal, before the turn's economy. The den is gone for
-  good; its animal, if alive, still keeps to its old territory.
-- **Coming back:** until then, a den whose animal died has another there 8 turns later, or as
-  soon after as nothing stands on the den. The tile tooltip says what clearing it gives and,
-  with its animal dead, when the next comes.
+  good and adds no more animals; those alive still roam and hunt around where it was.
 - **How many:** the Animals setting (Next World; see `controls.md`) gives the next world none,
-  one den a side (the default) or two.
+  one den a side keeping up to two animals each (the default), or two dens a side keeping up to
+  three each.
 - Animals are seen like any enemy unit (and not remembered, as they move), attacked like one,
   and fired on by units on alert. A player can't select or order them, and a network plan that
   names one is refused.
@@ -1079,8 +1091,9 @@ The AI builds Scouts and expands with Settlers:
 The AI and animals (see Animals): an animal in sight is an enemy like any other, fought, fired
 on and kept away from; a den its side has seen (in sight or as last seen) is a target like ruins,
 which a unit (a scout too, while it's safe) goes to stand on to clear it. Its side keeps clear of
-the territory of every den it knows of (the hexes within 3 of it): its settlers step around it
-where they can, it picks no city site in it, and its workers take no job in it.
+the territory of every den it knows of (the hexes within 4 of it, as far as any animal roams):
+its settlers step around it where they can, it picks no city site in it, and its workers take no
+job in it.
 
 ## Open questions
 

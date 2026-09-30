@@ -14,8 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 mod economy;
+mod wildlife;
 
-use super::animals::{DEN_RETURN_TURNS, TERRITORY_RADIUS};
+use super::animals::{DEN_BREED_TURNS, den_cap, territory};
 use super::city::{
     Build, BuildUnit, Building, CORE_HP, Lane, MAX_CITY_POPULATION, MAX_MANAGERS,
     MIN_CITY_DISTANCE, Queued, WORKERS_PER_MANAGER,
@@ -24,7 +25,7 @@ use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
-use super::settings::Settings;
+use super::settings::{ANIMALS_MANY, Settings};
 use super::terrain::{Resource, Terrain};
 use super::unit::Team;
 use super::{GameState, PLAYER_TEAM};
@@ -394,7 +395,7 @@ fn check_invariants(game: &GameState, context: &str) {
         );
         if let Some(home) = unit.home {
             assert!(
-                unit.pos.distance(home) <= TERRITORY_RADIUS,
+                unit.pos.distance(home) <= territory(unit.unit_type),
                 "{context}: {unit} is {} hexes from its den",
                 unit.pos.distance(home)
             );
@@ -403,6 +404,20 @@ fn check_invariants(game: &GameState, context: &str) {
                 "{context}: {unit} stands in a city"
             );
         }
+    }
+    // No den keeps more animals than its cap, cleared or not.
+    let mut homes: HashMap<Hex, usize> = HashMap::default();
+    for home in game.units.iter().filter_map(|u| u.home) {
+        *homes.entry(home).or_default() += 1;
+    }
+    for (&home, &count) in &homes {
+        let cap = game
+            .den_at(home)
+            .map_or(den_cap(ANIMALS_MANY), |den| den.cap);
+        assert!(
+            count <= cap && cap <= den_cap(ANIMALS_MANY),
+            "{context}: {count} animals of the den at {home:?}, over its cap of {cap}"
+        );
     }
     for den in &game.dens {
         assert!(
@@ -414,16 +429,18 @@ fn check_invariants(game: &GameState, context: &str) {
             game.cities.iter().all(|c| c.pos != den.pos),
             "{context}: a city on a den"
         );
-        // A den counts down to its next animal only while it has none.
-        let alive = game.units.iter().any(|u| u.home == Some(den.pos));
+        // A den counts down to its next animal only while it has fewer than its cap.
+        let alive = homes.get(&den.pos).copied().unwrap_or(0);
         assert_eq!(
-            alive,
-            den.returns_in.is_none(),
-            "{context}: the {} at {:?} counts down with its animal alive, or the reverse",
+            alive < den.cap,
+            den.next_in.is_some(),
+            "{context}: the {} at {:?} has {alive} of {} animals and counts down {:?}",
             den.name(),
-            den.pos
+            den.pos,
+            den.cap,
+            den.next_in
         );
-        assert!(den.returns_in.is_none_or(|t| t <= DEN_RETURN_TURNS));
+        assert!(den.next_in.is_none_or(|t| t <= DEN_BREED_TURNS));
     }
     for worker in &game.field_workers {
         assert!(
@@ -789,8 +806,12 @@ fn interior_hp_uses_the_source_unit_upgrade() {
 
 #[test]
 fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
-    // Animals killed and dens cleared, over every world.
-    let (killed, cleared) = (AtomicUsize::new(0), AtomicUsize::new(0));
+    // Animals killed, born to dens and dens cleared, over every world.
+    let (killed, born, cleared) = (
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    );
     // Games where a side used all its supply.
     let supply_full = AtomicUsize::new(0);
     for_every_game(&Scenario::ALL, &seeds(), |scenario, seed| {
@@ -800,12 +821,18 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
         let starting = game.cities.len();
         let ruins_at_start = game.ruins.len();
         let dens_at_start = game.dens.len();
-        let animals: Vec<u32> = game
-            .units
-            .iter()
-            .filter(|u| u.is_animal())
-            .map(|u| u.id)
-            .collect();
+        let animal_ids = |game: &GameState| -> Vec<u32> {
+            game.units
+                .iter()
+                .filter(|u| u.is_animal())
+                .map(|u| u.id)
+                .collect()
+        };
+        let first_animals = animal_ids(&game);
+        // Every animal the world has had, and whether one ever roamed
+        // two or more hexes from its den.
+        let mut animals: HashSet<u32> = first_animals.iter().copied().collect();
+        let mut roamed = false;
         let mut economy = EconomyWatch::new(&game);
         for turn in 1..=TURNS {
             let ruins_before = game.ruins.len();
@@ -823,6 +850,11 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             check_invariants(&game, &context);
             check_founding(&game, starting, &context);
             economy.watch(&game, &context);
+            animals.extend(animal_ids(&game));
+            roamed |= game
+                .units
+                .iter()
+                .any(|u| u.home.is_some_and(|home| home.distance(u.pos) >= 2));
         }
         // Anti-vacuity: the AI goes for the world's ruins, and claims some.
         if scenario == Scenario::World {
@@ -831,19 +863,22 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
                 "{name}: no ruins claimed in {TURNS} turns ({ruins_at_start} on the map)"
             );
         }
-        // Anti-vacuity: the world's animals fight: one of them was hurt, or died.
+        // Anti-vacuity: the world's animals fight (one of them was hurt, or
+        // died) and roam.
         if scenario == Scenario::World {
-            let fought = animals.iter().any(|&id| {
+            let fought = first_animals.iter().any(|&id| {
                 game.units
                     .iter()
                     .find(|u| u.id == id)
                     .is_none_or(|u| u.hp < u.max_hp())
             });
             assert!(fought, "{name}: no animal fought in {TURNS} turns");
+            assert!(roamed, "{name}: no animal roamed from its den");
             let dead = animals
                 .iter()
                 .filter(|&&id| game.units.iter().all(|u| u.id != id));
             killed.fetch_add(dead.count(), Ordering::Relaxed);
+            born.fetch_add(animals.len() - first_animals.len(), Ordering::Relaxed);
             cleared.fetch_add(dens_at_start - game.dens.len(), Ordering::Relaxed);
         }
         // Anti-vacuity: with cities, the AI buys both troops and growth from its stockpile.
@@ -863,9 +898,10 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
     let supply_full = supply_full.into_inner();
     eprintln!("games where a side used all its supply: {supply_full}");
     assert!(supply_full > 0, "no side ever used all its supply");
-    // Anti-vacuity: the AI hunts, killing animals and clearing dens.
-    let (killed, cleared) = (killed.into_inner(), cleared.into_inner());
-    eprintln!("worlds: {killed} animals killed, {cleared} dens cleared");
+    // Anti-vacuity: dens add animals, and the AI hunts, killing them and clearing dens.
+    let (killed, born, cleared) = (killed.into_inner(), born.into_inner(), cleared.into_inner());
+    eprintln!("worlds: {born} animals born, {killed} killed, {cleared} dens cleared");
+    assert!(born > 0, "no den added an animal in any world");
     assert!(killed > 0, "no side killed an animal in any world");
     assert!(cleared > 0, "no side cleared a den in any world");
 }
@@ -873,12 +909,14 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
 #[test]
 fn a_crowded_world_of_settlers_keeps_the_board_consistent() {
     // The most sides there are, each starting with a settler to found its
-    // city: the other way a world can start (`Settings::world_start_city`).
+    // city: the other way a world can start (`Settings::world_start_city`),
+    // and with many animals: two dens a side, three animals each.
     for_every_game(&[Scenario::World], &seeds(), |scenario, seed| {
         let mut game = GameState::new();
         game.settings.instant_playback = true;
         game.settings.world_ai = Team::ALL.len() - 1;
         game.settings.world_start_city = false;
+        game.settings.world_animals = ANIMALS_MANY;
         game.seed_rng(seed);
         game.switch_scenario(scenario);
         let name = format!("crowded settler world seed {seed}");
