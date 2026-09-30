@@ -34,7 +34,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -3546,6 +3546,8 @@ mod tests {
         // look inside their cities too, which must change nothing.
         for _ in 0..4 {
             let (mut host, mut guests) = table(2);
+            // The seed is random: shown if the game goes wrong, to replay it.
+            eprintln!("map seed {:?}", host.map_seed);
             for _ in 0..40 {
                 for game in std::iter::once(&mut host).chain(guests.iter_mut()) {
                     let team = game.local_team;

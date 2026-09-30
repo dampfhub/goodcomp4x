@@ -133,6 +133,6 @@ fn perf_report() {
     frame_report(&mut game, "turn 40, home, turn transition playing");
     game.age_transition(1.0);
     frame_report(&mut game, "turn 40, home");
-    game.camera.half_height = 30.0;
+    game.camera.half_height = super::camera::MAX_HALF_HEIGHT;
     frame_report(&mut game, "turn 40, zoomed all the way out");
 }

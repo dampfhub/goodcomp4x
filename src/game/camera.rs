@@ -1,7 +1,9 @@
 use glam::{Mat4, Vec2};
 
 const MIN_HALF_HEIGHT: f32 = 2.0;
-const MAX_HALF_HEIGHT: f32 = 30.0;
+/// How far the view zooms out: about 60% of the height of a world for seven
+/// sides (`mapgen::world_shape`), the biggest.
+pub(super) const MAX_HALF_HEIGHT: f32 = 36.0;
 /// How quickly the camera glides to a focus point; higher is snappier.
 const GLIDE_RATE: f32 = 10.0;
 

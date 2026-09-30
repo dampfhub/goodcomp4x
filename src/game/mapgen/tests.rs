@@ -1,4 +1,4 @@
-use super::preview::{cluster_shape, crowded_mountains, default_sides};
+use super::preview::{city_sites, cluster_shape, crowded_mountains, default_sides};
 use super::*;
 
 fn fingerprint(map: &GeneratedMap) -> Vec<(Hex, Tile)> {
@@ -174,6 +174,26 @@ fn the_world_grows_with_the_players() {
     assert!((per_side(6) / per_side(4) - 1.0).abs() < 0.1);
     // Six sides get well over the base world.
     assert!(area(6) as f32 > 2.2 * (30 * 18) as f32);
+}
+
+/// Each side's share of the land has room for its cities: on average about
+/// `CITY_SITES_PER_SIDE` decent sites 8 hexes apart, and never much fewer.
+#[test]
+fn every_side_has_room_for_several_cities() {
+    let seeds = 0..8;
+    let mut per_side = Vec::new();
+    for seed in seeds.clone() {
+        let map = generate(seed, default_sides(seed));
+        let reach = walking_distances(&map.grid, map.starts[0]);
+        let sites = city_sites(&map, &reach, 8) as f32 / map.starts.len() as f32;
+        assert!(sites >= 5.0, "seed {seed}: {sites} city sites a side");
+        per_side.push(sites);
+    }
+    let mean = per_side.iter().sum::<f32>() / per_side.len() as f32;
+    assert!(
+        (mean - CITY_SITES_PER_SIDE).abs() < 1.0,
+        "{mean} city sites a side on average"
+    );
 }
 
 #[test]
@@ -491,7 +511,7 @@ fn check_mountains(seed: u32, map: &GeneratedMap, totals: &mut Totals) {
         .count();
     let share = mountains as f32 / land as f32;
     assert!(
-        (0.03..0.07).contains(&share),
+        (0.025..0.06).contains(&share),
         "seed {seed}: mountains are {share} of the land"
     );
     for cluster in components(&all, |h| grid.terrain(h) == Terrain::Mountains) {
@@ -618,7 +638,7 @@ fn golden_maps_stay_the_same() {
     let hashes = [golden_hash(&generate(7, 5)), golden_hash(&generate(42, 7))];
     assert_eq!(
         hashes,
-        [16546110019411421274, 3624537242313206384],
+        [1683703251667493817, 9046025897880983391],
         "the maps changed: if on purpose, update the hashes and bump PROTOCOL_VERSION"
     );
 }

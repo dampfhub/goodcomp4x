@@ -217,7 +217,7 @@ impl GameState {
     /// Whether `from` can see `to`: no mountain stands on the line between
     /// them. A mountain itself can be seen, just not past. Where the line
     /// runs along the edge between two hexes, either side being clear will do.
-    fn in_line_of_sight(&self, from: Hex, to: Hex) -> bool {
+    pub(super) fn in_line_of_sight(&self, from: Hex, to: Hex) -> bool {
         [SIGHT_NUDGE, -SIGHT_NUDGE].into_iter().any(|nudge| {
             from.line_between(to, nudge)
                 .all(|h| self.grid.terrain(h) != Terrain::Mountains)
