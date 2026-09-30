@@ -31,6 +31,10 @@ pub(super) struct ButtonSpec {
     /// its tooltip says this.
     pub(super) unavailable: Option<String>,
     pub(super) armed: bool,
+    /// A build the stockpile can't pay for this turn (`build_shortfall`):
+    /// still pressable, since it waits in the queue until paid, but drawn
+    /// short, with a red rim and price, unlike a disabled button's dimming.
+    pub(super) short: bool,
 }
 
 impl ButtonSpec {
@@ -43,6 +47,7 @@ impl ButtonSpec {
             queued: false,
             unavailable: None,
             armed: false,
+            short: false,
         }
     }
 
@@ -69,9 +74,21 @@ impl ButtonSpec {
         self
     }
 
+    /// Whether the stockpile is short of its price this turn (`short`).
+    pub(super) fn short(mut self, short: bool) -> Self {
+        self.short = short;
+        self
+    }
+
     /// How it's drawn: disabled when unavailable, else gold when queued.
     pub(super) fn state(&self) -> ButtonState {
         ButtonState::new(self.queued, self.unavailable.is_some())
+    }
+
+    /// Whether it's drawn short (`short`): never while it's disabled, which
+    /// says why on its own.
+    pub(super) fn drawn_short(&self) -> bool {
+        self.short && self.unavailable.is_none()
     }
 
     /// The button placed from `min` to `max`, see-through if `faded`.
@@ -83,6 +100,7 @@ impl ButtonSpec {
             queued: self.queued,
             unavailable: self.unavailable,
             armed: self.armed,
+            short: self.short,
             faded,
             min,
             max,

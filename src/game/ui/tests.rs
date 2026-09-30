@@ -1382,6 +1382,7 @@ fn find_button(game: &GameState, target: Target) -> Button {
         queued: button.queued,
         unavailable: button.unavailable.clone(),
         armed: button.armed,
+        short: button.short,
         faded: button.faded,
         min: button.min,
         max: button.max,
@@ -1460,6 +1461,63 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
         "{}",
         row.0
     );
+}
+
+/// #340: a build card the stockpile can't pay for this turn is drawn short
+/// (a red rim and price) in both presentations, still pressable, and unlike
+/// a disabled card; one it can pay for isn't.
+#[test]
+fn build_cards_the_stockpile_cannot_pay_for_are_drawn_short_in_both_presentations() {
+    let mut game = GameState::city_scenario();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.fund(Team::Blue);
+    game.open_city(0);
+    let city_cards = [Target::Build(BuildUnit::Melee), Target::Grow];
+    let short_rims = |game: &GameState| {
+        game.build_ui(SCREEN, None)
+            .iter()
+            .filter(|v| v.color == SHORT_BORDER_COLOR)
+            .count()
+    };
+    let imgui_short = |game: &mut GameState| {
+        let mut screen = ImGuiScreen::new();
+        imgui::SHORT_BUTTONS.with_borrow_mut(Vec::clear);
+        screen.settle(game);
+        imgui::SHORT_BUTTONS.with_borrow(|drawn| drawn.clone())
+    };
+    for target in city_cards {
+        let card = find_button(&game, target);
+        assert!(!card.short && !card.drawn_short(), "{target:?} affordable");
+    }
+    assert_eq!(short_rims(&game), 0, "nothing short while funded");
+    assert!(imgui_short(&mut game).is_empty());
+
+    // Broke: the same cards are short, and still ready to press.
+    game.stockpiles[Team::Blue.index()] = Stock::default();
+    for target in city_cards {
+        let card = find_button(&game, target);
+        assert!(card.drawn_short(), "{target:?} short");
+        assert_eq!(card.state(), ButtonState::Ready, "{target:?}");
+    }
+    assert!(short_rims(&game) > 0, "classic draws the red rim");
+    let drawn = imgui_short(&mut game);
+    for target in city_cards {
+        assert!(drawn.contains(&target), "ImGui draws {target:?} short");
+    }
+
+    // A card that's off for another reason (a locked troop) is disabled,
+    // not short: dimmed, saying why.
+    game.open_barracks(0);
+    let melee = find_button(&game, Target::BarracksBuild(BuildUnit::Melee));
+    assert!(melee.drawn_short(), "a Barracks card is short too");
+    let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
+    assert_eq!(armored.state(), ButtonState::Disabled);
+    assert!(!armored.drawn_short(), "disabled wins over short");
+    let drawn = imgui_short(&mut game);
+    assert!(drawn.contains(&Target::BarracksBuild(BuildUnit::Melee)));
+    assert!(!drawn.contains(&Target::BarracksBuild(BuildUnit::Armored)));
 }
 
 #[test]
@@ -2732,6 +2790,7 @@ impl ImGuiScreen {
         io.add_mouse_button_event(::imgui::MouseButton::Left, down);
         imgui::DRAWN_BUTTONS.with_borrow_mut(Vec::clear);
         imgui::DRAWN_MARKS.with_borrow_mut(Vec::clear);
+        imgui::SHORT_BUTTONS.with_borrow_mut(Vec::clear);
         let ui = self.context.frame();
         game.draw_imgui(ui, self.size, mouse, &self.fonts, &mut self.layout);
         self.context.render();

@@ -11,7 +11,7 @@ use super::{
 use crate::game::GameState;
 use crate::game::city::{
     Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, GATHER_SHORTCUT, GATHER_YIELD,
-    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, SUPPLY_FULL_HINT, UNITS_PER_DEPOSIT,
+    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, SUPPLY_FULL_HINT, Stock, UNITS_PER_DEPOSIT,
     WORKERS_PER_MANAGER, manager_label, resource_icon, stock_icons, turns_icon,
 };
 use crate::game::orders::ClickMode;
@@ -544,11 +544,15 @@ impl GameState {
         // A build card's hint is its price and turns; its key is in its
         // tooltip, to keep the cards narrow. Anything can be queued: what
         // the side can't pay for yet waits in the queue, which its tooltip
-        // says.
+        // says, and its card is drawn short (`build_shortfall`).
+        let spare = self.card_spare(i);
         let card = |target, label: String, build: Build, head: bool| {
             let price = self.queue_price(i, build);
             let hint = cost_hint(price, self.city_build_turns(i, build));
-            ButtonSpec::new(target, label, hint).queued(head)
+            let short = self.build_shortfall(spare, i, build) != Stock::default();
+            ButtonSpec::new(target, label, hint)
+                .queued(head)
+                .short(short)
         };
         let queued_grows = city.queue.iter().filter(|q| q.build == Build::Grow).count();
         let first = city.queue.first().map(|q| q.build);
@@ -930,6 +934,7 @@ impl GameState {
             BuildUnit::Siege,
             BuildUnit::Armored,
         ];
+        let spare = self.card_spare(i);
         panel.gap(GAP);
         panel.buttons(
             builds
@@ -948,8 +953,11 @@ impl GameState {
                         cost_hint(build.price(), build.turns())
                     };
                     let head = city.barracks_queue.first().map(|q| q.build) == Some(build);
+                    let short =
+                        self.build_shortfall(spare, i, Build::Unit(build)) != Stock::default();
                     ButtonSpec::new(Target::BarracksBuild(build), build.name(), hint)
                         .queued(head)
+                        .short(short)
                         .unavailable(lock)
                 })
                 .collect(),

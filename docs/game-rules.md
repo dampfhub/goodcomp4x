@@ -738,8 +738,10 @@ hostile to every side, and no side's AI plays it (World maps only).
   badge over its tower on the map with the icon of each resource it lacks, whenever the first
   item of its queue or its Barracks' waits. What waits is judged on the stockpile as this turn's
   economy will find it: what's there now, plus the turn's income, less the citizens' food, and
-  less what the queues ahead start. A card's tooltip (or the notice, for a key) says what the
-  side is short of this turn, but the card is never dimmed for it. Taking an item out of a queue
+  less what the queues ahead start. A build or train card, and Grow, that the side can't pay for
+  this turn is drawn short: a red rim and a red price, in both presentations; its tooltip (or the
+  notice, for a key) says what the side is short of, but the card is never dimmed for it, and
+  pressing it still queues the item. Taking an item out of a queue
   (its X, Backspace, or Clear) refunds its full price if it was paid for (a paid Grow refunds the
   dearest paid Grow's) and nothing if it wasn't; its work is lost either way. A captured city's
   queues and a destroyed Barracks' queue are lost, paid items unrefunded. Each build takes a
