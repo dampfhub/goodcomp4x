@@ -23,6 +23,9 @@ use glam::Vec2;
 pub(super) struct ButtonSpec {
     pub(super) target: Target,
     pub(super) label: String,
+    /// What the label changes to while the cursor is on it: the hover text
+    /// of the label's entry, if a text file gives it one (`hover_text`).
+    pub(super) hover_label: Option<String>,
     pub(super) hint: String,
     /// Already queued or chosen: drawn gold.
     pub(super) queued: bool,
@@ -42,6 +45,7 @@ impl ButtonSpec {
         Self {
             target,
             label: label.into(),
+            hover_label: None,
             hint: hint.into(),
             queued: false,
             unavailable: None,
@@ -53,6 +57,14 @@ impl ButtonSpec {
     /// A unit order's button (`Target::Unit`).
     pub(super) fn unit(action: UnitAction, label: impl Into<String>, hint: &str) -> Self {
         Self::new(Target::Unit(action), label, hint)
+    }
+
+    /// What its label changes to while hovered, if anything: the hover
+    /// text of the label's entry (`hover_text!`), which the shipped text
+    /// files never set. Both presentations draw it.
+    pub(super) fn hover_text(mut self, hover: Option<impl Into<String>>) -> Self {
+        self.hover_label = hover.map(Into::into);
+        self
     }
 
     /// Whether it's queued or chosen (gold).
@@ -95,6 +107,7 @@ impl ButtonSpec {
         Button {
             target: self.target,
             label: self.label,
+            hover_label: self.hover_label,
             hint: self.hint,
             queued: self.queued,
             unavailable: self.unavailable,
@@ -109,7 +122,8 @@ impl ButtonSpec {
 
 /// Keep costs and work times on buttons, but show keyboard shortcuts only
 /// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
-/// is in its tooltip, so hovering never changes a button's text.
+/// is in its tooltip, so hovering doesn't change a button's text (only a
+/// hover text a text file gives does: `ButtonSpec::hover_text`).
 pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
     if reveal_shortcut {
         return hint;

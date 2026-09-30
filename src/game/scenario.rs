@@ -6,7 +6,9 @@
 
 use rand::RngExt;
 
+use super::keys::Command;
 use super::settings::Settings;
+use super::strings::{hover_text, text, tooltip};
 use super::{GameRng, GameState};
 
 /// The test scenarios F1-F4 switch between.
@@ -35,6 +37,8 @@ impl Scenario {
         Scenario::Naval,
     ];
 
+    /// Its name in code: in logs, and as the `--scenario` command-line flag
+    /// spells it (`from_name`). The game shows its `title`.
     pub fn name(self) -> &'static str {
         match self {
             Scenario::Combat => "COMBAT",
@@ -46,15 +50,51 @@ impl Scenario {
         }
     }
 
-    /// The function key that switches to it.
-    pub fn key(self) -> &'static str {
+    /// Its name as the game shows it (`text/ui.ini`).
+    pub fn title(self) -> &'static str {
         match self {
-            Scenario::Combat => "F1",
-            Scenario::Cities => "F2",
-            Scenario::Frontier => "F3",
-            Scenario::World => "F4",
-            Scenario::Siege => "F12",
-            Scenario::Naval => "DEBUG",
+            Scenario::Combat => text!("scenario_combat"),
+            Scenario::Cities => text!("scenario_cities"),
+            Scenario::Frontier => text!("scenario_frontier"),
+            Scenario::World => text!("scenario_world"),
+            Scenario::Siege => text!("scenario_siege"),
+            Scenario::Naval => text!("scenario_naval"),
+        }
+    }
+
+    /// What its button shows while hovered, if a text file says
+    /// (`hover_text!`).
+    pub fn title_on_hover(self) -> Option<&'static str> {
+        match self {
+            Scenario::Combat => hover_text!("scenario_combat"),
+            Scenario::Cities => hover_text!("scenario_cities"),
+            Scenario::Frontier => hover_text!("scenario_frontier"),
+            Scenario::World => hover_text!("scenario_world"),
+            Scenario::Siege => hover_text!("scenario_siege"),
+            Scenario::Naval => hover_text!("scenario_naval"),
+        }
+    }
+
+    /// What it starts, for its tooltip.
+    pub fn description(self) -> &'static str {
+        match self {
+            Scenario::Combat => tooltip!("scenario_combat"),
+            Scenario::Cities => tooltip!("scenario_cities"),
+            Scenario::Frontier => tooltip!("scenario_frontier"),
+            Scenario::World => tooltip!("scenario_world"),
+            Scenario::Siege => tooltip!("scenario_siege"),
+            Scenario::Naval => tooltip!("scenario_naval"),
+        }
+    }
+
+    /// The key that switches to it (the key map, `keys.rs`), or, for one no
+    /// key starts, that only the Debug panel does.
+    pub fn key(self) -> String {
+        let key = Command::Scenario(self).key();
+        if key.is_empty() {
+            text!("debug_no_key").into()
+        } else {
+            key
         }
     }
 
@@ -229,9 +269,13 @@ impl GameState {
 
     /// What's saved, like "TURN 3 OF CITIES", if anything is.
     pub(super) fn saved_summary(&self) -> Option<String> {
-        self.savestate
-            .as_ref()
-            .map(|saved| format!("TURN {} OF {}", saved.turn + 1, saved.scenario.name()))
+        self.savestate.as_ref().map(|saved| {
+            text!(
+                "debug_saved_game",
+                turn = saved.turn + 1,
+                scenario = saved.scenario.title(),
+            )
+        })
     }
 }
 

@@ -4,13 +4,15 @@ The words the game shows live in plain-text files under `text/`, one file per ar
 can be read and changed without touching Rust. The files are built into the executable
 (`include_str!`), so after editing one, rebuild (`cargo build`, or `cargo run`) to see it.
 
-This is being done in stages (#341). So far the settings menu and its Multiplayer page read
-their text from here (`text/menus.ini`); everything else is still written in the code, and
+This is being done in stages (#341). So far the settings menu and its Multiplayer page
+(`text/menus.ini`), and the status bar, top bar, Debug panel, view controls and window titles
+(`text/ui.ini`) read their text from here; everything else is still written in the code, and
 moves over area by area.
 
 | File | What it holds |
 |---|---|
 | `text/menus.ini` | The settings menu (its title, headings, each setting's name, tooltip and values, its buttons and their tooltips, and the notice when a setting changes) and its Multiplayer page (its rows, fields, buttons, tooltips and what it says when a field isn't filled in) |
+| `text/ui.ini` | The screen's frame: the status bar (ImGui) and top bar (classic) with the turn, supply, Menu and End Turn in all its forms and its tooltip; the Debug panel's buttons, scenarios and tooltips; ImGui's view controls; and the panels' window titles |
 
 ## An entry
 
@@ -32,8 +34,11 @@ text = {turns} TURNS
   one without renaming it in the code: the tests fail until the two match.
 - **`text`** (needed): what the game shows, such as a label or a heading.
 - **`tooltip`** (optional): what shows when the cursor rests on the thing.
-- **`hover_text`** (optional): what a label changes to while the cursor is on it. Nothing in
-  the game shows one yet; the first area that does adds it to both UI presentations.
+- **`hover_text`** (optional): what a button's label changes to while the cursor is on it, in
+  both UI presentations. The game's own files never set one (a test checks), so by default no
+  label changes on hover: it's there for you to add. It works on the entries of buttons'
+  labels (the tests fail on one the code shows no hover text for), and the button keeps its
+  size, so keep it about as long as the label.
 
 A field takes the rest of its line, spaces at the ends trimmed. A long value can go on over
 the next lines: indent them, and each joins the one before with a space. To keep spaces at a
@@ -86,6 +91,9 @@ neither a `[tag]`, a `key = value` nor a comment, an unknown key, a tag or key g
 entry with no `text`, a stray brace), if the code asks for a tag or field no file has, if a file
 has a tag or field no code uses, if a placeholder in a file doesn't match what the code fills
 in, or if a character isn't one the fonts have (`ui_text_uses_only_the_shared_glyphs`).
+It also fails if an entry has a `hover_text` (`the_shipped_files_never_change_a_label_on_hover`):
+the files the game ships never change a label on hover, so a hover text is for your own copy,
+not for a change to the game.
 The game itself never stops over text: a tag it can't find shows as the tag.
 
 ## For code
@@ -95,12 +103,14 @@ The game itself never stops over text: a tag it can't find shows as the tag.
 
 ```rust
 use crate::game::keys::Command;
-use crate::game::strings::{text, tooltip};
+use crate::game::strings::{hover_text, text, tooltip};
 
 let title: &'static str = text!("settings_title");
 let limit: String = text!("setting_queue_limit_many", turns = value);
 let about: &'static str = tooltip!("setting_fog");
 let playback: String = tooltip!("setting_turn_playback", key = Command::Playback.key());
+// None unless a file gives the entry a hover text (the shipped ones never do):
+let hover: Option<&'static str> = hover_text!("menu_button");
 ```
 
 The tag is always a string literal at the call, never built at runtime: the tests find every

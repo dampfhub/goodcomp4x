@@ -21,8 +21,7 @@ use super::builder::{ButtonSpec, PanelBuilder, Row};
 use super::text::wrap;
 use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, SMALL, TEXT, TITLE, Target};
 use crate::game::GameState;
-use crate::game::keys::Command;
-use crate::game::strings::text;
+use crate::game::strings::{hover_text, text};
 
 /// The characters a line of the status takes before it wraps.
 const STATUS_WRAP: usize = 44;
@@ -193,18 +192,10 @@ impl GameState {
         panel.gap(GAP);
         self.network_rows(&mut panel);
         panel.gap(GAP);
-        let button = |target, label: &str, hint: String| ButtonSpec::new(target, label, hint);
         panel.compact_buttons(vec![
-            button(
-                Target::CloseMultiplayer,
-                text!("net_back_button"),
-                String::new(),
-            ),
-            button(
-                Target::CloseSettings,
-                text!("settings_close_button"),
-                Command::Back.key(),
-            ),
+            ButtonSpec::new(Target::CloseMultiplayer, text!("net_back_button"), "")
+                .hover_text(hover_text!("net_back_button")),
+            self.close_settings_button(),
         ]);
         panel
     }
@@ -213,8 +204,10 @@ impl GameState {
     /// way.
     fn network_rows(&self, panel: &mut PanelBuilder) {
         let menu = &self.net_menu;
-        let button = |target, label: &str, unavailable: Option<String>| {
-            ButtonSpec::new(target, label, "").unavailable(unavailable)
+        let button = |target, label: &str, hover: Option<&str>, unavailable: Option<String>| {
+            ButtonSpec::new(target, label, "")
+                .hover_text(hover)
+                .unavailable(unavailable)
         };
         let busy = || menu.busy.then(|| text!("net_busy").to_string());
         let field = |panel: &mut PanelBuilder, field: NetField| {
@@ -261,6 +254,7 @@ impl GameState {
             panel.compact_buttons(vec![button(
                 Target::LeaveGame,
                 text!("net_leave_button"),
+                hover_text!("net_leave_button"),
                 None,
             )]);
             return;
@@ -276,11 +270,13 @@ impl GameState {
             button(
                 Target::NetPlayers(menu.players.saturating_sub(1)),
                 "<",
+                None,
                 (menu.players <= 2).then(|| text!("net_players_too_few").into()),
             ),
             button(
                 Target::NetPlayers(menu.players + 1),
                 ">",
+                None,
                 (menu.players >= MAX_PLAYERS)
                     .then(|| text!("net_players_too_many", players = MAX_PLAYERS)),
             ),
@@ -289,6 +285,7 @@ impl GameState {
         panel.compact_buttons(vec![button(
             Target::HostGame,
             text!("net_host_button"),
+            hover_text!("net_host_button"),
             busy(),
         )]);
         panel.gap(GAP);
@@ -297,6 +294,7 @@ impl GameState {
         panel.compact_buttons(vec![button(
             Target::JoinGame,
             text!("net_join_button"),
+            hover_text!("net_join_button"),
             busy(),
         )]);
         status(panel);
@@ -306,7 +304,10 @@ impl GameState {
     /// the join `code`, and this machine's address on the local network;
     /// then what players over the internet need instead.
     fn host_rows(&self, panel: &mut PanelBuilder, code: &str) {
-        let copy = |target| ButtonSpec::new(target, text!("net_copy_button"), "");
+        let copy = |target| {
+            ButtonSpec::new(target, text!("net_copy_button"), "")
+                .hover_text(hover_text!("net_copy_button"))
+        };
         panel.title_with_button(
             vec![
                 (format!("{}  ", text!("net_host_code")), LABEL_TEXT),

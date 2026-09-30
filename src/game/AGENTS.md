@@ -144,8 +144,8 @@ behavior.
 
 ## Recipes
 
-- **Text:** an area whose text has moved to `text/` (so far the settings menu and its
-  Multiplayer page) takes new words as entries there, asked for with `text!("tag")` or
+- **Text:** an area whose text has moved to `text/` (so far the menus, the status and top
+  bars, the Debug panel and the window titles) takes new words as entries there, asked for with `text!("tag")` or
   `tooltip!("tag", name = value)` (`strings.rs`, `docs/text.md`), the tag always a literal. The
   tests check each tag used exists with its placeholders and each entry is used. A key is never
   spelled out in a file: the entry has a placeholder the code fills with `Command::key` (`keys.rs`).
@@ -164,7 +164,8 @@ behavior.
   module comment lists them); its name, tooltip and values are entries in `text/menus.ini`. The settings menu shows it in both presentations with no UI
   change; game code reads the field (`self.settings.<field>`), and a row in the settings table
   of `docs/controls.md` describes it.
-- **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
+- **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `title`, `description`,
+  `title_on_hover`, `start`; its title and description are an entry in `text/ui.ini`), its
   constructor in `mod.rs`, a key in the key map (`keys.rs`); the debug panel lists `Scenario::ALL` itself.
 
 ## Tests

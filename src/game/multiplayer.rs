@@ -26,6 +26,7 @@ use super::city::{
 };
 use super::hex::Hex;
 use super::settings::{ANIMALS_MANY, Settings};
+use super::strings::text;
 use super::terrain::Resource;
 use super::unit::{Team, TurnOrder};
 use super::workers::WorkerJob;
@@ -594,7 +595,7 @@ impl GameState {
         let open = self.open_seats().len();
         match self.lockstep.as_deref() {
             Some(l) if l.role == Role::Host && open > 0 => {
-                format!("JOIN CODE {} - {open} TO COME", l.join_code)
+                text!("end_turn_seats_open", code = l.join_code, open = open)
             }
             Some(l) if l.submitted => {
                 let waiting: Vec<String> = self
@@ -605,12 +606,12 @@ impl GameState {
                     .collect();
                 if waiting.is_empty() {
                     // A guest whose plan the host is still to hear of.
-                    "WAITING FOR THE OTHERS".into()
+                    text!("end_turn_waiting_for_others").into()
                 } else {
-                    format!("WAITING FOR {}", waiting.join(", "))
+                    text!("end_turn_waiting_for", sides = waiting.join(", "))
                 }
             }
-            _ => "RESOLVING".into(),
+            _ => text!("end_turn_resolving").into(),
         }
     }
 

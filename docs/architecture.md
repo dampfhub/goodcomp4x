@@ -159,8 +159,8 @@ entry in that one file, and its words in `text/menus.ini`; both UI presentations
 ## Game text (`text/`)
 
 The game's words are moving out of the code into tagged entries in `text/*.ini` (#341; so far
-the settings menu and its Multiplayer page). `src/game/strings.rs` embeds the files, reads
-them once on first use, and gives an entry's text, tooltip or hover text by tag (`text!`,
+the menus, the status and top bars, the Debug panel and the window titles).
+`src/game/strings.rs` embeds the files, reads them once on first use, and gives an entry's text, tooltip or hover text by tag (`text!`,
 `tooltip!`, `hover_text!`), filling named placeholders. Its tests check the files against every
 macro call in `src/`, so a missing, unused or mismatched entry fails `cargo test`, not the
 game. A file never spells out a key: the code fills a placeholder with the key's name from the
