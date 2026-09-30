@@ -231,7 +231,14 @@ impl GameState {
 
         let mut notes = Vec::new();
         if self.grid.has_fresh_water(hex) {
-            notes.push("FRESH WATER +1 FOOD".into());
+            // Fresh water's food counts toward the cap, so it adds only
+            // where the tile has room below it.
+            let added = tile.yields(true).0 - tile.yields(false).0;
+            notes.push(if added > 0 {
+                format!("FRESH WATER +{added} FOOD")
+            } else {
+                "FRESH WATER".into()
+            });
         }
         if let Some((owner, building)) = placed {
             notes.push(building.description().into());
@@ -286,8 +293,8 @@ impl GameState {
             notes.push(resource.name().into());
         }
         if let Some(special) = self.grid.special(hex) {
-            let (food, production) = special.bonus();
-            let gains: Vec<String> = [(food, "FOOD"), (production, "PRODUCTION")]
+            let (food, wood, metal) = special.bonus();
+            let gains: Vec<String> = [(food, "FOOD"), (wood, "WOOD"), (metal, "METAL")]
                 .into_iter()
                 .filter(|&(amount, _)| amount > 0)
                 .map(|(amount, what)| format!("+{amount} {what}"))

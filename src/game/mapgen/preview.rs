@@ -221,7 +221,7 @@ fn spread(values: impl Iterator<Item = i32>) -> f32 {
 /// so their land doesn't overlap much.
 const SITE_SPACINGS: [i32; 2] = [7, 8];
 /// A decent city site scores at least this share of its map's mean start
-/// (`start_score`: food, production and fresh water within two hexes).
+/// (`start_score`: goods and fresh water within two hexes).
 const DECENT_SITE_SHARE: f32 = 0.75;
 
 /// How many cities fit on the land the starts can walk to (`reach`), each
@@ -304,6 +304,7 @@ fn map_stats() {
     let (mut river_count, mut river_length, mut river_longest) = (0usize, 0usize, 0usize);
     let (mut from_lakes, mut to_sea, mut to_lake) = (0usize, 0usize, 0usize);
     let (mut nearest, mut scores, mut yields) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut farmland, mut farmland_counts) = (Vec::new(), Vec::new());
     let mut generating = std::time::Duration::ZERO;
     let (mut land_per_side, mut sites, mut detours) = (Vec::new(), Vec::new(), Vec::new());
     let (mut range_lengths, mut longest_ranges) = (Vec::new(), Vec::new());
@@ -384,11 +385,22 @@ fn map_stats() {
             within(s, 2)
                 .filter(|h| grid.contains(*h))
                 .map(|h| {
-                    let (f, p) = grid.tile(h).yields();
-                    f + p
+                    let (food, wood, metal) = grid.unimproved_yield(h);
+                    food + wood + metal
                 })
                 .sum()
         })));
+        let farms: Vec<i32> = map
+            .starts
+            .iter()
+            .map(|&s| {
+                within(s, 2)
+                    .filter(|&h| grid.contains(h) && grid.farmable(h))
+                    .count() as i32
+            })
+            .collect();
+        farmland.push(spread(farms.iter().copied()));
+        farmland_counts.extend(farms);
     }
     let per_map = generating.as_secs_f32() * 1000.0 / maps as f32;
     println!("{maps} maps, {per_map:.1} ms each to generate");
@@ -442,7 +454,8 @@ fn map_stats() {
     for (what, v) in [
         ("nearest start on foot", &nearest),
         ("start_score", &scores),
-        ("food + production within 2", &yields),
+        ("goods within 2 (unimproved)", &yields),
+        ("farmland within 2", &farmland),
     ] {
         println!(
             "starts, {what}, highest/lowest per map: mean {:.2}, worst {:.2}",
@@ -450,6 +463,14 @@ fn map_stats() {
             worst(v)
         );
     }
+    farmland_counts.sort_unstable();
+    println!(
+        "starts, farmland within 2 (of 18 hexes): mean {:.1}, 10th percentile {}, none {:.0}%",
+        farmland_counts.iter().sum::<i32>() as f32 / farmland_counts.len() as f32,
+        farmland_counts[farmland_counts.len() / 10],
+        100.0 * farmland_counts.iter().filter(|&&n| n == 0).count() as f32
+            / farmland_counts.len() as f32
+    );
     let least = |v: &[f32]| v.iter().copied().fold(f32::MAX, f32::min);
     let sizes: Vec<String> = (3..=7)
         .map(|sides| match world_shape(sides) {
