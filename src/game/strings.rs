@@ -10,7 +10,9 @@
 //!
 //! - `text!("tag")` is the entry's text, a `&'static str`;
 //!   `text!("tag", food = 3, turns = t)` fills its placeholders into a `String`;
-//! - `tooltip!(..)` and `hover_text!(..)` are the same for those fields.
+//! - `tooltip!(..)` is the same for the tooltip;
+//! - `hover_text!(..)` is the hover text, if the entry has one (an
+//!   `Option`): an entry may leave it out, and the shipped files always do.
 //!
 //! The files are embedded (`include_str!`, `FILES`) and read once, the first
 //! time any text is asked for. The tests below read the source for every
@@ -28,7 +30,10 @@ use super::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 
 /// The text files, by name, embedded in the executable. A new file is a
 /// line here.
-const FILES: [(&str, &str); 1] = [("menus.ini", include_str!("../../text/menus.ini"))];
+const FILES: [(&str, &str); 2] = [
+    ("menus.ini", include_str!("../../text/menus.ini")),
+    ("ui.ini", include_str!("../../text/ui.ini")),
+];
 
 /// The icon names a file may write in braces, and the icon characters they
 /// stand for.
@@ -369,7 +374,7 @@ pub(in crate::game) fn texts() -> &'static Texts {
 
 /// `tag`'s `field`, or, if the files lack it, the tag itself (logged once).
 pub(in crate::game) fn lookup(tag: &'static str, field: Field) -> &'static str {
-    match TEXTS.get(tag).and_then(|entry| field.of(entry)) {
+    match find(tag, field) {
         Some(text) => text,
         None => {
             static REPORTED: Mutex<Vec<(&str, Field)>> = Mutex::new(Vec::new());
@@ -381,6 +386,56 @@ pub(in crate::game) fn lookup(tag: &'static str, field: Field) -> &'static str {
             }
             tag
         }
+    }
+}
+
+/// `tag`'s `field` if the files give it one: for a field an entry may
+/// leave out, such as a label's hover text.
+pub(in crate::game) fn find(tag: &'static str, field: Field) -> Option<&'static str> {
+    #[cfg(test)]
+    if let Some(injected) = injected(tag, field) {
+        return injected;
+    }
+    TEXTS.get(tag).and_then(|entry| field.of(entry))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests only: entries that stand in for the files' on this thread
+    /// (`inject`).
+    static INJECTED: std::cell::RefCell<HashMap<&'static str, &'static Entry>> =
+        std::cell::RefCell::new(HashMap::default());
+}
+
+/// Tests only: what an injected entry gives for `tag`'s `field`, if one
+/// stands in for it.
+#[cfg(test)]
+fn injected(tag: &str, field: Field) -> Option<Option<&'static str>> {
+    INJECTED.with_borrow(|injected| injected.get(tag).map(|entry| field.of(entry)))
+}
+
+/// Tests only: `tag`'s entry, as `change` leaves it, stands in for the
+/// files' on this thread until the guard returned is dropped, as if a text
+/// file said so: to show what the game does with a field the shipped files
+/// never set (a hover text).
+#[cfg(test)]
+pub(in crate::game) fn inject(tag: &'static str, change: impl FnOnce(&mut Entry)) -> Injected {
+    let mut entry = TEXTS.get(tag).cloned().unwrap_or_default();
+    change(&mut entry);
+    let entry: &'static Entry = Box::leak(Box::new(entry));
+    INJECTED.with_borrow_mut(|injected| injected.insert(tag, entry));
+    Injected(tag)
+}
+
+/// Tests only: while it lives, an injected entry stands in (`inject`).
+#[cfg(test)]
+#[must_use]
+pub(in crate::game) struct Injected(&'static str);
+
+#[cfg(test)]
+impl Drop for Injected {
+    fn drop(&mut self) {
+        INJECTED.with_borrow_mut(|injected| injected.remove(self.0));
     }
 }
 
@@ -412,26 +467,26 @@ macro_rules! tooltip {
     };
 }
 
-/// An entry's hover text, as `text!` gives its text: what a label shows
-/// while the cursor is on it. Nothing shows one yet (stage 1 of #341 moved
-/// only the settings menu, whose labels don't change on hover).
-#[allow(unused_macros)]
+/// An entry's hover text, if a file gives it one: what a label shows while
+/// the cursor is on it. `None` for an entry without (the shipped files set
+/// none: `the_shipped_files_never_change_a_label_on_hover`), so the label
+/// stays as it is. Its placeholders, if a file gives it any, are filled as
+/// `text!` fills an entry's text.
 macro_rules! hover_text {
     ($tag:literal) => {
-        $crate::game::strings::lookup($tag, $crate::game::strings::Field::HoverText)
+        $crate::game::strings::find($tag, $crate::game::strings::Field::HoverText)
     };
     ($tag:literal, $($name:ident = $value:expr),+ $(,)?) => {
-        $crate::game::strings::fill(
-            $crate::game::strings::lookup($tag, $crate::game::strings::Field::HoverText),
-            &[$((stringify!($name), &$value as &dyn std::fmt::Display)),+],
+        $crate::game::strings::find($tag, $crate::game::strings::Field::HoverText).map(
+            |template| $crate::game::strings::fill(
+                template,
+                &[$((stringify!($name), &$value as &dyn std::fmt::Display)),+],
+            ),
         )
     };
 }
 
-// Unused until a label changes on hover (see `hover_text!`).
-#[allow(unused_imports)]
-pub(crate) use hover_text;
-pub(crate) use {text, tooltip};
+pub(crate) use {hover_text, text, tooltip};
 
 #[cfg(test)]
 mod tests {
@@ -630,7 +685,10 @@ mod tests {
                 continue;
             };
             let Some(template) = call.field.of(entry) else {
-                wrong.push(format!("{at}: [{tag}] has no {}", call.field.key()));
+                // A hover text is for a file to add if it likes.
+                if call.field != Field::HoverText {
+                    wrong.push(format!("{at}: [{tag}] has no {}", call.field.key()));
+                }
                 continue;
             };
             let mut wanted: Vec<&str> = placeholders(template);
@@ -667,6 +725,35 @@ mod tests {
             "in text/ but no code shows it:\n{}",
             unused.join("\n")
         );
+    }
+
+    #[test]
+    fn the_shipped_files_never_change_a_label_on_hover() {
+        // Hover text is for someone editing the files: by default, hovering
+        // never changes a label (`docs/ui-system.md`).
+        let mut set: Vec<&str> = texts()
+            .entries()
+            .filter(|(_, entry)| entry.hover_text.is_some())
+            .map(|(tag, _)| tag)
+            .collect();
+        set.sort_unstable();
+        assert!(set.is_empty(), "hover_text set in text/ for {set:?}");
+    }
+
+    #[test]
+    fn an_injected_entry_stands_in_until_its_guard_goes() {
+        assert_eq!(find("settings_title", Field::HoverText), None);
+        {
+            let _guard = inject("settings_title", |entry| {
+                entry.hover_text = Some("OPTIONS".into())
+            });
+            assert_eq!(find("settings_title", Field::HoverText), Some("OPTIONS"));
+            assert_eq!(
+                lookup("settings_title", Field::Text),
+                texts().get("settings_title").unwrap().text
+            );
+        }
+        assert_eq!(find("settings_title", Field::HoverText), None);
     }
 
     #[test]

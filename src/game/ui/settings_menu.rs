@@ -18,7 +18,7 @@ use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
 use crate::game::GameState;
 use crate::game::keys::Command;
 use crate::game::settings::{Control, Setting};
-use crate::game::strings::text;
+use crate::game::strings::{hover_text, text};
 
 impl GameState {
     /// The classic presentation's settings menu, while it's open: centered
@@ -58,13 +58,20 @@ impl GameState {
             BODY,
             vec![(text!("settings_city_overlays").into(), LABEL_TEXT)],
         );
-        let yields = if self.show_yields {
-            text!("settings_city_yields_on")
+        let (yields, yields_hover) = if self.show_yields {
+            (
+                text!("settings_city_yields_on"),
+                hover_text!("settings_city_yields_on"),
+            )
         } else {
-            text!("settings_city_yields_off")
+            (
+                text!("settings_city_yields_off"),
+                hover_text!("settings_city_yields_off"),
+            )
         };
         panel.compact_buttons(vec![
             ButtonSpec::new(Target::ToggleYields, yields, Command::Yields.key())
+                .hover_text(yields_hover)
                 .queued(self.show_yields),
         ]);
         panel.gap(GAP);
@@ -73,15 +80,24 @@ impl GameState {
                 Target::OpenMultiplayer,
                 text!("settings_multiplayer_button"),
                 "",
-            ),
-            ButtonSpec::new(
-                Target::CloseSettings,
-                text!("settings_close_button"),
-                Command::Back.key(),
-            ),
-            ButtonSpec::new(Target::Quit, text!("settings_quit_button"), ""),
+            )
+            .hover_text(hover_text!("settings_multiplayer_button")),
+            self.close_settings_button(),
+            ButtonSpec::new(Target::Quit, text!("settings_quit_button"), "")
+                .hover_text(hover_text!("settings_quit_button")),
         ]);
         panel
+    }
+
+    /// The button that closes the menu, on the settings and on the
+    /// Multiplayer page.
+    pub(super) fn close_settings_button(&self) -> ButtonSpec {
+        ButtonSpec::new(
+            Target::CloseSettings,
+            text!("settings_close_button"),
+            Command::Back.key(),
+        )
+        .hover_text(hover_text!("settings_close_button"))
     }
 }
 

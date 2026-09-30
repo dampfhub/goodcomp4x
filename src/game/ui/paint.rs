@@ -203,6 +203,8 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         return;
     }
 
+    // Hovered, the label is its hover text if a text file gives it one.
+    let label = button.shown_label(hovered);
     if let Some(icon) = action_icons::production_unit_icon(button.target) {
         let center = Vec2::new(button.min.x + 20.0, (button.min.y + button.max.y) / 2.0);
         crate::game::unit_icons::push_pictogram(center, 10.0, icon, text_color, out);
@@ -210,9 +212,9 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         let face = font::ui(SMALL);
         let label_x = button.min.x + 39.0;
         let baseline = center.y - face.cap_height / 2.0;
-        face.push(Vec2::new(label_x, baseline), &button.label, text_color, out);
+        face.push(Vec2::new(label_x, baseline), label, text_color, out);
         if !hint.is_empty() {
-            let hint_x = label_x + face.width(&button.label) + 8.0;
+            let hint_x = label_x + face.width(label) + 8.0;
             face.push(Vec2::new(hint_x, baseline), hint, hint_color, out);
         }
         return;
@@ -229,7 +231,7 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         let baseline = center.y - label_face.cap_height / 2.0;
         label_face.push(
             Vec2::new(button.min.x + pad, baseline),
-            &button.label,
+            label,
             text_color,
             out,
         );
@@ -238,27 +240,27 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
     } else if height < BUTTON_HEIGHT {
         // One line: the label, then the hint beside it.
         let gap = if hint.is_empty() { 0.0 } else { GAP };
-        let width = label_face.width(&button.label) + gap + hint_face.width(hint);
+        let width = label_face.width(label) + gap + hint_face.width(hint);
         let left = center.x - width / 2.0;
         let baseline = center.y - label_face.cap_height / 2.0;
-        label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
-        let hint_left = left + label_face.width(&button.label) + gap;
+        label_face.push(Vec2::new(left, baseline), label, text_color, out);
+        let hint_left = left + label_face.width(label) + gap;
         hint_face.push(Vec2::new(hint_left, baseline), hint, hint_color, out);
     } else if hint.is_empty() {
         let baseline = center.y - label_face.cap_height / 2.0;
-        let left = center.x - label_face.width(&button.label) / 2.0;
-        label_face.push(Vec2::new(left, baseline), &button.label, text_color, out);
+        let left = center.x - label_face.width(label) / 2.0;
+        label_face.push(Vec2::new(left, baseline), label, text_color, out);
     } else {
         // Two lines: the label, with the hint under it.
         let gap = LINE_GAP + 2.0;
         let block = label_face.cap_height + gap + hint_face.cap_height;
         let label_baseline = center.y + block / 2.0 - label_face.cap_height;
         let hint_baseline = center.y - block / 2.0;
-        let label_left = center.x - label_face.width(&button.label) / 2.0;
+        let label_left = center.x - label_face.width(label) / 2.0;
         let hint_left = center.x - hint_face.width(hint) / 2.0;
         label_face.push(
             Vec2::new(label_left, label_baseline),
-            &button.label,
+            label,
             text_color,
             out,
         );

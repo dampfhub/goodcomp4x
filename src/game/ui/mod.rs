@@ -316,6 +316,9 @@ impl ButtonState {
 struct Button {
     target: Target,
     label: String,
+    /// What the label changes to while the cursor is on it, if a text file
+    /// gives it a hover text (`ButtonSpec::hover_text`).
+    hover_label: Option<String>,
     /// The keyboard shortcut or cost, shown under the label (or beside it on
     /// a single-line button).
     hint: String,
@@ -335,6 +338,14 @@ struct Button {
 }
 
 impl Button {
+    /// Its label as drawn: its hover text while `hovered`, if it has one.
+    fn shown_label(&self, hovered: bool) -> &str {
+        match &self.hover_label {
+            Some(hover) if hovered => hover,
+            _ => &self.label,
+        }
+    }
+
     /// How it's drawn: disabled when unavailable, else gold when queued.
     fn state(&self) -> ButtonState {
         ButtonState::new(self.queued, self.unavailable.is_some())

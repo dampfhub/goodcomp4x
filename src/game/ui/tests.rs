@@ -4,6 +4,7 @@ use super::text::{
     end_turn_label, fit_text, price_hint, quantity, signed_quantity, stock_spans, wrap,
 };
 use super::*;
+use crate::game::strings::text;
 
 use crate::game::PLAYER_TEAM;
 use crate::game::city::{Build, GATHER_YIELD, Good, Priorities, Queued, Stock, stock_icons};
@@ -1443,6 +1444,7 @@ fn find_button(game: &GameState, target: Target) -> Button {
     Button {
         target: button.target,
         label: button.label.clone(),
+        hover_label: button.hover_label.clone(),
         hint: button.hint.clone(),
         queued: button.queued,
         unavailable: button.unavailable.clone(),
@@ -5781,4 +5783,78 @@ fn imgui_shows_why_a_units_button_is_off() {
     let tips = screen.tooltips(&mut game, Target::Unit(UnitAction::ClearOrders));
     assert_eq!(tips.len(), 1, "{tips:?}");
     assert!(tips[0].ends_with("NO ORDERS TO CLEAR"), "{tips:?}");
+}
+
+#[test]
+fn a_hover_text_a_file_gives_replaces_the_label_while_hovered_in_both_presentations() {
+    use crate::game::strings::inject;
+    // The shipped files set no hover text; this stands in for one that does.
+    let _menu = inject("menu_button", |entry| {
+        entry.hover_text = Some("OPEN THE MENU".into())
+    });
+    let _close = inject("settings_close_button", |entry| {
+        entry.hover_text = Some("CLOSE THE MENU".into())
+    });
+    let mut game = GameState::city_scenario();
+    game.clear_selection();
+
+    // Classic: the Menu button carries it, and draws it only while hovered.
+    let menu = find_button(&game, Target::OpenSettings);
+    assert_eq!(menu.label, text!("menu_button"));
+    assert_eq!(menu.hover_label.as_deref(), Some("OPEN THE MENU"));
+    let drawn = |button: &Button, hovered: bool| {
+        let mut out = Vec::new();
+        paint::draw_button(button, hovered, &mut out);
+        out.iter()
+            .map(|v| (v.pos, v.color, v.uv))
+            .collect::<Vec<_>>()
+    };
+    let relabelled = Button {
+        label: "OPEN THE MENU".into(),
+        hover_label: None,
+        ..find_button(&game, Target::OpenSettings)
+    };
+    let plain = Button {
+        hover_label: None,
+        ..find_button(&game, Target::OpenSettings)
+    };
+    assert_eq!(drawn(&menu, true), drawn(&relabelled, true));
+    assert_eq!(drawn(&menu, false), drawn(&plain, false));
+    assert_ne!(drawn(&menu, true), drawn(&plain, true));
+
+    // ImGui: the status bar's Menu, and a panel button (the settings
+    // menu's Close), show it while the cursor is on them, and not after.
+    let mut screen = ImGuiScreen::styled(SCREEN);
+    screen.settle(&mut game);
+    let status_menu = || imgui_status_controls()[0].clone();
+    assert_eq!(status_menu().0, text!("menu_button"));
+    let (_, min, max) = status_menu();
+    let on_menu = (Vec2::from(min) + Vec2::from(max)) / 2.0;
+    screen.frame(&mut game, Some(on_menu), false);
+    screen.frame(&mut game, Some(on_menu), false);
+    assert_eq!(status_menu().0, "OPEN THE MENU");
+    screen.settle(&mut game);
+    assert_eq!(status_menu().0, text!("menu_button"));
+
+    game.press_escape();
+    assert!(game.settings_open);
+    screen.settle(&mut game);
+    let close = screen.button(Target::CloseSettings).expect("Close shown");
+    let labels = || -> Vec<String> {
+        imgui::DRAWN_MARKS.with_borrow(|marks| marks.iter().map(|m| m.what.clone()).collect())
+    };
+    assert!(
+        labels()
+            .iter()
+            .any(|l| l.starts_with(text!("settings_close_button")))
+    );
+    screen.frame(&mut game, Some(close), false);
+    screen.frame(&mut game, Some(close), false);
+    assert!(
+        labels().iter().any(|l| l.starts_with("CLOSE THE MENU")),
+        "{:?}",
+        labels()
+    );
+    screen.settle(&mut game);
+    assert!(!labels().iter().any(|l| l.starts_with("CLOSE THE MENU")));
 }

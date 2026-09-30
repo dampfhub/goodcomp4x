@@ -15,8 +15,12 @@ the City / Building view scope.
 ImGui uses native windows, buttons, scrolling, drag/drop, hover tooltips, and
 input capture. It is drawn at the end of the existing Vulkan render pass.
 Action buttons in both presentations show costs and work times but not their
-keyboard shortcuts, which are in their tooltips: hovering never changes a
-button's text. Debug buttons keep their keys visible.
+keyboard shortcuts, which are in their tooltips. Hovering doesn't change a
+button's text by default: only a `hover_text` a user sets in a text file does
+(`docs/text.md`), and then both presentations draw it while the cursor is on
+the button (`ButtonSpec::hover_text`; classic in `paint::draw_button`, ImGui
+from the item it hovered last frame, `hovered_spec`). The shipped files set
+none. Debug buttons keep their keys visible.
 Unit orders and a city's priority chips use shared vector-icon toolbars; hovering an
 icon gives its action name, shortcut and explanation.
 An ImGui panel fits its content to whatever width it has, however narrow the
@@ -149,8 +153,9 @@ clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes (its name, tooltip and
 values are entries in `text/menus.ini`), and both presentations show it
 with its control.
-**Text files.** The settings menu's and Multiplayer page's words come from
-`text/menus.ini` through `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
+**Text files.** The menus' words come from `text/menus.ini`, and the status and
+top bars', the Debug panel's and the window titles' from `text/ui.ini`, through
+`text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
 the UI's text is still in the code and moves to `text/` area by area
 (#341). In an area that has moved, new text is an entry in its file, not a
 literal: `docs/text.md` has the format and the tests that check it. Both
