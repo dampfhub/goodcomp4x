@@ -143,6 +143,12 @@ const YIELD_ROW_COLOR: Color = [0.005, 0.006, 0.007, 0.85];
 const YIELD_DIGIT_HEIGHT: f32 = 0.12;
 const YIELD_DIGIT_COLOR: Color = [0.95, 0.95, 0.95, 1.0];
 const YIELD_NUMBER_GAP: f32 = 0.03;
+/// Zoomed out past this (the camera's half height, in world units), yield
+/// chips are drawn plain: flat pip silhouettes (`push_map_icon_silhouette`)
+/// on a square-cornered pill. A pip is then about 5 pixels tall in a
+/// 1080-pixel window, too small for the icons' detail, and on the biggest
+/// map with Alt held the full icons took millions of vertices (#332).
+const YIELD_DETAIL_MAX_HALF_HEIGHT: f32 = 12.0;
 /// Workers: tokens out on the map (smaller in a corner when a unit shares
 /// their hex), the player's queued jobs as faded named rings, and the tag on
 /// each of the player's cities counting the workers at home.
@@ -334,7 +340,30 @@ impl GameState {
         *buffer = self.build_scene(std::mem::take(buffer));
     }
 
-    fn build_scene(&self, mut out: Vec<Vertex>) -> Vec<Vertex> {
+    fn build_scene(&self, out: Vec<Vertex>) -> Vec<Vertex> {
+        self.build_scene_staged(out, |_, _| {})
+    }
+
+    /// Each layer's vertex count, in drawing order: what a frame spends
+    /// where (`perf.rs` checks a budget with it).
+    #[cfg(test)]
+    pub(super) fn scene_stages(&self) -> Vec<(&'static str, usize)> {
+        let mut stages = Vec::new();
+        let mut last = 0;
+        self.build_scene_staged(Vec::new(), |name, len| {
+            stages.push((name, len - last));
+            last = len;
+        });
+        stages
+    }
+
+    /// `build_scene`, calling `stage` with each layer's name and the total
+    /// vertex count once that layer is drawn.
+    fn build_scene_staged(
+        &self,
+        mut out: Vec<Vertex>,
+        mut stage: impl FnMut(&'static str, usize),
+    ) -> Vec<Vertex> {
         out.clear();
         if let Some(city) = self.interior_view {
             out.extend(self.build_interior_vertices(city));
@@ -401,6 +430,7 @@ impl GameState {
                 push_cloud_banks(&self.grid, self.cloud_time, view, &mut out);
             }
         }
+        stage("fog fill and clouds", out.len());
 
         // Never-seen hexes aren't drawn at all: the background shows there.
         // Of those, only what the camera may show.
@@ -422,6 +452,7 @@ impl GameState {
                 &mut out,
             );
         }
+        stage("hex borders", out.len());
         for &hex in &explored {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref(), &fog);
@@ -440,19 +471,24 @@ impl GameState {
             self.push_known_ruin(hex, &fog, &mut out);
             self.push_known_den(hex, &fog, &mut out);
         }
+        stage("hex fills and symbols", out.len());
         push_rivers(
             &self.grid,
             |h| self.may_show(h) && self.is_explored(h),
             &mut out,
         );
+        stage("rivers", out.len());
 
         self.push_city_map(&fog, &mut out);
+        stage("city map", out.len());
         self.push_fog(&fog, &mut out);
+        stage("remembered veil", out.len());
         // Placing something for a city's workers: the tiles they can reach
         // (as the player knows the board) are lit, and the rest dimmed, so
-        // the reach stands out.
+        // the reach stands out. Only what the camera may show.
         if self.placing_job.is_some() {
-            for hex in self.grid.all_hexes().filter(|&h| self.is_explored(h)) {
+            let shown = |h: Hex| self.may_show(h) && self.is_explored(h);
+            for hex in self.grid.all_hexes().filter(|&h| shown(h)) {
                 let reach = self.grid.is_passable(hex) && self.known_worker_reach(hex);
                 let tint = if reach {
                     WORKER_REACH_TINT
@@ -469,8 +505,11 @@ impl GameState {
                 );
             }
         }
+        stage("worker reach", out.len());
         self.push_turn_dim(&mut out);
+        stage("turn dim", out.len());
         self.push_order_markers(&fog, &mut out);
+        stage("order markers", out.len());
 
         for (idx, unit) in self.units.iter().enumerate() {
             if !fog.shows(unit) {
@@ -501,12 +540,17 @@ impl GameState {
                 );
             }
         }
+        stage("units", out.len());
         if let Some(preview) = self.attack_preview() {
             self.push_attack_preview(&preview, &mut out);
         }
+        stage("attack preview", out.len());
         self.push_field_workers(&fog, &mut out);
+        stage("field workers", out.len());
         self.push_tile_yields(&fog, &mut out);
+        stage("tile yields", out.len());
         self.push_effects(&mut out);
+        stage("effects", out.len());
         out
     }
 
@@ -1835,6 +1879,7 @@ impl GameState {
             return;
         }
         let reach = city.map(|city| (city, self.known_routes(city, fog)));
+        let detailed = self.camera.half_height <= YIELD_DETAIL_MAX_HALF_HEIGHT;
         // The cheap tests first: most hexes fail one.
         for hex in self.grid.all_hexes().filter(|&h| {
             self.may_show(h)
@@ -1847,23 +1892,36 @@ impl GameState {
                 && !self.known_building_at_off_center(h, fog)
         }) {
             let goods = self.known_yield(hex, fog);
-            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, goods, out);
+            push_yield_row(hex.to_world() + YIELD_ROW_OFFSET, goods, detailed, out);
         }
     }
 }
 
 /// A tile's yields on a dark pill: food, wood then metal (`raw_yield`),
 /// each laid out like the pips on a die, or as one icon and a number past
-/// six. Nothing for a tile yielding nothing.
-fn push_yield_row(center: Vec2, goods: (i32, i32, i32), out: &mut Vec<Vertex>) {
+/// six. Nothing for a tile yielding nothing. Not `detailed` (zoomed out,
+/// `YIELD_DETAIL_MAX_HALF_HEIGHT`): the same layout in a few triangles each.
+fn push_yield_row(center: Vec2, goods: (i32, i32, i32), detailed: bool, out: &mut Vec<Vertex>) {
     let row = yield_row(goods);
     if row.icons.is_empty() {
         return;
     }
-    let pill = rounded_rect(center, row.half, YIELD_PIP_CORNER);
+    let pill = if detailed {
+        rounded_rect(center, row.half, YIELD_PIP_CORNER)
+    } else {
+        let h = row.half;
+        [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)]
+            .map(|(x, y)| center + h * Vec2::new(x, y))
+            .to_vec()
+    };
     mesh::convex_polygon(&pill, YIELD_ROW_COLOR, out);
+    let scale = YIELD_ICON_SCALE * row.scale;
     for (icon, at) in row.icons {
-        map_icons::push_map_icon_scaled(center + at, icon, YIELD_ICON_SCALE * row.scale, out);
+        if detailed {
+            map_icons::push_map_icon_scaled(center + at, icon, scale, out);
+        } else {
+            map_icons::push_map_icon_silhouette(center + at, icon, scale, out);
+        }
     }
     for (text, at) in row.labels {
         font::push_text_centered(
@@ -3797,7 +3855,7 @@ mod tests {
         let pill_vertices = count_color(
             &{
                 let mut out = Vec::new();
-                push_yield_row(Vec2::ZERO, (2, 1, 0), &mut out);
+                push_yield_row(Vec2::ZERO, (2, 1, 0), true, &mut out);
                 out
             },
             YIELD_ROW_COLOR,
@@ -3820,6 +3878,60 @@ mod tests {
             .count();
         assert!(yielding > in_reach);
         assert_eq!(rows(&game), yielding, "a row on every tile that yields");
+    }
+
+    /// Zoomed out, a yield row keeps its pill and a pip for each good, but
+    /// each pip is a flat silhouette in a few triangles (#332).
+    #[test]
+    fn zoomed_out_yield_rows_are_plain_and_cheap() {
+        let row = |detailed| {
+            let mut out = Vec::new();
+            push_yield_row(Vec2::ZERO, (3, 2, 1), detailed, &mut out);
+            out
+        };
+        let (near, far) = (row(true), row(false));
+        assert!(
+            far.len() * 10 < near.len(),
+            "{} vertices, {} in full",
+            far.len(),
+            near.len()
+        );
+        // One quad for the pill, then a triangle pair per pip: 3 food,
+        // 2 wood and 1 metal.
+        assert_eq!(far.len(), 6 + 6 * 6);
+        // The same pill, square-cornered.
+        let bounds = |vertices: &[Vertex]| {
+            vertices
+                .iter()
+                .filter(|v| v.color == YIELD_ROW_COLOR)
+                .map(|v| Vec2::new(v.pos[0], v.pos[1]))
+                .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(lo, hi), p| {
+                    (lo.min(p), hi.max(p))
+                })
+        };
+        let ((near_lo, near_hi), (far_lo, far_hi)) = (bounds(&near), bounds(&far));
+        assert!(near_lo.abs_diff_eq(far_lo, 1e-4) && near_hi.abs_diff_eq(far_hi, 1e-4));
+
+        // The map switches past YIELD_DETAIL_MAX_HALF_HEIGHT.
+        let mut game = GameState::city_scenario();
+        game.explore();
+        game.set_details(true);
+        let yields = |game: &GameState| {
+            let stages = game.scene_stages();
+            stages
+                .iter()
+                .find(|(name, _)| *name == "tile yields")
+                .unwrap()
+                .1
+        };
+        game.camera.half_height = YIELD_DETAIL_MAX_HALF_HEIGHT;
+        let full = yields(&game);
+        game.camera.half_height = YIELD_DETAIL_MAX_HALF_HEIGHT + 0.01;
+        let plain = yields(&game);
+        assert!(
+            plain > 0 && plain * 10 < full,
+            "{plain} plain, {full} in full"
+        );
     }
 
     #[test]
