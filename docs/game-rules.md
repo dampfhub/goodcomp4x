@@ -1029,7 +1029,7 @@ Every side but Blue is played by the AI, in `Team::ALL` order, and every side is
 every other. The AI plays under the fog (see Fog of war): it plans only on what its side sees and
 remembers, as the player does. An enemy unit or worker counts only while in sight; cities, ruins,
 dens, walls and terrain count as last seen; ground never seen counts as open.
-Each AI unit picks, of the enemy units in sight, the enemy workers alone in sight and ruins its
+Each AI unit picks, of the enemy units in sight (animals aside: see below), the enemy workers alone in sight and ruins its
 side knows of that no unit of its side holds or is heading for, and the enemy cities its side has
 seen, the one nearest on foot (walking distance around the terrain, walls and others' gates and
 cities it knows of; a city counts from its gates, and an enemy unit before a city as near).
@@ -1097,12 +1097,30 @@ The AI builds Scouts and expands with Settlers:
   as before, and otherwise walks to the nearest site they allow; knowing none, it founds where
   it stands anyway.
 
-The AI and animals (see Animals): an animal in sight is an enemy like any other, fought, fired
-on and kept away from; a den its side has seen (in sight or as last seen) is a target like ruins,
-which a unit (a scout too, while it's safe) goes to stand on to clear it. Its side keeps clear of
-the territory of every den it knows of (the hexes within 4 of it, as far as any animal roams):
-its settlers step around it where they can, it picks no city site in it, and its workers take no
-job in it.
+The AI and animals (see Animals): it fights animals only where it expects to win, and to gain
+more than it loses. For each den its side knows of (in sight or as last seen) it expects the
+animals of the den's kind it sees within their territory of it, as they are, and unless it sees
+the whole territory, more at full health up to as many as the den can have by then (one to start
+and one more every 8 turns, up to the world's cap). Animals it sees that belong to no den it knows
+of (their den unseen, or cleared) make bands: those within 3 hexes of one another. Against each
+den or band it plays the fight out by the combat formula, which has no random spread: each round
+the animals strike first, each at the weakest troop, then each troop at the weakest animal left,
+and a melee blow draws one back from a defender it doesn't kill; the animals under the cover of
+the den's tile (a band's first animal's), its troops on open ground. Of its troops within 12 hexes
+(not scouts, settlers or ships, nor units in a contested hex or holding ruins), it sends the
+nearest few, up to 4, that kill them all within 6 rounds for the most gain: the den's spoils and
+the animals' bounties, less the HP its troops lose (a dead troop's all), a troop's full health
+worth its price (food, wood and metal alike); the fewest on a tie, and none if no force gains.
+The force gathers just outside the animals' reach (within 2 hexes of it), goes in together once
+all of it is there or some of it is already in, fights the animals it sees, and steps onto the
+den to clear it. A den or band it sends no force to it leaves alone: its other land units walk
+around the animals' reach (a den's: its territory and a hex more; a band's: as far as each animal
+could move and strike next turn; city centers aside, where no animal strikes), and one inside
+gets out, or as far out as it can. Its scouts count that reach as threatened, and stand on a
+den only if they expect no animal at it. Its side keeps clear of the territory of every den it
+knows of (the hexes within 4 of it, as far as any animal roams): its settlers step around it
+where they can, and it picks no city site in it; its workers take no job in it, nor in the reach
+of animals it expects.
 
 ## Open questions
 
