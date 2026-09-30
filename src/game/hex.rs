@@ -227,6 +227,18 @@ impl HexGrid {
         self
     }
 
+    /// Tests only: this grid with a river along every edge, so every land
+    /// tile has fresh water and takes a farm.
+    #[cfg(test)]
+    pub fn with_rivers_everywhere(self) -> Self {
+        let rivers = self
+            .all_hexes()
+            .flat_map(|h| h.neighbors().map(|n| (h, n)))
+            .filter(|&(_, n)| self.contains(n))
+            .collect();
+        self.with_rivers(rivers)
+    }
+
     pub fn contains(&self, hex: Hex) -> bool {
         self.edge_distance(hex) >= 0
     }
@@ -274,7 +286,25 @@ impl HexGrid {
         }
     }
 
-    /// Land beside a river or a lake. Fresh water adds food.
+    /// What `hex` gives worked unimproved, as food, wood and metal: its
+    /// tile's, with fresh water or not, under the cap (`Tile::yields`).
+    pub fn unimproved_yield(&self, hex: Hex) -> (i32, i32, i32) {
+        self.tile(hex).yields(self.has_fresh_water(hex))
+    }
+
+    /// Whether a farm can go on `hex`: open land (no hills, forest or jungle;
+    /// not snow or mountains) with fresh water.
+    pub fn farmable(&self, hex: Hex) -> bool {
+        let tile = self.tile(hex);
+        self.is_passable(hex)
+            && tile.terrain != Terrain::Snow
+            && !tile.hills
+            && tile.feature.is_none()
+            && self.has_fresh_water(hex)
+    }
+
+    /// Land beside a river or a lake. Fresh water adds food, and a farm can
+    /// go only on a tile with it.
     pub fn has_fresh_water(&self, hex: Hex) -> bool {
         !self.terrain(hex).is_water()
             && hex.neighbors().into_iter().any(|n| {

@@ -36,6 +36,12 @@ pub(super) const WORKER_SIGHT: i32 = 1;
 /// Defense multiplier for the owner's units standing in a fort. A
 /// placeholder until forts get their real role.
 pub(super) const FORT_DEFENSE: f32 = 1.5;
+/// What each improvement (`improvement`) adds to its tile's unimproved yield,
+/// past the cap: a farm's food (only by fresh water), a mine's metal (on
+/// hills) and a lumber mill's wood (under forest or jungle).
+pub(super) const FARM_FOOD: i32 = 2;
+pub(in crate::game) const MINE_METAL: i32 = 2;
+pub(super) const LUMBER_MILL_WOOD: i32 = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
@@ -99,7 +105,7 @@ impl JobKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
-            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, ELSE A FARM.",
+            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, FARM BY FRESH WATER.",
             Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
             Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
             Self::Outpost => "SEES 2 HEXES AROUND IT.",
@@ -306,20 +312,25 @@ impl GameState {
         )
     }
 
-    /// The improvement a worker would build at `hex`, as the yields it gives
-    /// and its label: a mine on hills, a lumber mill in forest or jungle, a
-    /// farm elsewhere; nothing on snow.
-    fn improvement(&self, hex: Hex) -> Option<(i32, i32, &'static str)> {
+    /// The improvement a worker would build at `hex`, as the food and
+    /// production it gives (the tile's unimproved yield plus the
+    /// improvement's, past the cap) and its label: a mine on hills, a lumber
+    /// mill in forest or jungle, a farm on other ground with fresh water.
+    /// Otherwise why none can go there: snow, or dry open ground.
+    fn improvement(&self, hex: Hex) -> Result<(i32, i32, &'static str), &'static str> {
         let tile = self.grid.tile(hex);
-        let (food, production) = tile.yields();
+        let (food, wood, metal) = self.grid.unimproved_yield(hex);
+        let production = wood + metal;
         if tile.terrain == Terrain::Snow {
-            None
+            Err("NOTHING GROWS ON SNOW")
         } else if tile.hills {
-            Some((food, production + 2, "MINE"))
+            Ok((food, production + MINE_METAL, "MINE"))
         } else if tile.feature.is_some() {
-            Some((food, production + 1, "LUMBER MILL"))
+            Ok((food, production + LUMBER_MILL_WOOD, "LUMBER MILL"))
+        } else if self.grid.farmable(hex) {
+            Ok((food + FARM_FOOD, production, "FARM"))
         } else {
-            Some((food + 2, production, "FARM"))
+            Err("FARMS NEED FRESH WATER: A RIVER OR LAKE BESIDE THE TILE")
         }
     }
 
@@ -368,8 +379,7 @@ impl GameState {
             JobKind::Improve => match self.sites.get(&hex) {
                 Some(site) if site.team != team => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
-                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
-                None => None,
+                None => self.improvement(hex).err(),
             },
             _ if building => Some("A BUILDING STANDS HERE"),
             _ if self.structures.contains_key(&hex) => Some("A STRUCTURE STANDS HERE"),
@@ -526,8 +536,7 @@ impl GameState {
             JobKind::Improve => match site {
                 Some(owner) if owner != self.local_team => Some("THIS TILE BELONGS TO THE ENEMY"),
                 Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
-                None if self.improvement(hex).is_none() => Some("NOTHING GROWS ON SNOW"),
-                None => None,
+                None => self.improvement(hex).err(),
             },
             _ if building => Some("A BUILDING STANDS HERE"),
             _ if structure => Some("A STRUCTURE STANDS HERE"),
@@ -1153,7 +1162,7 @@ impl GameState {
                 self.roads.insert(hex);
             }
             JobKind::Improve => {
-                if let Some((food, production, label)) = self.improvement(hex) {
+                if let Ok((food, production, label)) = self.improvement(hex) {
                     self.sites.insert(
                         hex,
                         Site {
@@ -1301,9 +1310,11 @@ mod tests {
     use crate::game::unit::UnitType;
 
     /// The Cities scenario with no units, the fog lifted, and Blue's city
-    /// (index 0, one worker at home) at (-4, 0), open.
+    /// (index 0, one worker at home) at (-4, 0), open. Rivers run along
+    /// every edge, so any open tile takes a farm.
     fn cities() -> GameState {
         let mut game = GameState::city_scenario();
+        game.grid = game.grid.clone().with_rivers_everywhere();
         game.units.clear();
         game.selected = None;
         // Jobs are placed from the open city.
@@ -1320,7 +1331,7 @@ mod tests {
             .all_hexes()
             .filter(|&h| h.distance(game.cities[0].pos) == distance)
             .filter(|&h| game.grid.is_passable(h) && !game.sites.contains_key(&h))
-            .filter(|&h| game.improvement(h).is_some() && !game.roads.contains(&h))
+            .filter(|&h| game.improvement(h).is_ok() && !game.roads.contains(&h))
             .min_by_key(|h| (h.q, h.r))
             .expect("a bare tile")
     }
@@ -1354,6 +1365,62 @@ mod tests {
             game.job_problem(0, WorkerJob::on_tile(hex, JobKind::Improve)),
             Some("NOTHING GROWS ON SNOW")
         );
+    }
+
+    /// A farm goes only on open ground with fresh water; a mine (hills) and
+    /// a lumber mill (forest) need none. Each adds its yield to the tile's
+    /// unimproved one, past the cap.
+    #[test]
+    fn farms_need_fresh_water_and_improvements_pass_the_cap() {
+        use crate::game::fast_hash::HashSet;
+        use crate::game::hex::HexGrid;
+        use crate::game::terrain::{Feature, Tile};
+
+        let mut game = cities();
+        let city = game.cities[0].pos;
+        let [wet, dry, hills, forest] = [0, 1, 2, 3].map(|i| city.neighbors()[i]);
+        // A river on the edge of `wet` away from the city.
+        let across = wet.neighbors().into_iter().find(|n| n.distance(city) == 2);
+        let river: HashSet<_> = [(wet, across.unwrap())].into_iter().collect();
+        let woods = Tile {
+            feature: Some(Feature::Forest),
+            ..Tile::from(Terrain::Plains)
+        };
+        game.grid = HexGrid::new(6, [(hills, Tile::HILLS), (forest, woods)]).with_rivers(river);
+        game.sites.clear();
+        assert!(game.grid.has_fresh_water(wet) && !game.grid.has_fresh_water(dry));
+        let improve =
+            |game: &GameState, hex| game.job_problem(0, WorkerJob::on_tile(hex, JobKind::Improve));
+        assert_eq!(
+            improve(&game, dry),
+            Some("FARMS NEED FRESH WATER: A RIVER OR LAKE BESIDE THE TILE")
+        );
+        assert_eq!(improve(&game, wet), None);
+        assert_eq!(improve(&game, hills), None);
+        assert_eq!(improve(&game, forest), None);
+        assert_eq!(game.improvement(wet), Ok((2 + FARM_FOOD, 0, "FARM")));
+        assert_eq!(game.improvement(hills), Ok((1, 1 + MINE_METAL, "MINE")));
+        assert_eq!(
+            game.improvement(forest),
+            Ok((0, 2 + LUMBER_MILL_WOOD, "LUMBER MILL"))
+        );
+
+        // Built, each gives its goods: the mine's production is all metal.
+        for hex in [wet, hills, forest] {
+            let (food, production, label) = game.improvement(hex).unwrap();
+            game.sites.insert(
+                hex,
+                Site {
+                    team: PLAYER_TEAM,
+                    food,
+                    production,
+                    label,
+                },
+            );
+        }
+        assert_eq!(game.tile_goods(wet), (4, 0, 0));
+        assert_eq!(game.tile_goods(hills), (1, 0, 3));
+        assert_eq!(game.tile_goods(forest), (0, 3, 0));
     }
 
     #[test]

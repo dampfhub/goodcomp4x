@@ -981,6 +981,7 @@ fn pick_starts(grid: &HexGrid, sides: usize, rng: &mut Rng) -> Option<(Vec<Hex>,
                     Terrain::Snow | Terrain::Desert | Terrain::Marsh
                 )
                 && fair_start(grid, *h)
+                && farmland(grid, *h) >= START_FARMLAND
         })
         .map(|h| (h, start_score(grid, h)))
         .collect();
@@ -1401,8 +1402,24 @@ pub fn start_units(grid: &HexGrid, site: Hex) -> Option<(Hex, Hex)> {
     Some((worker, scout))
 }
 
-/// How good a city site is: the yields within two hexes, fresh water, and a
-/// shore.
+/// Tiles within two hexes of a start where a farm can go (`farmland`), at
+/// least: farms need fresh water, and a start without any could never farm.
+const START_FARMLAND: usize = 2;
+
+/// Tiles within two hexes of `site` where a farm can go.
+fn farmland(grid: &HexGrid, site: Hex) -> usize {
+    within(site, 2)
+        .filter(|&h| grid.contains(h) && grid.farmable(h))
+        .count()
+}
+
+/// What a tile where a farm can go (`HexGrid::farmable`) adds to a start's
+/// score: a farm's food, weighed as `start_score` weighs food. Farms need
+/// fresh water, so this keeps starts about as well off for farmland.
+const FARMLAND_SCORE: i32 = 3 * super::workers::FARM_FOOD;
+
+/// How good a city site is: the unimproved yields within two hexes, what
+/// farms there could add (`FARMLAND_SCORE`) and fresh water on the site.
 fn start_score(grid: &HexGrid, site: Hex) -> i32 {
     let mut score = 0;
     for dq in -2..=2 {
@@ -1411,9 +1428,9 @@ fn start_score(grid: &HexGrid, site: Hex) -> i32 {
             if !grid.contains(h) {
                 continue;
             }
-            let (food, production) = grid.tile(h).yields();
-            let fresh = i32::from(grid.has_fresh_water(h));
-            score += 3 * (food + fresh) + 2 * production;
+            let (food, wood, metal) = grid.unimproved_yield(h);
+            let farmland = i32::from(grid.farmable(h));
+            score += 3 * food + 2 * (wood + metal) + FARMLAND_SCORE * farmland;
         }
     }
     if grid.has_fresh_water(site) {

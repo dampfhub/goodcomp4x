@@ -13,8 +13,8 @@ use super::{Build, BuildUnit, GATHER_YIELD};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
-use crate::game::terrain::Special;
 use crate::game::unit::Team;
+use crate::game::workers::MINE_METAL;
 
 /// Work a queue does in a turn: a build of `turns` turns needs
 /// `turns * WORK_PER_TURN`. With production speeding builds (the Debug
@@ -287,21 +287,17 @@ impl GameState {
         &mut self.stockpiles[team.index()]
     }
 
-    /// How much of a worked tile's `production` is metal: what hills (1), a
-    /// mine (2) and a Quarry (3) dig out of the ground. The rest is wood.
+    /// How much of an improved tile's `production` is metal: what the tile
+    /// digs out unimproved (hills, `Tile::yields`) and a mine's
+    /// `MINE_METAL`, never more than the production. The rest is wood.
     pub(in crate::game) fn metal_yield(&self, hex: Hex, production: i32) -> i32 {
-        let hills = i32::from(self.grid.tile(hex).hills);
+        let (_, _, ground) = self.grid.unimproved_yield(hex);
         let mine = if self.sites.get(&hex).is_some_and(|s| s.label == "MINE") {
-            2
+            MINE_METAL
         } else {
             0
         };
-        let quarry = if self.grid.special(hex) == Some(Special::Quarry) {
-            3
-        } else {
-            0
-        };
-        (hills + mine + quarry).min(production)
+        (ground + mine).min(production)
     }
 
     /// How many of `city`'s queued Grows are paid for.

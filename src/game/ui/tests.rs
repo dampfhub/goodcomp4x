@@ -1166,6 +1166,55 @@ fn resting_on_a_tile_shows_its_tooltip_after_a_delay() {
     assert_eq!(game.hover_seconds, 0.0);
 }
 
+/// The tile tooltip (both presentations draw its lines) shows a tile's
+/// goods under the cap, whether fresh water added food, and a special's
+/// bonus past the cap (#368).
+#[test]
+fn the_tile_tooltip_shows_capped_goods_fresh_water_and_a_specials_bonus() {
+    use crate::game::fast_hash::HashSet;
+    use crate::game::terrain::{Feature, Special, Terrain, Tile};
+
+    let mut game = GameState::city_scenario();
+    game.fog_of_war = false;
+    game.units.clear();
+    let city = game.cities[0].pos;
+    let open: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|&h| h.distance(city) == 2 && game.grid.tile(h) == Tile::default())
+        .filter(|h| !game.sites.contains_key(h) && !game.roads.contains(h))
+        .collect();
+    let [desert, plains, woods] = [open[0], open[2], open[4]];
+    game.grid.set_tile(desert, Terrain::Desert);
+    let forest = Tile {
+        feature: Some(Feature::Forest),
+        ..Tile::default()
+    };
+    game.grid.set_tile(woods, forest);
+    game.grid.set_special(woods, Special::Orchard);
+    let rivers: HashSet<(Hex, Hex)> = [desert, plains]
+        .into_iter()
+        .map(|h| (h, h.neighbors()[0]))
+        .collect();
+    game.grid = game.grid.clone().with_rivers(rivers);
+    let text = |hex| line_strings(game.tile_tooltip_lines(hex).into_iter().map(|(_, l)| l));
+    let goods = |f, w, m| format!("{FOOD_ICON}{f}   {WOOD_ICON}{w}   {METAL_ICON}{m}");
+
+    // Desert gives 1 wood, and fresh water fills its room with a food.
+    let desert = text(desert);
+    assert_shows(&desert, &goods(1, 1, 0));
+    assert_shows(&desert, "FRESH WATER +1 FOOD");
+    // Plains are at the cap already: fresh water adds nothing.
+    let plains = text(plains);
+    assert_shows(&plains, &goods(2, 0, 0));
+    assert!(plains.iter().any(|l| l.contains("FRESH WATER")));
+    assert!(!plains.iter().any(|l| l.contains("FRESH WATER +")));
+    // A forest gives wood only, and an Orchard 1 food past the cap.
+    let woods = text(woods);
+    assert_shows(&woods, &goods(1, 2, 0));
+    assert_shows(&woods, "ORCHARD +1 FOOD");
+}
+
 #[test]
 fn hovering_an_enemy_city_or_barracks_out_of_sight_shows_no_live_panel() {
     let mut game = GameState::city_scenario();
@@ -1291,7 +1340,22 @@ fn every_panel_shows_what_a_city_delivers_in_displayed_units() {
     let mut game = GameState::city_scenario();
     game.fog_of_war = false;
     game.units.clear();
-    // Wood first, so the city brings in more wood than its center alone.
+    // Forest on the open plains around the city, and wood first, so the
+    // city brings in more wood than its center alone.
+    let city = game.cities[0].pos;
+    let plains: Vec<Hex> = game
+        .grid
+        .all_hexes()
+        .filter(|h| h.distance(city) <= 2 && game.grid.tile(*h) == Default::default())
+        .filter(|h| !game.sites.contains_key(h) && *h != city)
+        .collect();
+    for hex in plains {
+        let forest = crate::game::terrain::Tile {
+            feature: Some(crate::game::terrain::Feature::Forest),
+            ..Default::default()
+        };
+        game.grid.set_tile(hex, forest);
+    }
     game.cities[0].priorities = Priorities([Good::Wood, Good::Food, Good::Metal]);
     game.auto_assign_city(0);
     let income = game.income(0);
@@ -1561,6 +1625,8 @@ fn wrap_breaks_between_words() {
 /// workers.
 fn empty_tile_near_blue_city() -> (GameState, Hex) {
     let mut game = GameState::city_scenario();
+    // Fresh water everywhere, so the tile takes a farm.
+    game.grid = game.grid.clone().with_rivers_everywhere();
     game.explore();
     game.clear_selection();
     let city = game.cities[0].pos;

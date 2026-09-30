@@ -83,12 +83,21 @@ impl GameState {
         }
     }
 
-    /// A worked tile's food, wood and metal: its yield (`tile_yield`), with
-    /// production split into metal (`metal_yield`) and wood.
+    /// What a worked tile produces, as food, wood and metal: its
+    /// improvement's yield (with its production split by `metal_yield`) or,
+    /// unimproved, its tile's under the cap (`HexGrid::unimproved_yield`),
+    /// plus a special tile's bonus, past the cap either way.
     pub(in crate::game) fn tile_goods(&self, hex: Hex) -> (i32, i32, i32) {
-        let (food, production) = self.tile_yield(hex);
-        let metal = self.metal_yield(hex, production);
-        (food, production - metal, metal)
+        let (food, wood, metal) = match self.sites.get(&hex) {
+            Some(site) => {
+                let metal = self.metal_yield(hex, site.production);
+                (site.food, site.production - metal, metal)
+            }
+            None => self.grid.unimproved_yield(hex),
+        };
+        let (extra_food, extra_wood, extra_metal) =
+            self.grid.special(hex).map_or((0, 0, 0), |s| s.bonus());
+        (food + extra_food, wood + extra_wood, metal + extra_metal)
     }
 
     pub(in crate::game) fn routes(&self, city: usize) -> Routes {
@@ -190,19 +199,10 @@ impl GameState {
             .sum()
     }
 
-    /// What a worked tile produces: its site's yield or its terrain's, plus
-    /// one food for fresh water (a river or lake beside it) and a special
-    /// tile's bonus.
+    /// A worked tile's `tile_goods` as food and production (wood and metal).
     pub(in crate::game) fn tile_yield(&self, hex: Hex) -> (i32, i32) {
-        let (food, production) = self
-            .sites
-            .get(&hex)
-            .map_or_else(|| self.grid.tile(hex).yields(), |s| (s.food, s.production));
-        let (extra_food, extra_production) = self.grid.special(hex).map_or((0, 0), |s| s.bonus());
-        (
-            food + i32::from(self.grid.has_fresh_water(hex)) + extra_food,
-            production + extra_production,
-        )
+        let (food, wood, metal) = self.tile_goods(hex);
+        (food, wood + metal)
     }
 
     pub(in crate::game) fn mill_food_share(&self, city: usize, hex: Hex, cost: i32) -> i32 {

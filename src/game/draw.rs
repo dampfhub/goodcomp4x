@@ -3461,6 +3461,8 @@ mod tests {
     #[test]
     fn work_under_way_is_ringed_and_counts_its_turns_left() {
         let mut game = GameState::city_scenario();
+        // Fresh water everywhere, so any open tile takes a farm.
+        game.grid = game.grid.clone().with_rivers_everywhere();
         game.explore();
         game.open_city(0);
         let city = game.cities[0].pos;

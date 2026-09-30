@@ -38,45 +38,63 @@ cap counts those ALIVE (the default) or every one EVER trained (see Barracks).
 
 A tile is a base ground, optionally raised into hills and covered by a feature.
 
-| Ground | Food | Production | Notes |
+**An unimproved tile gives at most 2 goods in all** (food, wood and metal together;
+`UNIMPROVED_YIELD_CAP`), fresh water and hills included. Hills and features change which goods
+a tile gives, not how many. Only special tiles and improvements go past the cap. The one place
+the cap is applied is `Tile::yields` (`terrain.rs`).
+
+| Ground | Food | Wood | Notes |
 |---|---|---|---|
-| Grassland | 3 | 0 | |
-| Plains | 2 | 1 | the default for unlisted hexes |
+| Grassland | 2 | 0 | |
+| Plains | 2 | 0 | the default for unlisted hexes |
 | Desert | 0 | 1 | |
 | Tundra | 1 | 1 | |
 | Snow | 0 | 0 | can't be improved |
-| Marsh | 1 | 0 | never hills |
+| Marsh | 1 | 1 | never hills |
 | Mountains | 0 | 0 | impassable to units and routes; can't be worked or targeted |
 | Coast, Lake | 2 | 0 | water |
 | Ocean | 1 | 0 | water, away from the shore |
 
-| Modifier | Effect |
-|---|---|
-| Hills | +1 production, +25% defense, +1 sight |
-| Forest | -1 food (not below 0), +1 production, +15% defense |
-| Jungle (marsh only) | +1 food, +1 production, +15% defense |
+| Modifier | Effect on goods | Other |
+|---|---|---|
+| Forest | wood only: 2 wood and no food, whatever the ground | +15% defense |
+| Jungle (marsh only) | none: the marsh's 1 food and 1 wood | +15% defense |
+| Hills | 1 metal, plus 1 of the tile's main good (food on a tie; none on snow) | +25% defense, +1 sight |
+| Fresh water | +1 food, within the cap: it adds only where the tile has room | a farm can go only here |
+
+So, unimproved (food / wood / metal):
+
+| Tile | Dry | With fresh water |
+|---|---|---|
+| Grassland, plains | 2 / 0 / 0 | 2 / 0 / 0 |
+| Grassland, plains or tundra + forest (any forest) | 0 / 2 / 0 | 0 / 2 / 0 |
+| Plains, grassland or tundra hills | 1 / 0 / 1 | 1 / 0 / 1 |
+| Forest hills, desert hills | 0 / 1 / 1 | 0 / 1 / 1 |
+| Desert | 0 / 1 / 0 | 1 / 1 / 0 |
+| Tundra, marsh, marsh + jungle | 1 / 1 / 0 | 1 / 1 / 0 |
+| Snow / snow hills | 0 / 0 / 0, 0 / 0 / 1 | 1 / 0 / 0, 1 / 0 / 1 |
+| Coast, lake / ocean | 2 / 0 / 0, 1 / 0 / 0 | (water has no fresh water) |
 
 - **Water:** land units cannot enter it. Patrol Galleys, Landing Craft and Bombard Ships move only on water; attacks may cross the shoreline. Cities can work it: a route may end on a water
   tile but never continues across one.
 - **Rivers** run along hex edges (World maps only). Land beside a river or a lake has fresh water:
-  +1 food, on top of any improvement. A Canoe House makes the connected riverbank a transport
-  corridor (see Buildings).
+  +1 food within the cap (see above), and the only ground where a farm can go (see Yields). A
+  Canoe House makes the connected riverbank a transport corridor (see Buildings).
 - **Terrain and goods:** terrain never slows goods. A delivery route counts only the hexes it
   crosses, a road step as half a hex (see Cities, Logistics).
 - **Defense** bonuses apply to units only; barracks defense is fixed.
-- **Goods:** a tile's food is food; its production splits into **metal**, what's dug out of the
-  ground (+1 for hills, +2 for a mine, +3 for a Quarry, never more than the tile's production),
-  and **wood**, the rest (plains, tundra and desert ground, forest, jungle, lumber mills,
-  pastures). The map's yield pips (wheat, a log, an ingot) and the tile tooltip show food,
-  wood and metal.
+- **Goods:** food, wood and metal, as in the tables above. **Metal** is what's dug out of the
+  ground: 1 from hills, 2 more from a mine, 1 from a Quarry. The map's yield pips (wheat, a log,
+  an ingot) and the tile tooltip show food, wood and metal.
 - **Resources:** Horses and Iron give no yield. Only a Barracks on them trains Cavalry or
   Armored, 3 per deposit (see Barracks); an adjacent Stable or Forge on or beside the matching
   deposit also gives a Barracks that deposit, and upgrades the troop. The Cities scenario places both resources, and every World start has one of each
   nearby.
 - **Special tiles** (World maps only; `Special`, `terrain.rs`): land worth scouting for and
   fighting over, marked with a gold rim and an icon in the hex's bottom-left corner. An Orchard
-  yields +3 food and a Quarry +3 production (metal) when worked, on top of the tile's own yield and any
-  improvement. The kinds and numbers are a first pass.
+  yields +1 food and a Quarry +1 metal (`SPECIAL_BONUS`) when worked, past the cap and on top of
+  the tile's own yield and any improvement: the only tiles giving 3 goods unimproved. An Orchard
+  on plains gives 3 food.
 - **Ruins** (World maps only; `ruins.rs`): a one-use tile, marked with a stone rim and broken
   columns. A side claims ruins by holding their hex with military units (anything but a settler;
   scouts count) at the end of 3 turns; the ruins then give their reward at once and are gone.
@@ -129,7 +147,8 @@ A tile is a base ground, optionally raised into hills and covered by a feature.
     setting (Next World) says (1-6). Each takes a start in `Team::ALL` order (Red, Green, Gold, Purple, Teal,
     Orange), Blue on any of them.
   - **Starts** are on the largest continent, on flat land that is not snow, desert or marsh, with
-    open ground and hills next door, scored on nearby yields and fresh water. The set is
+    open ground and hills next door, and at least 2 tiles within 2 hexes where a farm could go
+    (fresh water), scored on nearby yields and that farmland. The set is
     scattered and then evened out: each start about as far from its nearest neighbor as the land
     allows when shared out evenly (some closer, some farther), with about equally good land, and
     the nearest neighbors about as far on foot too, around the ranges (the farthest at most 1.6
@@ -671,13 +690,17 @@ only).
   comes with a worker at home, as a starting city does; any other city starts without one.
   Settlers come from the start (World, Start With: settler; Frontier) or from a city's queue
   (Settler, below).
-- **Yields:** the city center gives 2 food and 1 wood on its own; each worked tile gives its
+- **Yields:** the city center gives 2 food and 1 wood on its own (not capped); each worked tile gives its
   food, wood and metal (see Goods) times its delivery share. No citizen works a city center or a
   tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
-  the manager, and a citizen already there moves off. Improvements (built by workers, see Workers): a mine on
-  hills (+2 production), a lumber mill under forest or jungle (+1 production), otherwise a farm (+2
-  food); snow can't be improved. The Cities scenario's preplaced farms (4/0), mines (0/4) and
-  pastures (3/1) have fixed yields.
+  the manager, and a citizen already there moves off. Improvements (built by workers, see Workers) add to the tile's
+  unimproved yield, past the cap: a mine on hills (+2 metal), a lumber mill under forest or jungle
+  (+1 wood), or a farm (+2 food) on other ground, but **only with fresh water** (a river edge or a
+  lake beside it); dry open ground and snow can't be improved, and Improve there says why. So a
+  farm by a river on plains gives 4 food, a mine on plains hills 1 food and 3 metal, and a lumber
+  mill in a forest 3 wood. The Cities scenario's preplaced farms (4/0), mines (0/4) and
+  pastures (3/1) have fixed yields (food / production), and that map has no fresh water, so its
+  only other improvement is the mine on the middle hills.
 - **Logistics:** each worked tile's goods travel its shortest route to the city, counted in hexes
   moved: a step onto a road or a city hex, or along a Canoe House river, counts half a hex, and any
   other step one hex, whatever its terrain. Delivery is 100% at up to 2 hexes and 75% from there
@@ -1097,7 +1120,7 @@ The AI builds Scouts and expands with Settlers:
   founding rules allow as far as it knows: open land, no ruins or enemy in sight on it, 6 hexes
   from its own cities and every enemy city it has seen, and within 10 of its nearest city;
   searched up to 14 steps on foot, the best by what the land around it (2 hexes) yields as last
-  seen, food counting double, less 2 a step to get there.
+  seen, food counting double (and a farm's 2 food where one could go), less 2 a step to get there.
 - **Settlers:** each turn a settler picks its site again from where it stands, walks toward it
   (keeping out of reach of enemies in sight where it can; no escort), and founds there once it
   stands on it. A site the rules refuse (a city its side hadn't seen stands too near) is

@@ -33,7 +33,10 @@ use super::{GameState, PLAYER_TEAM};
 const TURNS: u32 = 40;
 
 /// The seeds every `cargo test` plays, unless `SIM_SEED` or `SIM_SEEDS` is set.
-const DEFAULT_SEEDS: [u64; 4] = [1, 2, 3, 4];
+/// Among them a world where a side clears a den within `TURNS` (seed 8), for
+/// the anti-vacuity check: since tile yields were capped (#368) armies grow
+/// slower, and none of seeds 1-4 does any more.
+const DEFAULT_SEEDS: [u64; 4] = [1, 2, 4, 8];
 
 /// The seeds to play: `SIM_SEED` alone, seeds `0..SIM_SEEDS`, or `DEFAULT_SEEDS`.
 fn seeds() -> Vec<u64> {

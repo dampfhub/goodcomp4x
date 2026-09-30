@@ -19,7 +19,8 @@ more citizens and everything else that eats it (troops, workers).
   - A tile's production splits into **metal**, the part dug out of the ground (+1 for hills,
     +2 for a mine, +3 for a Quarry, never more than the tile's production), and **wood**, the
     rest (plains, tundra and desert ground, forest, jungle, lumber mills, pastures). The city
-    center's 1 production is wood. A Smelter's output is metal.
+    center's 1 production is wood. A Smelter's output is metal. (Since Round 10 an
+    unimproved tile gives at most 2 goods and a Quarry +1 metal; `game-rules.md`, Tiles.)
 - **Stockpile:** one per side (`GameState::stockpiles`, indexed by team), not per city. Every
   city's delivered food, wood and metal is added at each turn's economy, after the workers' step.
   Delivery shares apply as before (the falloff by hexes travelled, a road step counting half a
@@ -684,3 +685,98 @@ Measured with `economy_report` against `main` at 602d11b (60 turns, seeds 0-7; W
 Waiting no longer costs the turns it waits: the army at turn 20 is 0.1-0.6 larger, and the
 first troop comes about when it did. Queueing ahead is still slower than paying as you go (the
 AI's army at turn 20 is 3.2-3.5 in the same worlds), since a waiting head holds up the queue.
+
+## Round 10: an unimproved tile gives at most 2 goods (#368)
+
+The user found tiles gave "way too much", and settled it in #368: an unimproved tile gives at
+most 2 goods in all, fresh water and hills included, and each tile leans to one good. Open plains
+and grassland give 2 food, forest 2 wood and no food, marsh 1 food and 1 wood, and hills 1 metal
+plus 1 of the tile's main good; fresh water adds a food only where the tile has room. Specials
+(+1, was +3) and improvements go past the cap, and a farm now goes only on a tile with fresh water.
+The rules are in `game-rules.md` (Tiles, Yields), the cap in `Tile::yields`. Prices, Grow and
+upkeep are unchanged: this round only measures.
+
+**Why +1 for a special.** It keeps a special the best unimproved tile, the one kind giving 3
+goods (an Orchard on plains gives 3 food, as the user's example had it), without making it
+worth more than a worker's improvement (+2).
+
+**Starts.** Farms need fresh water, so a start must now have at least 2 tiles within 2 hexes
+where a farm could go (`START_FARMLAND`), and `start_score` counts each such tile as a farm's
+food (`FARMLAND_SCORE`). Without that, 27% of starts had no farmland within 2 hexes.
+`map_stats`, seeds 0-49, highest start over lowest in each map (mean, worst):
+
+| | before | after |
+|---|---|---|
+| `start_score` | 1.09, 1.21 | 1.09, 1.24 |
+| goods within 2 hexes, unimproved | 1.26, 1.48 | 1.19, 1.36 |
+| nearest start on foot | 1.26, 1.60 | 1.26, 1.59 |
+| farmland within 2 hexes | (not measured) | 2.03, 4.00 (mean 4.5 tiles a start, none without) |
+| decent city sites a side, 8 apart | 8.0 | 8.5 |
+
+Farmland is the least even: a start may have 2 farmable tiles where its neighbor has 8.
+
+### Measured
+
+`economy_report`, 60 turns, seeds 0-23, the default games, on `main` at 9632e16 (before) and
+this change (after):
+
+```
+SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side (world5 and world6 are within 0.2 of these; turns are medians,
+"never" the share of sides that don't get there by turn 60):
+
+| | before | after |
+|---|---|---|
+| First troop | 9 | 9 |
+| Army at turn 20 / 40 / 60 | 3.5 / 5.8 / 10.2 | 2.7 / 4.4 / 5.0 |
+| Trained by turn 20 / 40 / 60 | 3.5 / 7.5 / 16.1 | 2.6 / 5.6 / 8.8 |
+| Population at turn 20 / 40 / 60 | 3.8 / 6.2 / 12.2 | 2.8 / 4.0 / 4.8 |
+| Second city (never) | 39 (7%) | 51 (66%) |
+| First city at population 5 (never) | 30 (11%) | 39 (64%) |
+| Stockpile f / w / m at turn 20 | 21 / 10 / 18 | 12 / 7 / 4 |
+| Stockpile f / w / m at turn 40 | 28 / 33 / 70 | 18 / 13 / 10 |
+| Stockpile f / w / m at turn 60 | 34 / 60 / 165 | 22 / 26 / 22 |
+| Income f / w / m at turn 20 | 15.0 / 3.0 / 2.0 | 8.2 / 1.2 / 0.1 |
+| City queue gathering | 41% of turns | 70% |
+| Barracks idle (of those, short of wood) | 17% (52%) | 44% (62%) |
+| Improvements finished (all sides, 24 games) | 789 | 245 |
+
+The other games, before → after:
+- **World with 1 AI side:** army at turns 20 / 40 / 60 3.3 / 6.4 / 12.1 → 2.6 / 5.1 / 5.7;
+  population at 20 / 40 4.0 / 6.4 → 2.9 / 4.4; second city 38 (4% never) → 53 (67% never).
+- **Cities:** army at turns 20 / 40 / 60 3.5 / 9.0 / 11.5 → 3.0 / 5.5 / 8.0; population at 20 / 40
+  3.5 / 6.5 → 4.0 / 5.0; wood at turn 60 178 → 24. The map has no fresh water, so no farms
+  beyond the preplaced ones.
+- **Army first** (`REPORT_ARMY_FIRST=1`, World with 4 AI sides): army at turn 60 9.4 → 4.5,
+  population at turn 40 5.5 → 3.7.
+
+### What it shows
+
+- **The first troop still comes at turn 9**, but everything after it slows: about three
+  quarters of the army at turn 20, half at turn 60, and a second city at turn 51 instead of 39,
+  with two sides in three never founding one by turn 60.
+- **Food is the bottleneck.** A citizen eats 2 food and an unimproved food tile gives 2, so a
+  citizen on one only feeds itself: a city's surplus is its center's 2 food and its farms, and
+  farms need fresh water. Food income at turn 20 falls from 15 to 8.
+- **Wood and metal almost stop coming from tiles.** Held to its food floor, the AI puts its
+  citizens on food, so its wood is the center's and Gather's, and its metal Gather's. Its
+  Barracks sit idle 44% of turns, mostly short of wood, and its cities gather 70% of turns.
+- **Stockpiles no longer pile up.** At turn 60 a side holds 22 food, 26 wood and 22 metal,
+  against 34 / 60 / 165: Round 7's "the late game has nothing to spend on" is gone for now.
+- **Improvements are still worth building,** more so than before against the smaller base: a
+  farm doubles a tile (2 → 4 food), a mine on hills adds 2 metal (1 food and 1 metal → 1 food and
+  3 metal), a lumber mill adds half (2 → 3 wood). Their yields are unchanged. Fewer get built
+  (245 against 789), because dry open ground takes none.
+- **The city center** still gives 2 food and 1 wood uncapped: 3 goods, as much as a special
+  tile, and a new city's only food surplus until it farms. It doesn't dominate a grown city, but
+  early growth rests on it.
+- **For the user to decide** (nothing here is retuned): the Grow price (10 food and 10 more a
+  citizen) and the 2 food a citizen eats were set against tiles of 3-4 food. With tiles of 2,
+  population at turn 40 is 4.0 instead of 6.2.
+
+Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release simulation` and
+`cargo test --release plans_the_ai_makes -- --ignored`. The simulations' default seeds are
+now 1, 2, 4 and 8: with smaller armies no side cleared a den in 40 turns on seeds 1-4, which
+the check that the AI hunts needs.

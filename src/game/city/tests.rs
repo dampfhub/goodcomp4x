@@ -1,6 +1,7 @@
 use super::barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
 use super::economy::{WORK_PER_TURN, grow_price};
 use super::*;
+use crate::game::terrain::{Feature, Terrain};
 use crate::game::workers::{JobKind, WorkerJob};
 
 /// The builds in a queue, in order.
@@ -395,12 +396,12 @@ fn economy_ticks_once_into_the_stockpile_with_delivery_share() {
     g.roads.clear();
     g.cities[0].clusters = one_cluster(&[tile]);
     // The center's 2 food and 1 wood, and three quarters of the
-    // plains' 2 food and 1 wood, which is a long haul away.
+    // plains' 2 food, which is a long haul away.
     assert_eq!(
         g.income(0),
         Stock {
             food: 14,
-            wood: 7,
+            wood: 4,
             metal: 0
         }
     );
@@ -425,7 +426,7 @@ fn economy_ticks_once_into_the_stockpile_with_delivery_share() {
         g.stock(Team::Blue),
         Stock {
             food: before.food + 14 - upkeep - price.food,
-            wood: before.wood + 7 - price.wood,
+            wood: before.wood + 4 - price.wood,
             metal: before.metal - price.metal
         }
     );
@@ -958,6 +959,14 @@ fn barracks_trains_whatever_the_manager_does_and_faster_than_the_city() {
     g.units.clear();
     let manager = Hex::new(-1, 0);
     let worker = Hex::new(-1, 1);
+    // A forest: the Barracks takes production, which open plains don't give.
+    g.grid.set_tile(
+        worker,
+        Tile {
+            feature: Some(Feature::Forest),
+            ..Tile::from(Terrain::Plains)
+        },
+    );
     g.cities[0].clusters = one_cluster(&[manager, worker]);
     g.cities[0].remembered = g.cities[0].clusters.clone();
     g.cities[0].barracks = Some(manager);
