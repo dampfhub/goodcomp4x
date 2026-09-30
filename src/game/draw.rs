@@ -4,7 +4,10 @@ use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 use glam::Vec2;
 
-use super::city::{BARRACKS_MAX_HP, Building, COASTAL_BATTERY_MAX_HP, Stock, resource_icon};
+use super::city::{
+    BARRACKS_MAX_HP, Build, Building, COASTAL_BATTERY_MAX_HP, Lane, SETTLER_MIN_POPULATION,
+    WaitsFor, stock_icons, turns_icon,
+};
 use super::combat::{AttackPreview, Hurt, Loss};
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, SeenBuilding, SeenJob};
@@ -186,13 +189,19 @@ const JOB_LABEL_UNDER_SHARE: Vec2 = Vec2::new(0.0, 0.40);
 const WORKER_TAG_MIN: Vec2 = Vec2::new(-0.78, -0.58);
 const WORKER_TAG_MAX: Vec2 = Vec2::new(-0.3, -0.32);
 const WORKER_TAG_COLOR: Color = [0.03, 0.03, 0.04, 0.92];
-/// A city waiting for the stockpile (`waiting_badge`): a tag over its tower,
-/// from this height up, an icon for each resource it lacks.
-const WAITING_TAG_BOTTOM: f32 = 0.44;
-const WAITING_TAG_HEIGHT: f32 = 0.3;
-const WAITING_ICON_PITCH: f32 = 0.21;
-const WAITING_ICON_HEIGHT: f32 = 0.21;
-const WAITING_TAG_RIM: Color = [0.98, 0.30, 0.20, 1.0];
+/// A production tag (`push_production_tag`): over a city's tower from this
+/// height up, and over a Barracks from above its health bar; how tall it
+/// is, and its text's capital height.
+const CITY_TAG_BOTTOM: f32 = 0.44;
+const BARRACKS_TAG_BOTTOM: f32 = 0.62;
+const PRODUCTION_TAG_HEIGHT: f32 = 0.3;
+const PRODUCTION_TAG_TEXT: f32 = 0.15;
+/// A tag for an item that waits, rimmed red, its shortfall in a light red;
+/// one for an item worked (Alt), rimmed in gold, its turns in white.
+const WAITING_TAG_RIM: Color = [0.60, 0.25, 0.21, 1.0];
+const WAITING_TAG_TEXT: Color = [0.86, 0.46, 0.40, 1.0];
+const WORKING_TAG_RIM: Color = [0.62, 0.52, 0.26, 1.0];
+const WORKING_TAG_TEXT: Color = [0.95, 0.95, 0.95, 1.0];
 /// Structures workers build.
 const STONE_COLOR: Color = [0.24, 0.23, 0.21, 1.0];
 /// How thick a wall or gate is along its hex edge.
@@ -1492,22 +1501,54 @@ impl GameState {
         for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             push_worker_count(city.pos.to_world(), city.workers, out);
         }
-        // The player's cities that wait for the stockpile: the first item of
-        // a queue can't be paid for this turn (`city_waits_for`).
-        let shown: Vec<usize> = (0..self.cities.len())
-            .filter(|&i| {
-                let city = &self.cities[i];
-                city.team == self.local_team
-                    && self.may_show(city.pos)
-                    && !(city.queue.is_empty() && city.barracks_queue.is_empty())
-            })
+        self.push_production_tags(out);
+    }
+
+    /// A tag over each of the player's cities and Barracks: while the first
+    /// item of its queue waits (`head_wait`, the panels' account too), that
+    /// item and what it waits for, with how much the stockpile is short
+    /// (#342), always; with Alt held, otherwise, the item it works and its
+    /// turns left (#339). Nothing for other sides': their queues hang on a
+    /// stockpile the player can't see, and fog.
+    fn push_production_tags(&self, out: &mut Vec<Vertex>) {
+        let at = |i: usize, lane: Lane| {
+            let city = &self.cities[i];
+            let (hex, bottom) = match lane {
+                Lane::City => (city.pos, CITY_TAG_BOTTOM),
+                Lane::Barracks => (city.barracks?, BARRACKS_TAG_BOTTOM),
+            };
+            (self.lane_len(i, lane) > 0 && self.may_show(hex))
+                .then(|| hex.to_world() + Vec2::new(0.0, bottom))
+        };
+        let shown: Vec<(usize, Lane, Vec2)> = (0..self.cities.len())
+            .filter(|&i| self.cities[i].team == self.local_team)
+            .flat_map(|i| [Lane::City, Lane::Barracks].map(|lane| (i, lane)))
+            .filter_map(|(i, lane)| at(i, lane).map(|at| (i, lane, at)))
             .collect();
-        if !shown.is_empty() {
-            let forecast = self.forecast(self.local_team);
-            for i in shown {
-                if let Some(short) = self.city_waits_for(&forecast, i) {
-                    push_waiting_badge(self.cities[i].pos.to_world(), short, out);
-                }
+        if shown.is_empty() {
+            return;
+        }
+        let forecast = self.forecast(self.local_team);
+        for (i, lane, at) in shown {
+            let Some(queue) = forecast.lane(i, lane) else {
+                continue;
+            };
+            if let Some(wait) = self.head_wait(queue) {
+                let text = map_wait_text(wait.waits_for);
+                push_production_tag(
+                    at,
+                    wait.build,
+                    &text,
+                    WAITING_TAG_RIM,
+                    WAITING_TAG_TEXT,
+                    out,
+                );
+            } else if self.show_details
+                && let Some(index) = queue.worked
+            {
+                let build = self.lane_build(i, lane, index);
+                let turns = turns_icon(self.item_turns_left(i, lane, index));
+                push_production_tag(at, build, &turns, WORKING_TAG_RIM, WORKING_TAG_TEXT, out);
             }
         }
     }
@@ -2582,32 +2623,66 @@ fn push_worker_count(city: Vec2, count: u32, out: &mut Vec<Vertex>) {
     );
 }
 
-/// What a city waiting for the stockpile lacks (`city_waits_for`): a dark
-/// tag over its tower, rimmed in red, with the icon of each resource it's
-/// short of (`map_icons`), food, wood then metal.
-fn push_waiting_badge(city: Vec2, short: Stock, out: &mut Vec<Vertex>) {
-    let icons: Vec<MapIcon> = short
-        .parts()
-        .into_iter()
-        .filter(|&(_, amount)| amount > 0)
-        .filter_map(|(name, _)| map_icons::inline_icon(resource_icon(name)))
-        .collect();
-    if icons.is_empty() {
-        return;
+/// What an item that waits lacks, for its map tag: "-[wood]8 -[metal]2",
+/// the icon and amount of each resource the stockpile is short of; SUPPLY;
+/// or the population a Settler needs.
+fn map_wait_text(waits_for: WaitsFor) -> String {
+    match waits_for {
+        WaitsFor::Stock(short) => stock_icons(short)
+            .split(' ')
+            .map(|part| format!("-{part}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        WaitsFor::Supply => "SUPPLY".into(),
+        WaitsFor::Citizens => format!("POP {SETTLER_MIN_POPULATION}"),
     }
-    let width = WAITING_TAG_HEIGHT - WAITING_ICON_PITCH + icons.len() as f32 * WAITING_ICON_PITCH;
-    let min = city + Vec2::new(-width / 2.0, WAITING_TAG_BOTTOM);
-    let max = min + Vec2::new(width, WAITING_TAG_HEIGHT);
+}
+
+/// A dark tag, its bottom centered on `bottom`, rimmed in `rim`: `build`'s
+/// pictogram (or, for a Grow or Gather, its name), then `text` in
+/// `text_color`: what it waits for, or its turns left. A few quads and
+/// glyphs, and only over the player's own buildings.
+fn push_production_tag(
+    bottom: Vec2,
+    build: Build,
+    text: &str,
+    rim: Color,
+    text_color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    let (height, cap) = (PRODUCTION_TAG_HEIGHT, PRODUCTION_TAG_TEXT);
+    let pad = height * 0.2;
+    let icon = UnitIcon::of_build(build);
+    let mark = match icon {
+        Some(_) => height * 0.8,
+        None => font::world_text_width(build.name(), cap),
+    };
+    let width = pad + mark + pad + font::world_text_width(text, cap) + pad;
+    let min = bottom - Vec2::new(width / 2.0, 0.0);
+    let max = min + Vec2::new(width, height);
     let edge = Vec2::splat(ICON_OUTLINE_WIDTH / 2.0);
-    mesh::quad(min - edge, max + edge, WAITING_TAG_RIM, out);
+    mesh::quad(min - edge, max + edge, rim, out);
     mesh::quad(min, max, WORKER_TAG_COLOR, out);
     let middle = (min.y + max.y) / 2.0;
-    let first = min.x + WAITING_TAG_HEIGHT / 2.0;
-    for (k, icon) in icons.into_iter().enumerate() {
-        let center = Vec2::new(first + k as f32 * WAITING_ICON_PITCH, middle);
-        // The icons are laid out about a fifth of a hex tall.
-        super::sprites::push_icon(center, icon, WAITING_ICON_HEIGHT * 5.0 / HEX_SIZE, out);
+    let baseline = middle - cap / 2.0;
+    match icon {
+        Some(icon) => unit_icons::push_pictogram(
+            Vec2::new(min.x + pad + mark / 2.0, middle),
+            mark / 2.0,
+            icon,
+            WORKING_TAG_TEXT,
+            out,
+        ),
+        None => font::push_text(
+            Vec2::new(min.x + pad, baseline),
+            cap,
+            build.name(),
+            WORKING_TAG_TEXT,
+            out,
+        ),
     }
+    let text_left = min.x + pad + mark + pad;
+    font::push_text(Vec2::new(text_left, baseline), cap, text, text_color, out);
 }
 
 /// A wall or gate along the edge between `a` and `b`: a band of stone with
@@ -3672,7 +3747,7 @@ mod tests {
 
     #[test]
     fn a_city_waiting_for_the_stockpile_shows_what_it_lacks_over_its_tower() {
-        use crate::game::city::{Build, BuildUnit, Queued};
+        use crate::game::city::{Build, BuildUnit, Queued, Stock, WaitsFor};
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.selected = None;
@@ -3682,9 +3757,18 @@ mod tests {
         game.stockpiles[Team::Blue.index()] = Stock::default();
         game.cities[0].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
         let forecast = game.forecast(Team::Blue);
-        let short = game.city_waits_for(&forecast, 0).expect("it waits");
+        let wait = game.head_waits(&forecast)[0];
+        let WaitsFor::Stock(short) = wait.waits_for else {
+            panic!("{wait:?}")
+        };
         assert!(short.wood > 0, "{short:?}");
-        assert!(rim(&game) > 0, "the badge shows");
+        assert!(rim(&game) > 0, "the tag shows");
+        // Its text is the shortfall, each resource's icon and amount.
+        let text = map_wait_text(wait.waits_for);
+        assert!(
+            text.starts_with(&format!("-{}", crate::game::map_icons::WOOD_ICON)),
+            "{text}"
+        );
         let one = rim(&game);
         // A Gather behind it doesn't stop it waiting: the head still does.
         game.cities[0].queue.push(Queued::new(Build::Gather));
@@ -3698,6 +3782,97 @@ mod tests {
         game.cities[1].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
         game.explore();
         assert_eq!(rim(&game), 0);
+    }
+
+    /// #342: a Barracks whose first item waits shows the tag over its own
+    /// hex, with the item's pictogram, without Alt; #339: with Alt, what
+    /// the city and the Barracks work, with their turns left, and still
+    /// nothing for another side.
+    #[test]
+    fn the_players_buildings_show_what_waits_always_and_what_they_work_with_alt() {
+        use crate::game::city::{Build, BuildUnit, Queued, Stock};
+        let mut game = GameState::city_scenario();
+        game.units.clear();
+        game.selected = None;
+        game.fog_of_war = false;
+        let barracks = Hex::new(-2, 0);
+        game.cities[0].barracks = Some(barracks);
+        game.cities[0].built.push(Building::Barracks);
+        let tags = |game: &GameState, rim: Color| {
+            let vertices = game.build_vertices();
+            // A tag's rim is one quad: six vertices.
+            count_color(&vertices, rim) / 6
+        };
+        // Broke: a Cavalry waits in the Barracks; the city works a Gather.
+        game.stockpiles[Team::Blue.index()] = Stock::default();
+        game.cities[0].barracks_queue = vec![Queued::new(BuildUnit::Cavalry)];
+        game.cities[0].queue = vec![Queued::new(Build::Gather)];
+        assert_eq!(tags(&game, WAITING_TAG_RIM), 1, "the Barracks' tag");
+        assert_eq!(tags(&game, WORKING_TAG_RIM), 0, "only with Alt");
+        // The tag sits over the Barracks, not the city: its rim's quad.
+        let over = |game: &GameState, rim: Color, hex: Hex| {
+            let bottom = hex.to_world().y + BARRACKS_TAG_BOTTOM;
+            game.build_vertices().iter().any(|v| {
+                v.color == rim
+                    && (v.pos[0] - hex.to_world().x).abs() < 1.0
+                    && (v.pos[1] - bottom).abs() < PRODUCTION_TAG_HEIGHT + 0.05
+            })
+        };
+        assert!(over(&game, WAITING_TAG_RIM, barracks));
+        // Its pictogram is drawn: plain triangles (no glyph's texture) in
+        // the tag's light; a Gather's tag names it in glyphs instead.
+        let mut with = Vec::new();
+        push_production_tag(
+            Vec2::ZERO,
+            Build::Unit(BuildUnit::Cavalry),
+            "-",
+            WAITING_TAG_RIM,
+            WAITING_TAG_TEXT,
+            &mut with,
+        );
+        let mut without = Vec::new();
+        push_production_tag(
+            Vec2::ZERO,
+            Build::Gather,
+            "-",
+            WAITING_TAG_RIM,
+            WAITING_TAG_TEXT,
+            &mut without,
+        );
+        let pictogram = |vertices: &[Vertex]| {
+            vertices
+                .iter()
+                .filter(|v| v.color == WORKING_TAG_TEXT && v.uv == crate::renderer::SOLID_UV)
+                .count()
+        };
+        assert!(pictogram(&with) > 0);
+        assert_eq!(pictogram(&without), 0);
+        assert!(with.len() < 400, "{} vertices for a tag", with.len());
+
+        // Alt: the city's Gather gets a tag with its turns left; the
+        // Barracks still shows what it waits for.
+        game.set_details(true);
+        assert_eq!(tags(&game, WORKING_TAG_RIM), 1);
+        assert_eq!(tags(&game, WAITING_TAG_RIM), 1);
+        // Paid for, the Cavalry is worked: a working tag over each.
+        game.cities[0].barracks_queue[0].paid = true;
+        assert_eq!(tags(&game, WORKING_TAG_RIM), 2);
+        assert_eq!(tags(&game, WAITING_TAG_RIM), 0);
+        assert!(over(&game, WORKING_TAG_RIM, barracks));
+        // Released, only waits show.
+        game.set_details(false);
+        assert_eq!(tags(&game, WORKING_TAG_RIM), 0);
+
+        // Another side's buildings show nothing, Alt or not, in sight or not.
+        game.cities[0].queue.clear();
+        game.cities[0].barracks_queue.clear();
+        game.set_details(true);
+        game.cities[1].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Melee))];
+        game.stockpiles[Team::Red.index()] = Stock::default();
+        game.cities[1].barracks = Some(game.cities[1].pos);
+        game.cities[1].barracks_queue = vec![Queued::new(BuildUnit::Melee)];
+        assert_eq!(tags(&game, WORKING_TAG_RIM), 0);
+        assert_eq!(tags(&game, WAITING_TAG_RIM), 0);
     }
 
     #[test]

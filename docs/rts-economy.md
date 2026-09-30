@@ -88,8 +88,9 @@ more citizens and everything else that eats it (troops, workers).
   and cards whose hints are the price and turns in icons, never dimmed for the price (at a
   Barracks, dimmed when locked) but drawn short, with a red rim and price, when the side can't
   pay for them this turn; a card's tooltip says what the side is short of this turn.
-  Queue rows show turns left, or, tinted red, what they wait for; a waiting city has a badge
-  over its tower on the map with the missing resources' icons. Whether an item waits is judged
+  Queue rows show turns left, or, tinted red, what they wait for; a building whose first item
+  waits has a tag over it on the map with the item and each missing resource's icon and amount
+  (with Alt, a working one shows its item and turns left). Whether an item waits is judged
   on the stockpile as this turn's economy will find it (`forecast`: now, plus the turn's income,
   less the citizens' food and what the queues ahead start). Notices name prices in icons. The
   barracks panel shows each deposit kind's troops left, or why they're locked.

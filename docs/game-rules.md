@@ -752,9 +752,12 @@ only).
   getting built (the city **gathers while it waits**, see Gathering by itself; a Barracks is
   **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS — MELEE WAITS,
   SHORT OF" the resources, or "IDLE — RANGED WAITS, ..." for a Barracks), the turn strip adds a
-  red-rimmed chip for it, and End Turn counts it as WAITING. The city shows a
-  badge over its tower on the map with the icon of each resource it lacks, whenever the first
-  item of its queue or its Barracks' waits. What waits is judged on the stockpile as this turn's
+  red-rimmed chip for it, and End Turn counts it as WAITING. On the map, always, a tag rimmed in
+  red over the building whose first item waits (the city's tower for its queue, the Barracks
+  for its own) shows the item's pictogram (or GROW, GATHER) and what it waits for: each
+  resource the stockpile is short of with how much ("-[wood]8"), SUPPLY, or POP 3. Holding Alt,
+  a tag rimmed in gold over each of the player's cities and Barracks that works an item shows
+  that item and its turns left. Other sides' buildings never show either. What waits is judged on the stockpile as this turn's
   economy will find it: what's there now, plus the turn's income, less the citizens' food, and
   less what the queues ahead start. A build or train card, and Grow, that the side can't pay for
   this turn is drawn short: a red rim and a red price, in both presentations; its tooltip (or the
