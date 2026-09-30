@@ -16,6 +16,7 @@ use glam::Vec2;
 
 use super::{BODY, GAP, GOLD_TEXT, LABEL_TEXT, Layout, TEXT, TITLE, Target};
 use crate::game::GameState;
+use crate::game::keys::Command;
 use crate::game::settings::{Control, Setting};
 use crate::game::strings::text;
 
@@ -48,7 +49,7 @@ impl GameState {
             if group != Some(setting.group()) {
                 group = Some(setting.group());
                 panel.gap(GAP);
-                panel.heading(setting.group());
+                panel.heading(&setting.group());
             }
             panel.setting(setting, self.settings.get(setting));
         }
@@ -63,7 +64,8 @@ impl GameState {
             text!("settings_city_yields_off")
         };
         panel.compact_buttons(vec![
-            ButtonSpec::new(Target::ToggleYields, yields, "Y").queued(self.show_yields),
+            ButtonSpec::new(Target::ToggleYields, yields, Command::Yields.key())
+                .queued(self.show_yields),
         ]);
         panel.gap(GAP);
         panel.compact_buttons(vec![
@@ -72,7 +74,11 @@ impl GameState {
                 text!("settings_multiplayer_button"),
                 "",
             ),
-            ButtonSpec::new(Target::CloseSettings, text!("settings_close_button"), "ESC"),
+            ButtonSpec::new(
+                Target::CloseSettings,
+                text!("settings_close_button"),
+                Command::Back.key(),
+            ),
             ButtonSpec::new(Target::Quit, text!("settings_quit_button"), ""),
         ]);
         panel

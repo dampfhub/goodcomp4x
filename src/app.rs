@@ -18,6 +18,7 @@ use winit::window::{Fullscreen, Window, WindowId};
 use crate::cli::Options;
 use crate::clipboard;
 use crate::game::Settings;
+use crate::game::keys::{self, Command, Key};
 use crate::game::{
     ClickMode, GameState, ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, Scenario,
     font_atlas, selection_box, style_imgui, ui_projection,
@@ -485,27 +486,101 @@ impl App {
         if self.use_imgui {
             return;
         }
-        let ctrl = self.modifiers.state().control_key();
-        match event.physical_key {
-            PhysicalKey::Code(KeyCode::KeyV) if ctrl => {
+        match self.command(keys::TYPING, event.physical_key) {
+            Some(Command::Paste) => {
                 if let Some(text) = clipboard::get_text() {
                     self.game.paste_net_text(&text);
                 }
             }
-            PhysicalKey::Code(key @ (KeyCode::KeyC | KeyCode::KeyX)) if ctrl => {
-                if let Some(text) = self.game.copy_net_field(key == KeyCode::KeyX) {
+            Some(command @ (Command::Copy | Command::Cut)) => {
+                if let Some(text) = self.game.copy_net_field(command == Command::Cut) {
                     self.copy(&text);
                 }
             }
-            PhysicalKey::Code(KeyCode::Backspace) => self.game.net_field_backspace(),
-            PhysicalKey::Code(
-                KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::Tab | KeyCode::Escape,
-            ) => self.game.stop_typing(),
+            Some(Command::Erase) => self.game.net_field_backspace(),
+            Some(Command::StopTyping) => self.game.stop_typing(),
             _ => {
                 if let Some(text) = &event.text {
                     self.game.type_net_text(text);
                 }
             }
+        }
+    }
+
+    /// What the key pressed does in `map` (`game/keys.rs`), with the
+    /// modifiers held now.
+    fn command(&self, map: &[(keys::Chord, Command)], key: PhysicalKey) -> Option<Command> {
+        let PhysicalKey::Code(code) = key else {
+            return None;
+        };
+        let modifiers = self.modifiers.state();
+        keys::command_for(
+            map,
+            game_key(code)?,
+            modifiers.control_key(),
+            modifiers.shift_key(),
+        )
+    }
+
+    /// Does what a key of the playing map (`keys::PLAYING`) was pressed for.
+    fn carry_out(&mut self, command: Command) {
+        use crate::game::{BuildUnit, Building, JobKind};
+        let game = &mut self.game;
+        match command {
+            Command::Back => game.press_escape(),
+            Command::HoldOrEndTurn => {
+                if !game.exit_structure_menu() {
+                    game.hold_or_end_turn();
+                }
+            }
+            Command::NextUnit => game.select_next_unit(),
+            Command::Ability => game.toggle_selected_ability(),
+            Command::SelectCity => game.select_city(),
+            Command::CityInterior => game.toggle_city_interior(),
+            Command::AutoAssign => game.auto_assign_selected_city(),
+            Command::Move => game.choose_move_action(),
+            Command::Attack => game.choose_attack_action(),
+            Command::Road => game.arm_worker_job(JobKind::Road),
+            Command::Improve => game.arm_worker_job(JobKind::Improve),
+            Command::FoundCity => game.found_city_selected(),
+            Command::BuildMelee => game.queue_selected_city_unit(BuildUnit::Melee),
+            Command::BuildRanged => game.queue_selected_city_unit(BuildUnit::Ranged),
+            Command::BuildSiege => game.queue_selected_city_unit(BuildUnit::Siege),
+            Command::BuildScout => game.queue_selected_city_scout(),
+            Command::BuildSettler => game.queue_selected_city_settler(),
+            Command::BuildBarracks => game.queue_selected_city_building(Building::Barracks),
+            Command::BuildMill => game.queue_selected_city_building(Building::Mill),
+            Command::BuildWorkshop => game.queue_selected_city_building(Building::Workshop),
+            Command::BuildWorker => game.queue_selected_city_worker(),
+            Command::Grow => game.queue_selected_city_growth(),
+            Command::Gather => game.queue_selected_city_gather(),
+            Command::Remove if game.is_in_city_interior() => game.clear_selected_interior_orders(),
+            Command::Remove => game.remove_selected_city_queue_head(),
+            Command::Disband => game.disband_selected(),
+            Command::QueueHeadDown => game.move_selected_city_queue_head(false),
+            Command::Scenario(scenario) => game.switch_scenario(scenario),
+            Command::Yields => game.toggle_yields(),
+            Command::Guard => game.toggle_guard(),
+            Command::Alert => game.toggle_alert(),
+            Command::Save => game.save_state(),
+            Command::Load => game.load_state(),
+            Command::Playback => game.toggle_instant_playback(),
+            Command::FinishBuild => game.debug_complete_current_production(),
+            Command::Fog => game.toggle_fog(),
+            Command::Fullscreen => self.toggle_fullscreen(),
+            Command::Presentation => self.switch_presentation(),
+            Command::ResetLayout => {
+                if self.imgui_layout.request_reset_active_view() {
+                    self.game
+                        .set_ui_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT");
+                }
+            }
+            // The typing map's (`type_key`).
+            Command::Paste
+            | Command::Copy
+            | Command::Cut
+            | Command::Erase
+            | Command::StopTyping => {}
         }
     }
 
@@ -1072,18 +1147,7 @@ impl ApplicationHandler for App {
             {
                 self.type_key(&event)
             }
-            // Escape closes the settings menu, a view or the selection first;
-            // with nothing to close it opens the settings menu.
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(KeyCode::Escape),
-                        state: ElementState::Pressed,
-                        repeat: false,
-                        ..
-                    },
-                ..
-            } => self.game.press_escape(),
+            // The key map (`game/keys.rs`) says what a key does.
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -1094,81 +1158,17 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => {
-                let modifiers = self.modifiers.state();
-                if self.use_imgui
-                    && key == KeyCode::KeyR
-                    && modifiers.control_key()
-                    && modifiers.shift_key()
-                {
-                    if self.imgui_layout.request_reset_active_view() {
-                        self.game
-                            .set_ui_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT");
-                    }
+                let mut command = self.command(keys::PLAYING, PhysicalKey::Code(key));
+                // Classic has no panels to put back: there the chord does
+                // what its key alone does.
+                if command == Some(Command::ResetLayout) && !self.use_imgui {
+                    command = game_key(key)
+                        .and_then(|key| keys::command_for(keys::PLAYING, key, false, false));
+                }
+                let Some(command) = command else {
                     return;
-                }
-                match key {
-                    KeyCode::Space => {
-                        let closed_menu = self.game.exit_structure_menu();
-                        if !closed_menu {
-                            self.game.hold_or_end_turn();
-                        }
-                    }
-                    KeyCode::Tab => self.game.select_next_unit(),
-                    KeyCode::KeyQ => self.game.toggle_selected_ability(),
-                    KeyCode::KeyC => self.game.select_city(),
-                    KeyCode::KeyV => self.game.toggle_city_interior(),
-                    KeyCode::KeyA => self.game.auto_assign_selected_city(),
-                    KeyCode::KeyM => self.game.choose_move_action(),
-                    KeyCode::KeyX => self.game.choose_attack_action(),
-                    KeyCode::KeyR => self.game.arm_worker_job(crate::game::JobKind::Road),
-                    KeyCode::KeyI => self.game.arm_worker_job(crate::game::JobKind::Improve),
-                    KeyCode::KeyF => self.game.found_city_selected(),
-                    KeyCode::Digit1 => self
-                        .game
-                        .queue_selected_city_unit(crate::game::BuildUnit::Melee),
-                    KeyCode::Digit2 => self
-                        .game
-                        .queue_selected_city_unit(crate::game::BuildUnit::Ranged),
-                    KeyCode::Digit3 => self
-                        .game
-                        .queue_selected_city_unit(crate::game::BuildUnit::Siege),
-                    KeyCode::Digit4 => self.game.queue_selected_city_scout(),
-                    KeyCode::KeyS => self.game.queue_selected_city_settler(),
-                    KeyCode::Digit5 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Barracks),
-                    KeyCode::Digit6 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Mill),
-                    KeyCode::Digit7 => self
-                        .game
-                        .queue_selected_city_building(crate::game::Building::Workshop),
-                    KeyCode::Backspace if self.game.is_in_city_interior() => {
-                        self.game.clear_selected_interior_orders()
-                    }
-                    KeyCode::Digit8 => self.game.queue_selected_city_worker(),
-                    KeyCode::Digit9 => self.game.queue_selected_city_growth(),
-                    KeyCode::Digit0 => self.game.queue_selected_city_gather(),
-                    KeyCode::Backspace => self.game.remove_selected_city_queue_head(),
-                    KeyCode::Delete => self.game.disband_selected(),
-                    KeyCode::PageDown => self.game.move_selected_city_queue_head(false),
-                    KeyCode::F1 => self.game.switch_scenario(Scenario::Combat),
-                    KeyCode::F2 => self.game.switch_scenario(Scenario::Cities),
-                    KeyCode::F3 => self.game.switch_scenario(Scenario::Frontier),
-                    KeyCode::F4 => self.game.switch_scenario(Scenario::World),
-                    KeyCode::F12 => self.game.switch_scenario(Scenario::Siege),
-                    KeyCode::KeyY => self.game.toggle_yields(),
-                    KeyCode::KeyG => self.game.toggle_guard(),
-                    KeyCode::KeyE => self.game.toggle_alert(),
-                    KeyCode::F5 => self.toggle_fullscreen(),
-                    KeyCode::F6 => self.game.save_state(),
-                    KeyCode::F7 => self.game.load_state(),
-                    KeyCode::F8 => self.game.toggle_instant_playback(),
-                    KeyCode::F9 => self.game.debug_complete_current_production(),
-                    KeyCode::F10 => self.game.toggle_fog(),
-                    KeyCode::F11 => self.switch_presentation(),
-                    _ => {}
-                }
+                };
+                self.carry_out(command);
             }
             WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
@@ -1217,9 +1217,131 @@ fn is_input(event: &WindowEvent) -> bool {
     )
 }
 
+/// The game's name for a key (`game/keys.rs`), if the game has one for it.
+/// The numeric keypad's Enter is Enter.
+fn game_key(code: KeyCode) -> Option<Key> {
+    let letters = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+    ];
+    let digits = [
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    let functions = [
+        KeyCode::F1,
+        KeyCode::F2,
+        KeyCode::F3,
+        KeyCode::F4,
+        KeyCode::F5,
+        KeyCode::F6,
+        KeyCode::F7,
+        KeyCode::F8,
+        KeyCode::F9,
+        KeyCode::F10,
+        KeyCode::F11,
+        KeyCode::F12,
+    ];
+    let nth = |keys: &[KeyCode]| keys.iter().position(|&k| k == code);
+    Some(match code {
+        KeyCode::Escape => Key::Escape,
+        KeyCode::Space => Key::Space,
+        KeyCode::Tab => Key::Tab,
+        KeyCode::Enter | KeyCode::NumpadEnter => Key::Enter,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::PageDown => Key::PageDown,
+        _ => {
+            if let Some(i) = nth(&letters) {
+                Key::Letter(char::from(b'A' + i as u8))
+            } else if let Some(i) = nth(&digits) {
+                Key::Digit(char::from(b'0' + i as u8))
+            } else {
+                Key::F(nth(&functions)? as u8 + 1)
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_key_the_map_binds_comes_from_its_key_code() {
+        use crate::game::keys::Command;
+        let press = |code, ctrl, shift| {
+            keys::command_for(keys::PLAYING, game_key(code).unwrap(), ctrl, shift)
+        };
+        assert_eq!(press(KeyCode::Escape, false, false), Some(Command::Back));
+        assert_eq!(press(KeyCode::KeyM, false, false), Some(Command::Move));
+        assert_eq!(press(KeyCode::Digit0, false, false), Some(Command::Gather));
+        assert_eq!(press(KeyCode::Digit9, false, false), Some(Command::Grow));
+        assert_eq!(
+            press(KeyCode::F4, false, false),
+            Some(Command::Scenario(Scenario::World))
+        );
+        assert_eq!(
+            press(KeyCode::F12, false, false),
+            Some(Command::Scenario(Scenario::Siege))
+        );
+        assert_eq!(press(KeyCode::KeyR, true, true), Some(Command::ResetLayout));
+        assert_eq!(game_key(KeyCode::NumpadEnter), Some(Key::Enter));
+        assert_eq!(game_key(KeyCode::KeyZ), Some(Key::Letter('Z')));
+        assert_eq!(game_key(KeyCode::F13), None);
+        // Every binding's key is one a key code gives.
+        let named = [
+            KeyCode::Escape,
+            KeyCode::Space,
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::PageDown,
+        ];
+        for (chord, _) in keys::PLAYING.iter().chain(keys::TYPING) {
+            assert!(
+                named.iter().any(|&code| game_key(code) == Some(chord.key))
+                    || matches!(
+                        chord.key,
+                        Key::Letter('A'..='Z') | Key::Digit('0'..='9') | Key::F(1..=12)
+                    ),
+                "{chord}"
+            );
+        }
+    }
 
     #[test]
     fn frames_come_at_the_monitor_rate_up_to_165_and_at_30_in_the_background() {

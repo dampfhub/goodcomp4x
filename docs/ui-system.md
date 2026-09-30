@@ -149,8 +149,8 @@ clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes (its name, tooltip and
 values are entries in `text/menus.ini`), and both presentations show it
 with its control.
-**Text files.** The settings menu's words come from `text/menus.ini`
-through `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
+**Text files.** The settings menu's and Multiplayer page's words come from
+`text/menus.ini` through `text!` and `tooltip!` (`game/strings.rs`), by tag; the rest of
 the UI's text is still in the code and moves to `text/` area by area
 (#341). In an area that has moved, new text is an entry in its file, not a
 literal: `docs/text.md` has the format and the tests that check it. Both

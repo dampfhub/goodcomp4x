@@ -43,6 +43,7 @@ behavior.
 | `fog.rs` | fog of war: sight, line of sight, the player's memory of seen hexes (this machine's view), each side's own memory (`side_fog`, game state, which the AI plans on), and the `known_*` queries that answer for either (`Fog` says which) |
 | `scenario.rs` | scenarios (F1-F4, F12, Debug Naval), savestate (F6/F7), instant playback (F8) |
 | `strings.rs` | the game's text from `text/*.ini` (`docs/text.md`): the parser, the `text!`, `tooltip!` and `hover_text!` macros that look an entry up by tag, and the tests that check the files against every call in the source |
+| `keys.rs` | the key map: the key each `Command` is on (`PLAYING`, and `TYPING` for a text field), which `App` looks a key press up in (`command_for`) and the UI names a command's key from (`Command::key`), filling the text files' key placeholders |
 | `settings.rs` | the player's options (`Settings`, one field each, and `Setting`, how the menu lists and changes them: heading, control, range), Escape (`press_escape`) and the settings menu's open state; its module comment says how to add a setting |
 | `simulation.rs` | tests only: seeded AI-vs-AI games (and games where the player's units follow order queues and its cities queue ahead) in every scenario, board invariants checked each turn (and that every city spent the turn: worked its queue or gathered by itself, `play_out`), same seed replays the same game |
 | `simulation/economy.rs` | tests only: `economy_report` (ignored; run with `--release -- --ignored --nocapture`) measures the economy's tempo over many seeds (units by type and turn, growth, stockpiles, fights, build times, spread; its `REPORT_*` knobs are in its module comment, its numbers in `docs/rts-economy.md`) |
@@ -143,13 +144,15 @@ behavior.
 
 ## Recipes
 
-- **Text:** an area whose text has moved to `text/` (so far the settings menu) takes new
-  words as entries there, asked for with `text!("tag")` or `tooltip!("tag", name = value)`
-  (`strings.rs`, `docs/text.md`), the tag always a literal. The tests check each tag used
-  exists with its placeholders and each entry is used.
+- **Text:** an area whose text has moved to `text/` (so far the settings menu and its
+  Multiplayer page) takes new words as entries there, asked for with `text!("tag")` or
+  `tooltip!("tag", name = value)` (`strings.rs`, `docs/text.md`), the tag always a literal. The
+  tests check each tag used exists with its placeholders and each entry is used. A key is never
+  spelled out in a file: the entry has a placeholder the code fills with `Command::key` (`keys.rs`).
 
-- **New key:** a `KeyCode` arm in `App::window_event` (`src/app.rs`) calling a `GameState`
-  method (a key that acts on release or while held needs its own arm, like Escape), and a row in
+- **New key:** a `Command` bound to a key in the key map (`keys.rs`: `PLAYING`, or `TYPING` for a
+  text field), its arm in `App::carry_out` (`src/app.rs`) calling a `GameState` method (a key
+  that acts on release or while held needs an arm of its own in `App::window_event`), and a row in
   `docs/controls.md`, the one description of the controls. `CONTROLS_HELP` (printed at startup)
   only points to that file; don't list keys in it.
 - **New unit button or panel:** see the recipes in `ui/AGENTS.md`.
@@ -162,7 +165,7 @@ behavior.
   change; game code reads the field (`self.settings.<field>`), and a row in the settings table
   of `docs/controls.md` describes it.
 - **New scenario:** a `Scenario` variant (`scenario.rs`: `ALL`, `name`, `key`, `start`), its
-  constructor in `mod.rs`, a key in `app.rs`; the debug panel lists `Scenario::ALL` itself.
+  constructor in `mod.rs`, a key in the key map (`keys.rs`); the debug panel lists `Scenario::ALL` itself.
 
 ## Tests
 

@@ -59,9 +59,11 @@ file holds.
   Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
-- **Text files.** The settings menu's text is in `text/menus.ini`, asked for by tag
-  (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an entry, not a
-  literal. Other areas move there in stages (#341); until theirs does, keep their text as it is.
+- **Text files.** The settings menu's and its Multiplayer page's text is in `text/menus.ini`,
+  asked for by tag (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is
+  an entry, not a literal. Other areas move there in stages (#341); until theirs does, keep
+  their text as it is. In a moved area, a key's name in text or a button's hint comes from the
+  key map (`Command::key`, `game/keys.rs`), never a literal such as `"ESC"`.
 - **Characters past ASCII** in game text: only those in `font::UI_PUNCTUATION`
   (`font.rs`), which both presentations' fonts carry. A new one goes in that list;
   `ui_text_uses_only_the_shared_glyphs` finds one used and not listed.
