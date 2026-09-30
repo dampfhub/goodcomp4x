@@ -10,11 +10,13 @@ use std::collections::VecDeque;
 
 use super::GameState;
 use super::ability::{Ability, CHARGE_EXTRA_MOVE, DEPLOYED_EXTRA_RANGE};
-use super::animals::MAX_TERRITORY;
+use super::animals::{DEN_BREED_TURNS, DEN_SPOILS, MAX_TERRITORY, bounty, den_cap, territory};
 use super::city::{Build, BuildUnit, Building, Lane, MIN_CITY_DISTANCE, Stock};
+use super::combat;
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
 use super::hex::Hex;
+use super::settings::ANIMALS_MANY;
 use super::unit::{Team, Unit, UnitType};
 use super::workers::{JobKind, WorkerJob};
 
@@ -44,6 +46,12 @@ struct Knowledge {
     /// Whether it may know of a wall or gate anywhere, so steps must be
     /// checked for them.
     walls: bool,
+    /// What it makes of each den it knows of, by hex coordinates
+    /// (`den_plans`). The reach of a guarded den it sends no force to is
+    /// `closed` too, so its units walk around it.
+    den_plans: Vec<DenPlan>,
+    /// City centers it knows of, any side's: no animal strikes there.
+    city_centers: Vec<Hex>,
 }
 
 /// Steps on foot to one target from the hexes around it (`steps_to`), found
@@ -63,6 +71,52 @@ impl Knowledge {
         self.dens
             .iter()
             .any(|den| den.distance(hex) <= MAX_TERRITORY)
+    }
+
+    /// The den troop `id` is sent to clear (`den_force`), if any.
+    fn den_of(&self, id: u32) -> Option<&DenPlan> {
+        self.den_plans.iter().find(|p| p.force.contains(&id))
+    }
+
+    /// Whether an animal of a guarded den the side knows of could strike
+    /// `hex` (`DenPlan::threatens`).
+    fn in_danger(&self, hex: Hex) -> bool {
+        self.den_plans
+            .iter()
+            .any(|p| p.threatens(hex, &self.city_centers))
+    }
+
+    /// How far out of the reach of the guarded dens its side leaves alone
+    /// (no force sent), and of `also`, `hex` is: the fewest hexes past
+    /// any one's reach, 0 or less inside one, `i32::MAX` with none near.
+    fn margin(&self, hex: Hex, also: Option<&DenPlan>) -> i32 {
+        self.den_plans
+            .iter()
+            .filter(|p| p.force.is_empty() || also.is_some_and(|a| a.pos == p.pos))
+            .filter(|p| p.threatens(hex, &self.city_centers))
+            .map(|p| hex.distance(p.pos) - p.reach)
+            .min()
+            .unwrap_or(i32::MAX)
+    }
+
+    /// Of `hexes`, those out of the reach of the guarded dens its side
+    /// leaves alone, and of `also` (`margin`); if none are, those farthest
+    /// out.
+    fn out_of_reach<C: FromIterator<Hex>>(
+        &self,
+        hexes: impl IntoIterator<Item = Hex>,
+        also: Option<&DenPlan>,
+    ) -> C {
+        let margins: Vec<(Hex, i32)> = hexes
+            .into_iter()
+            .map(|h| (h, self.margin(h, also).min(1)))
+            .collect();
+        let best = margins.iter().map(|&(_, m)| m).max();
+        margins
+            .into_iter()
+            .filter(|&(_, m)| Some(m) == best)
+            .map(|(h, _)| h)
+            .collect()
     }
 }
 
@@ -95,6 +149,140 @@ fn within(center: Hex, radius: i32) -> impl Iterator<Item = Hex> {
         ((-radius).max(-dq - radius)..=radius.min(-dq + radius))
             .map(move |dr| Hex::new(center.q + dq, center.r + dr))
     })
+}
+
+/// How far from a den or band of animals (as the crow flies) the AI looks
+/// for troops to send against it (`den_force`).
+const DEN_FORCE_RANGE: i32 = 12;
+/// The most troops the AI sends against one den or band.
+const DEN_MAX_FORCE: usize = 4;
+/// How far past a den's reach (`DenPlan::reach`) a force's troops gather
+/// before they go in together.
+const DEN_GATHER: i32 = 2;
+/// Rounds of blows the AI plays a fight with animals out to (`den_fight`);
+/// animals still standing after them aren't beaten.
+const DEN_FIGHT_ROUNDS: usize = 6;
+/// How near one another stray animals (of no den the AI knows of) are
+/// taken as one band (`den_plans`).
+const STRAY_BAND: i32 = 3;
+
+/// What `stock` is worth to the AI, in whole units of food, wood and metal
+/// alike.
+fn worth(stock: Stock) -> f32 {
+    (stock.food + stock.wood + stock.metal) as f32 / 4.0
+}
+
+/// What a troop of `kind` at full health is worth to the AI: its price
+/// (`BuildUnit`).
+fn troop_worth(kind: UnitType) -> f32 {
+    let troops = [
+        BuildUnit::Melee,
+        BuildUnit::Ranged,
+        BuildUnit::Cavalry,
+        BuildUnit::Siege,
+        BuildUnit::Armored,
+    ];
+    let build = troops
+        .into_iter()
+        .find(|b| b.unit_type() == kind)
+        .unwrap_or(BuildUnit::Melee);
+    worth(build.price())
+}
+
+/// How the AI expects `force` to fare against the animals `guard`, under
+/// `cover` (their terrain's defense bonus; its troops' counted as open
+/// ground), by the combat formula (`combat::damage`, which has no random
+/// spread). Each round is two attack steps: the animals strike, each at
+/// the weakest of the force (as `animal_target` picks among those beside
+/// it), then each troop left at the weakest animal its fellows haven't
+/// already finished. A melee blow draws one back from a defender it doesn't
+/// kill, and a step's blows land at its end. If the force kills them all
+/// within `DEN_FIGHT_ROUNDS` rounds, what it loses: the HP its troops
+/// lose, a dead one's all, by what it's worth (`troop_worth`); `None` if
+/// it doesn't.
+fn den_fight(force: &[Unit], guard: &[Unit], cover: f32) -> Option<f32> {
+    let mut ours: Vec<Unit> = force.to_vec();
+    let mut theirs: Vec<Unit> = guard.to_vec();
+    // The one of `units` with the fewest HP left after `hurt`, if any has.
+    let weakest = |units: &[Unit], hurt: &[f32]| {
+        (0..units.len())
+            .filter(|&i| units[i].hp > hurt[i])
+            .min_by(|&a, &b| (units[a].hp - hurt[a]).total_cmp(&(units[b].hp - hurt[b])))
+    };
+    let land = |units: &mut Vec<Unit>, hurt: Vec<f32>| {
+        for (unit, hurt) in units.iter_mut().zip(hurt) {
+            unit.hp -= hurt;
+        }
+    };
+    for _ in 0..DEN_FIGHT_ROUNDS {
+        let (mut to_ours, mut to_theirs) = (vec![0.0; ours.len()], vec![0.0; theirs.len()]);
+        let none = vec![0.0; ours.len()];
+        for (a, animal) in theirs.iter().enumerate() {
+            let Some(t) = weakest(&ours, &none) else {
+                break;
+            };
+            let hit = combat::damage(animal, &ours[t], 1.0);
+            to_ours[t] += hit;
+            if combat::retaliates(animal, &ours[t], hit) {
+                to_theirs[a] += combat::damage(&ours[t], animal, cover);
+            }
+        }
+        land(&mut ours, to_ours);
+        land(&mut theirs, to_theirs);
+        theirs.retain(Unit::is_alive);
+        let (mut to_ours, mut to_theirs) = (vec![0.0; ours.len()], vec![0.0; theirs.len()]);
+        for (i, troop) in ours.iter().enumerate().filter(|(_, u)| u.is_alive()) {
+            let Some(t) = weakest(&theirs, &to_theirs) else {
+                break;
+            };
+            let hit = combat::damage(troop, &theirs[t], cover);
+            to_theirs[t] += hit;
+            if combat::retaliates(troop, &theirs[t], hit) {
+                to_ours[i] += combat::damage(&theirs[t], troop, 1.0);
+            }
+        }
+        land(&mut ours, to_ours);
+        land(&mut theirs, to_theirs);
+        theirs.retain(Unit::is_alive);
+        if theirs.is_empty() || ours.iter().all(|u| !u.is_alive()) {
+            break;
+        }
+    }
+    let lost = |(was, now): (&Unit, &Unit)| {
+        (was.hp - now.hp.max(0.0)) / was.max_hp() * troop_worth(was.unit_type)
+    };
+    (theirs.is_empty() && ours.iter().any(Unit::is_alive))
+        .then(|| force.iter().zip(&ours).map(lost).sum())
+}
+
+/// What an AI side makes of an animal den it knows of, or of a band of
+/// animals it sees that belong to none (`den_plans`).
+struct DenPlan {
+    pos: Hex,
+    /// How far from `pos` the animals can strike: a den's, their
+    /// territory and a hex more; a band's, as far as each could move and
+    /// attack next turn (`threat_reach`).
+    reach: i32,
+    /// Whether it expects any animals there (`den_guard`).
+    guarded: bool,
+    /// Whether it's a den; else a band of stray animals, around the first
+    /// of them (by hex coordinates).
+    den: bool,
+    /// The ids of the troops it sends to clear the den or kill the band
+    /// (`den_force`); none if it leaves it alone.
+    force: Vec<u32>,
+    /// Whether the force goes in: all of it has gathered near the reach
+    /// (within `DEN_GATHER` of it), or some of it is already inside.
+    advancing: bool,
+}
+
+impl DenPlan {
+    /// Whether one of its animals could strike `hex`: within its reach, if
+    /// any are expected, and not a city center (`cities`), where none
+    /// attacks.
+    fn threatens(&self, hex: Hex, cities: &[Hex]) -> bool {
+        self.guarded && hex.distance(self.pos) <= self.reach && !cities.contains(&hex)
+    }
 }
 
 /// Units (scouts and settlers aside) the AI wants for each of its cities
@@ -505,21 +693,26 @@ impl GameState {
     }
 
     /// Each unit goes for the nearest on foot of the enemy units and workers
-    /// its side sees (animals included), the ruins and animal dens nobody on
-    /// its side holds (`ruins.rs`, `animals.rs`) and the enemy cities its
-    /// side has seen (`nearest_ai_target`); with none of those, it explores,
-    /// heading for the nearest ground its side has never seen. An enemy it
-    /// attacks if already in range, otherwise it moves as close as it can
-    /// and attacks if that brings it into range; ruins it steps onto, and
-    /// then holds until they're claimed, and a den it steps onto to clear
-    /// it; next to an enemy city, its fighters go in through the gates
+    /// its side sees, the ruins nobody on its side holds (`ruins.rs`) and
+    /// the enemy cities its side has seen (`nearest_ai_target`); with none
+    /// of those, it explores, heading for the nearest ground its side has
+    /// never seen. An enemy it attacks if already in range, otherwise it
+    /// moves as close as it can and attacks if that brings it into range;
+    /// ruins it steps onto, and then holds until they're claimed; next to
+    /// an enemy city, its fighters go in through the gates
     /// (`city/interior.rs`). A unit going elsewhere than an enemy attacks
     /// any enemy in range of where it ends up. Units in a contested hex stay
-    /// and fight. No coordination beyond not sending two units to the same
-    /// hex, and no retreating, but for scouts, which scout and keep out of
-    /// harm's way instead (`plan_ai_scout`). It all goes by what the side
-    /// knows (`side_fog`), never the real board: an enemy out of sight
-    /// isn't there, and ground never seen is open.
+    /// and fight. Animals (`animals.rs`) are the exception: its side sends a
+    /// force against a den or band of them only if it expects to win, and
+    /// for more than it would lose (`den_plans`); the force gathers outside
+    /// their reach, goes in together, fights the animals it sees and steps
+    /// onto the den to clear it. Every other land unit keeps out of the
+    /// reach of animals its side leaves alone, walking around it, and gets
+    /// out if it's in it. Otherwise no coordination beyond not sending two
+    /// units to the same hex, and no retreating, but for scouts, which scout
+    /// and keep out of harm's way instead (`plan_ai_scout`). It all goes by
+    /// what the side knows (`side_fog`), never the real board: an enemy out
+    /// of sight isn't there, and ground never seen is open.
     pub(super) fn plan_ai_turn(&mut self, team: Team) {
         let fog = self.side_fog(team);
         let known = self.knowledge(fog);
@@ -528,7 +721,9 @@ impl GameState {
         // plan: a city founded now plans its first build this turn.
         self.plan_ai_settlers(team, &known, &mut floods);
         self.plan_ai_cities(team, &known);
-        self.plan_ai_workers(team, |hex| known.in_den_territory(hex));
+        self.plan_ai_workers(team, |hex| {
+            known.in_den_territory(hex) || known.in_danger(hex)
+        });
         let mut watched = HashSet::default();
         for idx in 0..self.units.len() {
             if self.units[idx].team != team
@@ -562,7 +757,20 @@ impl GameState {
                 self.units[idx].planned_attack = self.ai_attack_from(idx, pos, &known.fog);
                 continue;
             }
-            let Some(target) = self.nearest_ai_target(idx, &known) else {
+            let den = known.den_of(self.units[idx].id);
+            // Sent to clear a den, it gathers with the rest of its force
+            // outside the reach of the den's animals, then goes in with them.
+            let target = match den {
+                Some(den) if !den.advancing => {
+                    self.gather_at_den(idx, den, &known, &mut floods);
+                    continue;
+                }
+                Some(den) => Some(self.den_target(idx, den, &known)),
+                None => self.nearest_ai_target(idx, &known),
+            };
+            // With nowhere to go, it still gets out of a den's reach.
+            let Some(target) = target.or_else(|| (known.margin(pos, None) <= 0).then_some(pos))
+            else {
                 continue;
             };
 
@@ -573,7 +781,8 @@ impl GameState {
             // ruins, ground never seen) is stepped onto, and a city closed on.
             let enemy_there = fog.sees(target) && self.enemy_of_team_at(target, team).is_some();
             // Ships keep their water-only movement domain while land units use
-            // roads and gates.
+            // roads and gates. A land unit keeps out of the reach of the dens
+            // its side leaves alone if it can.
             let reachable = self.known_reachable_for_domain(
                 unit.pos,
                 stats.move_range,
@@ -581,6 +790,11 @@ impl GameState {
                 fog,
                 unit.is_naval(),
             );
+            let reachable: HashSet<Hex> = if unit.is_naval() {
+                reachable
+            } else {
+                known.out_of_reach(reachable, None)
+            };
             let claimed_by_ally = |hex: &Hex| {
                 self.units
                     .iter()
@@ -628,7 +842,7 @@ impl GameState {
 
     /// What `fog`'s side knows is worth going for: the enemy units and
     /// workers in sight, and the ruins and enemy cities in sight or
-    /// remembered.
+    /// remembered; and what it makes of the animals (`den_plans`).
     fn knowledge(&self, fog: Fog) -> Knowledge {
         let team = fog.team();
         let enemies = self
@@ -685,6 +899,24 @@ impl GameState {
             }
         }
         let walls = !self.barriers.is_empty() || memory.values().any(|s| !s.barriers.is_empty());
+        let mut city_centers: Vec<Hex> = self
+            .cities
+            .iter()
+            .filter(|c| c.team == team)
+            .map(|c| c.pos)
+            .chain(cities.iter().copied())
+            .collect();
+        city_centers.sort_by_key(|h| (h.q, h.r));
+        let den_plans = self.den_plans(&fog, &dens);
+        for plan in den_plans.iter().filter(|p| p.force.is_empty()) {
+            for hex in within(plan.pos, plan.reach) {
+                if let Some(i) = self.grid.index(hex)
+                    && plan.threatens(hex, &city_centers)
+                {
+                    closed[i] = true;
+                }
+            }
+        }
         Knowledge {
             fog,
             enemies,
@@ -694,7 +926,181 @@ impl GameState {
             gates,
             closed,
             walls,
+            den_plans,
+            city_centers,
         }
+    }
+
+    /// What `fog`'s side makes of each den it knows of (`dens`), by hex
+    /// coordinates, and then of each band of animals it sees that belongs
+    /// to none of them (strays: their den unknown, or cleared): the
+    /// animals it expects guard it (`den_guard`; a band's are the band),
+    /// and the troops it sends to clear it or kill them (`den_force`),
+    /// each troop to one at most. One it sends none to it leaves alone,
+    /// keeping its units out of the animals' reach.
+    fn den_plans(&self, fog: &Fog, dens: &HashSet<Hex>) -> Vec<DenPlan> {
+        let mut dens: Vec<Hex> = dens.iter().copied().collect();
+        dens.sort_by_key(|h| (h.q, h.r));
+        let mut taken = HashSet::default();
+        let mut plans = Vec::new();
+        let mut plan =
+            |pos: Hex, reach: i32, guard: Vec<Unit>, den: bool, taken: &mut HashSet<u32>| {
+                let force = self.den_force(fog.team(), pos, &guard, den, taken);
+                taken.extend(force.iter().copied());
+                let near = |id: &u32, radius: i32| {
+                    self.units
+                        .iter()
+                        .find(|u| u.id == *id)
+                        .is_some_and(|u| u.pos.distance(pos) <= radius)
+                };
+                let advancing = guard.is_empty()
+                    || force.iter().all(|id| near(id, reach + DEN_GATHER))
+                    || force.iter().any(|id| near(id, reach));
+                plans.push(DenPlan {
+                    pos,
+                    reach,
+                    guarded: !guard.is_empty(),
+                    den,
+                    force,
+                    advancing,
+                });
+            };
+        let mut kinds = Vec::new();
+        for pos in dens {
+            let kind = self.known_den_kind(pos, fog);
+            kinds.push((pos, kind));
+            let reach = territory(kind) + kind.stats().attack_range;
+            plan(pos, reach, self.den_guard(pos, kind, fog), true, &mut taken);
+        }
+        // Strays, by hex coordinates, each band those within
+        // `STRAY_BAND` of one another.
+        let mut strays: Vec<&Unit> = self
+            .units
+            .iter()
+            .filter(|u| u.is_animal() && fog.sees(u.pos))
+            .filter(|u| {
+                !kinds.iter().any(|&(den, kind)| {
+                    kind == u.unit_type && den.distance(u.pos) <= territory(kind)
+                })
+            })
+            .collect();
+        strays.sort_by_key(|u| (u.pos.q, u.pos.r));
+        while let Some(first) = strays.first() {
+            let pos = first.pos;
+            let (band, rest): (Vec<&Unit>, Vec<&Unit>) = strays
+                .iter()
+                .partition(|u| u.pos.distance(pos) <= STRAY_BAND);
+            strays = rest;
+            let reach = band
+                .iter()
+                .filter_map(|u| Some(u.pos.distance(pos) + threat_reach(u)?))
+                .max()
+                .unwrap_or(0);
+            let guard = band.into_iter().cloned().collect();
+            plan(pos, reach, guard, false, &mut taken);
+        }
+        plans
+    }
+
+    /// The animal a den on `hex` keeps, as `fog`'s side knows: in sight,
+    /// the den's; else as last seen.
+    fn known_den_kind(&self, hex: Hex, fog: &Fog) -> UnitType {
+        let seen = self.den_at(hex).filter(|_| fog.sees(hex)).map(|d| d.kind);
+        seen.or_else(|| self.memory_of(fog).get(&hex).and_then(|s| s.den))
+            .unwrap_or(UnitType::Wolf)
+    }
+
+    /// The animals `fog`'s side expects guard the den on `den`, keeping
+    /// `kind`: those of its kind it sees within their territory of it, as
+    /// they are; and unless it sees the whole territory, more at full
+    /// health up to as many as the den can have by now. A den starts with
+    /// one and adds one every `DEN_BREED_TURNS` turns up to its cap
+    /// (`den_cap`), the same for every den of a world: the Animals setting,
+    /// which every side knows.
+    fn den_guard(&self, den: Hex, kind: UnitType, fog: &Fog) -> Vec<Unit> {
+        let range = territory(kind);
+        let mut guard: Vec<Unit> = self
+            .units
+            .iter()
+            .filter(|u| u.is_animal() && u.unit_type == kind)
+            .filter(|u| fog.sees(u.pos) && u.pos.distance(den) <= range)
+            .cloned()
+            .collect();
+        let all_seen = within(den, range)
+            .filter(|&h| self.grid.contains(h))
+            .all(|h| fog.sees(h));
+        if !all_seen {
+            let cap = self
+                .dens
+                .iter()
+                .map(|d| d.cap)
+                .max()
+                .unwrap_or(den_cap(ANIMALS_MANY));
+            let born = 1 + (self.turn / DEN_BREED_TURNS) as usize;
+            while guard.len() < cap.min(born) {
+                guard.push(Unit::new(0, den, Team::Wild, kind));
+            }
+        }
+        guard
+    }
+
+    /// The troops `team` sends to clear the den on `den` against its
+    /// `guard` (`den_guard`): of its troops within `DEN_FORCE_RANGE` of it
+    /// and not `taken` for another den, the nearest few (at most
+    /// `DEN_MAX_FORCE`, ties to the lowest id) expected to kill the whole
+    /// guard and lose nobody (`den_fight`) for the most the den is worth
+    /// over what they'd lose: its spoils and the animals' bounties
+    /// (`animals.rs`), less the HP they'd lose, by what it's worth. The
+    /// fewest on a tie; none if no such force comes out ahead. Ships,
+    /// scouts, settlers, player-controlled units, units in a contested hex
+    /// and those holding ruins aren't sent.
+    fn den_force(
+        &self,
+        team: Team,
+        pos: Hex,
+        guard: &[Unit],
+        den: bool,
+        taken: &HashSet<u32>,
+    ) -> Vec<u32> {
+        let mut near: Vec<usize> = (0..self.units.len())
+            .filter(|&i| {
+                let u = &self.units[i];
+                u.team == team
+                    && u.pos.distance(pos) <= DEN_FORCE_RANGE
+                    && !u.is_naval()
+                    && u.unit_type != UnitType::Scout
+                    && !self.settlers.contains(&u.id)
+                    && !self.player_controlled_units.contains(&u.id)
+                    && !taken.contains(&u.id)
+                    && self.rival_of(i).is_none()
+                    && self.ruin_at(u.pos).is_none()
+            })
+            .collect();
+        near.sort_by_key(|&i| (self.units[i].pos.distance(pos), self.units[i].id));
+        let spoils = if den { worth(DEN_SPOILS) } else { 0.0 };
+        let reward = spoils
+            + guard
+                .iter()
+                .map(|a| worth(bounty(a.unit_type)))
+                .sum::<f32>();
+        let cover = self.grid.tile(pos).defense_multiplier();
+        let mut best: Option<(f32, usize)> = None;
+        for size in 1..=near.len().min(DEN_MAX_FORCE) {
+            let force: Vec<Unit> = near[..size]
+                .iter()
+                .map(|&i| self.units[i].clone())
+                .collect();
+            let Some(loss) = den_fight(&force, guard, cover) else {
+                continue;
+            };
+            let value = reward - loss;
+            if value > 0.0 && best.is_none_or(|(top, _)| value > top) {
+                best = Some((value, size));
+            }
+        }
+        best.map_or_else(Vec::new, |(_, size)| {
+            near[..size].iter().map(|&i| self.units[i].id).collect()
+        })
     }
 
     /// `known_step` for a land unit of `known`'s side, from what it knows
@@ -721,11 +1127,14 @@ impl GameState {
     }
 
     /// Where unit `idx` heads (see `plan_ai_turn`): of the enemy units in
-    /// sight, the enemy workers alone in sight, and ruins and animal dens
-    /// (`animals.rs`) that no ally holds or is already heading for, and the
-    /// enemy cities seen, the nearest on foot over the ground as its side
-    /// knows it (a city counting from its gates, and an enemy before a city
-    /// as near), ties to the lowest coordinates. With none reachable, the
+    /// sight (animals aside, which are for the forces sent against them),
+    /// the enemy workers alone in sight, and ruins (and dens no animal is
+    /// expected at and no force is sent to, `den_plans`) that no ally holds
+    /// or is already heading for, and the enemy cities seen, the nearest on
+    /// foot over the ground as its side knows it (around the reach of
+    /// animals it leaves alone; a city counting from its gates, and an
+    /// enemy before a city as near), ties to the lowest coordinates. With
+    /// none reachable, the
     /// nearest ground its side has never seen; with none left, the enemy in
     /// sight nearest as the crow flies that it could hit (a ship only for a
     /// unit that can shoot at water). A ship goes by the crow's flight: to
@@ -760,13 +1169,25 @@ impl GameState {
         // heads for.
         let troop =
             |pos: Hex| known.enemies.contains(&pos) && self.enemy_of_team_at(pos, team).is_some();
+        // Animals, and dens, are for the forces sent against them
+        // (`den_force`); but a den no animal is expected at and no troop is
+        // near enough to be sent to, for anyone.
+        let lone_den = |pos: &Hex| {
+            known
+                .den_plans
+                .iter()
+                .any(|p| p.den && p.pos == *pos && !p.guarded && p.force.is_empty())
+        };
+        let animal = |pos: Hex| {
+            known.in_danger(pos) && self.units.iter().any(|u| u.pos == pos && u.is_animal())
+        };
         let targets: HashSet<Hex> = known
             .ruins
             .iter()
-            .chain(&known.dens)
+            .chain(known.dens.iter().filter(|pos| lone_den(pos)))
             .copied()
             .filter(|&pos| !held(pos))
-            .chain(known.enemies.iter().copied())
+            .chain(known.enemies.iter().copied().filter(|&pos| !animal(pos)))
             .filter(|&pos| troop(pos) || !claimed.contains(&pos))
             .collect();
         let is_target = |hex: &Hex| targets.contains(hex);
@@ -806,6 +1227,49 @@ impl GameState {
             let enemies = targets.iter().copied();
             nearest(&mut enemies.filter(|hex| known.enemies.contains(hex) && can_hit(hex)))
         })
+    }
+
+    /// Where troop `idx`, going in to clear `den` with its force, heads: the
+    /// nearest of the den's animals in sight (as the crow flies, ties to
+    /// the lowest coordinates), to fight it, else the den itself.
+    fn den_target(&self, idx: usize, den: &DenPlan, known: &Knowledge) -> Hex {
+        let pos = self.units[idx].pos;
+        self.units
+            .iter()
+            .filter(|u| u.is_animal() && known.fog.sees(u.pos))
+            .map(|u| u.pos)
+            .filter(|&h| den.threatens(h, &known.city_centers))
+            .min_by_key(|h| (h.distance(pos), h.q, h.r))
+            .unwrap_or(den.pos)
+    }
+
+    /// Troop `idx`, sent to clear `den` with a force not all gathered yet,
+    /// steps as near the den on foot as it can while staying out of the
+    /// reach of its animals (and of any den its side leaves alone), and
+    /// attacks any enemy in range of where it ends up.
+    fn gather_at_den(
+        &mut self,
+        idx: usize,
+        den: &DenPlan,
+        known: &Knowledge,
+        floods: &mut HashMap<Hex, Flood>,
+    ) {
+        let unit = &self.units[idx];
+        let (team, pos) = (unit.team, unit.pos);
+        let claimed = |hex: Hex| {
+            self.units
+                .iter()
+                .any(|u| u.team == team && u.id != unit.id && u.planned_move == Some(hex))
+        };
+        let reachable = self
+            .known_reachable_for_domain(pos, unit.stats().move_range, team, &known.fog, false)
+            .into_iter()
+            .filter(|&hex| hex == pos || !claimed(hex));
+        let mut options: Vec<Hex> = known.out_of_reach(reachable, Some(den));
+        options.sort_by_key(|h| (h.q, h.r));
+        let dest = self.step_toward(den.pos, pos, &options, known, floods);
+        self.units[idx].planned_move = (dest != pos).then_some(dest);
+        self.units[idx].planned_attack = self.ai_attack_from(idx, dest, &known.fog);
     }
 
     /// Searches outward from `start` ring by ring (each the hexes one more
@@ -881,6 +1345,7 @@ impl GameState {
                 .iter()
                 .filter(|&&(at, reach)| at.distance(hex) <= reach)
                 .count()
+                + usize::from(known.in_danger(hex))
         };
         let claimed = |hex: Hex| {
             self.units
@@ -906,8 +1371,8 @@ impl GameState {
             .collect();
         let prey = |hex: Hex| {
             let worker = known.enemies.contains(&hex) && self.enemy_of_team_at(hex, team).is_none();
-            let ruins = (known.ruins.contains(&hex) || known.dens.contains(&hex))
-                && !known.enemies.contains(&hex);
+            let den = known.dens.contains(&hex) && !known.in_danger(hex);
+            let ruins = (known.ruins.contains(&hex) || den) && !known.enemies.contains(&hex);
             worker || ruins
         };
 
@@ -1190,6 +1655,114 @@ mod tests {
         game.units[0].pos = Hex::new(6, 0);
         game.resolve_dens();
         assert!(game.dens.is_empty());
+    }
+
+    #[test]
+    fn the_ai_expects_the_fight_the_combat_formula_gives() {
+        let unit = |kind| Unit::new(1, Hex::new(0, 0), Team::Red, kind);
+        let animals = |kind, n| vec![Unit::new(2, Hex::new(1, 0), Team::Wild, kind); n];
+        let melee = |n| vec![unit(UnitType::Melee); n];
+        // On open ground a melee troop beats a wolf pack, hurt: it's
+        // bitten, bites back, then finishes it.
+        let wolf = animals(UnitType::Wolf, 1);
+        let bite = combat::damage(&wolf[0], &unit(UnitType::Melee), 1.0);
+        let loss = den_fight(&melee(1), &wolf, 1.0).expect("won");
+        assert_eq!(loss, bite / 100.0 * troop_worth(UnitType::Melee));
+        // Two wolves kill it, and so does a bear; three wolves take one of
+        // four with them.
+        assert_eq!(den_fight(&melee(1), &animals(UnitType::Wolf, 2), 1.0), None);
+        assert_eq!(den_fight(&melee(1), &animals(UnitType::Bear, 1), 1.0), None);
+        let three = den_fight(&melee(4), &animals(UnitType::Wolf, 3), 1.0).expect("won");
+        assert!(three >= troop_worth(UnitType::Melee), "{three}");
+        // Cover makes the animals harder to kill.
+        let wolves = animals(UnitType::Wolf, 2);
+        let open = den_fight(&melee(2), &wolves, 1.0).expect("won");
+        let hills = den_fight(&melee(2), &wolves, 1.25);
+        assert!(hills.is_none_or(|hills| hills > open));
+    }
+
+    /// `lone_red` on turn 40, its side having seen the whole map, with a
+    /// wolf den at (6, 0) that keeps up to three wolf packs (one at home,
+    /// out of Red's sight) and that Red has seen.
+    fn red_knows_a_full_den() -> GameState {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        game.turn = 40;
+        game.make_dens(&[Hex::new(6, 0)], 3);
+        red_glances_from(&mut game, Hex::new(4, 0));
+        game
+    }
+
+    /// Red's plans for the animals it knows of (`den_plans`).
+    fn red_den_plans(game: &mut GameState) -> Vec<DenPlan> {
+        let fog = game.side_fog(Team::Red);
+        game.knowledge(fog).den_plans
+    }
+
+    /// Plans Red's turn afresh: each of its units' planned move, by id.
+    fn replan_red(game: &mut GameState) -> Vec<(u32, Option<Hex>)> {
+        for unit in &mut game.units {
+            unit.planned_move = None;
+            unit.planned_attack = None;
+        }
+        game.plan_ai_turn(Team::Red);
+        game.units
+            .iter()
+            .filter(|u| u.team == Team::Red)
+            .map(|u| (u.id, u.planned_move))
+            .collect()
+    }
+
+    #[test]
+    fn an_ai_side_leaves_a_guarded_den_alone_unless_a_force_it_has_can_clear_it() {
+        let mut game = red_knows_a_full_den();
+        let den = Hex::new(6, 0);
+        // Red sees none of the den's animals, but by turn 40 a den may have
+        // its three: too many for a lone melee troop, so it stays away.
+        let plan = &red_den_plans(&mut game)[0];
+        assert!(plan.den && plan.guarded && plan.force.is_empty());
+        assert_eq!(plan.reach, 5);
+        assert_eq!(replan(&mut game), (None, None), "not toward it");
+        // Inside their reach, it gets out.
+        game.units[0].pos = Hex::new(3, 0);
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest, Some(Hex::new(2, 0)));
+        // What it expects comes only from what its side knows: with the
+        // wolf out of its sight dead, it plans the same.
+        let mut wolfless = game.clone();
+        wolfless.units.retain(|u| !u.is_animal());
+        assert_eq!(replan(&mut wolfless), replan(&mut game));
+        game.units[0].pos = Hex::new(0, 0);
+
+        // Four melee troops can kill three wolf packs, for more than the
+        // one they'd lose: it sends them, nearest first, and gathered as
+        // they are, they go in together.
+        for (id, pos) in [
+            (2, Hex::new(0, 2)),
+            (3, Hex::new(2, -2)),
+            (4, Hex::new(-1, 3)),
+        ] {
+            game.units
+                .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+        }
+        let plan = &red_den_plans(&mut game)[0];
+        assert_eq!(plan.force, [1, 2, 3, 4]);
+        assert!(plan.advancing);
+        let moves = replan_red(&mut game);
+        for &(id, dest) in &moves {
+            let unit = game.units.iter().find(|u| u.id == id).unwrap();
+            let dest = dest.unwrap_or_else(|| panic!("each goes: {moves:?}"));
+            assert_eq!(dest.distance(den), unit.pos.distance(den) - 1, "unit {id}");
+        }
+        // With one far behind, the others wait for it at the edge of the
+        // animals' reach.
+        let far = game.units.iter().position(|u| u.id == 2).unwrap();
+        game.units[far].pos = Hex::new(-5, 0);
+        assert!(!red_den_plans(&mut game)[0].advancing);
+        let moves = replan_red(&mut game);
+        assert!(moves.contains(&(1, None)), "{moves:?}");
+        assert!(moves.contains(&(3, None)), "{moves:?}");
+        assert!(moves.contains(&(2, Some(Hex::new(-4, 0)))), "{moves:?}");
     }
 
     #[test]
