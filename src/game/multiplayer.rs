@@ -1770,7 +1770,7 @@ impl GameState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::city::{City, Good};
+    use crate::game::city::{City, GATHER_YIELD, Good};
 
     /// The seat the first guest gets.
     const GUEST_SEAT: Team = Team::Red;
@@ -2496,6 +2496,49 @@ mod tests {
         assert_eq!(host.turn, 1);
         assert_eq!(host.checksum(), guest.checksum());
         assert_eq!(guest.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+    }
+
+    #[test]
+    fn a_city_waiting_for_the_stockpile_gathers_alike_on_both_machines() {
+        let (mut host, mut guest) = pair();
+        // Every machine's game, and the game as its turn began, which plans
+        // are checked and applied against: the guest's side has no wood or
+        // metal, and no animal is about to get in the way of its income.
+        for game in [&mut host, &mut guest] {
+            let mut start = game.lockstep.as_mut().unwrap().turn_start.take().unwrap();
+            for g in [&mut *start, &mut *game] {
+                g.stockpiles[GUEST_SEAT.index()] = Stock::whole(50, 0, 0);
+                g.units.retain(|u| !u.is_animal());
+            }
+            game.lockstep.as_mut().unwrap().turn_start = Some(start);
+        }
+        let city = city_of(&guest, GUEST_SEAT);
+        guest.open_city(city);
+        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.leave_city_view();
+        assert!(guest.gathers_this_turn(&guest.forecast(GUEST_SEAT), city));
+        let expected = guest.expected_stock(GUEST_SEAT) + GATHER_YIELD;
+        // The plan holds nothing new: gathering is the turn's rule, which
+        // each machine applies itself.
+        assert_eq!(host.check_plan(&guest.team_plan(GUEST_SEAT)), Ok(()));
+        guest.end_planning();
+        exchange(&mut host, &mut guest);
+        end_turn_building(&mut host, Some(BuildUnit::Melee));
+        exchange(&mut host, &mut guest);
+        play_out(&mut host);
+        play_out(&mut guest);
+        exchange(&mut host, &mut guest);
+        assert_eq!(host.turn, 1);
+        assert_eq!(host.checksum(), guest.checksum());
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
+        for game in [&host, &guest] {
+            assert_eq!(
+                game.cities[city].queue,
+                [Queued::new(Build::Unit(BuildUnit::Melee))],
+                "the Melee waits"
+            );
+            assert_eq!(game.stock(GUEST_SEAT), expected, "and the city gathered");
+        }
     }
 
     #[test]

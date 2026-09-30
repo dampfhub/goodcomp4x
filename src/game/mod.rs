@@ -103,6 +103,11 @@ pub struct GameState {
     /// (`city/supply.rs`), which `simulation.rs` checks never happens.
     #[cfg(test)]
     supply_overruns: Vec<String>,
+    /// Tests: the cities that gathered by themselves in the last economy,
+    /// their queues working nothing (`auto_gather`), which `simulation.rs`
+    /// checks against what their queues did.
+    #[cfg(test)]
+    pub(in crate::game) auto_gathered: Vec<usize>,
     /// Tests: supply each side has on top of its cities' (`fund`), by
     /// `Team::index`.
     #[cfg(test)]
@@ -291,6 +296,8 @@ impl GameState {
             lifetime_special_cap: false,
             #[cfg(test)]
             supply_overruns: Vec::new(),
+            #[cfg(test)]
+            auto_gathered: Vec::new(),
             #[cfg(test)]
             extra_supply: [0; Team::ALL.len()],
             sites: crate::game::fast_hash::HashMap::default(),

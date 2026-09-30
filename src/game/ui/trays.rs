@@ -506,6 +506,11 @@ impl GameState {
                 GOLD_TEXT,
             ),
             None if city.queue.is_empty() => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
+            // Everything queued waits: it gathers by itself.
+            None if status.gathers => (
+                format!("GATHERING {}", stock_icons(GATHER_YIELD)),
+                GOLD_TEXT,
+            ),
             None => ("NOTHING IT CAN PAY FOR".to_string(), REDUCED_TEXT),
         };
         panel.text(BODY, stat_spans(&[("BUILDING", building.0, building.1)]));

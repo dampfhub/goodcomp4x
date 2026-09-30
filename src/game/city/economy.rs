@@ -3,12 +3,13 @@
 //! build is paid from when its city starts work on it (and refunded to, if
 //! it was paid, when it is taken out); which item each queue works, paying
 //! for it (`work_queues`), and what it will work as things stand
-//! (`forecast`, `waiting_items`); how a tile's production splits into wood
+//! (`forecast`, `waiting_items`); a city whose queue works nothing
+//! gathering by itself (`auto_gather`, `gathers_this_turn`); how a tile's production splits into wood
 //! and metal; feeding the citizens; and how much work a queue does in a
 //! turn. Amounts are in quarters, like the rest of the city code.
 use std::ops::{Add, AddAssign, Sub, SubAssign};
 
-use super::{Build, BuildUnit};
+use super::{Build, BuildUnit, GATHER_YIELD};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
@@ -434,9 +435,15 @@ impl GameState {
     /// item `pick_item` picks: pays for it if it's unpaid, and adds its
     /// city's work for the turn (`rates`, the city's and the Barracks'), up
     /// to what it needs. Items it can't pay for, or that its side's supply
-    /// has no room for (`supply_room`), wait in place, unpaid.
+    /// has no room for (`supply_room`), wait in place, unpaid. A city whose
+    /// own queue works nothing (it's empty, or everything in it waits)
+    /// gathers instead (`auto_gather`), once every queue has paid, as a
+    /// Gather's yield comes in after them when it's done.
     pub(in crate::game) fn work_queues(&mut self, rates: &[(i32, i32)]) {
+        #[cfg(test)]
+        self.auto_gathered.clear();
         let mut supply = Team::ALL.map(|team| self.supply_room(team));
+        let mut gathering = Vec::new();
         for (city, &(rate, barracks_rate)) in rates.iter().enumerate() {
             for (lane, rate) in [(Lane::City, rate), (Lane::Barracks, barracks_rate)] {
                 let team = self.cities[city].team;
@@ -446,9 +453,42 @@ impl GameState {
                         supply[team.index()] -= i64::from(self.item_supply(city, lane, index));
                     }
                     self.work_item(city, lane, index, price, rate);
+                } else if lane == Lane::City {
+                    gathering.push(city);
                 }
             }
         }
+        for city in gathering {
+            self.auto_gather(city);
+        }
+    }
+
+    /// `city`'s queue works nothing this turn, so it gathers, as if Gather
+    /// were chosen: `GATHER_YIELD` goes to its side's stockpile.
+    fn auto_gather(&mut self, city: usize) {
+        let (team, id) = (self.cities[city].team, self.cities[city].id);
+        *self.stock_mut(team) += GATHER_YIELD;
+        log::debug!("{team:?} city {} gathers: nothing to work", id + 1);
+        if team == self.local_team {
+            self.notice = format!(
+                "CITY {} GATHERED {} - NOTHING ELSE TO WORK",
+                id + 1,
+                stock_icons(GATHER_YIELD)
+            );
+        }
+        #[cfg(test)]
+        self.auto_gathered.push(city);
+    }
+
+    /// Whether `city` gathers by itself this turn, as things stand
+    /// (`forecast`, of the city's side): its own queue works nothing,
+    /// because it's empty or everything in it waits (for the stockpile,
+    /// supply or citizens). Its Barracks' queue doesn't count. For the
+    /// panels and the map.
+    pub(in crate::game) fn gathers_this_turn(&self, forecast: &QueueForecast, city: usize) -> bool {
+        forecast
+            .lane(city, Lane::City)
+            .is_some_and(|lane| lane.worked.is_none())
     }
 
     /// Pays `price` for item `index` of one of `city`'s queues, if it's due,
