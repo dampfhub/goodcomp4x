@@ -921,3 +921,11 @@ Measured the same way (seeds 0-23), it changes little, as the AI meets few Caval
 World with 4 AI sides trains 0.44 Pikemen by turn 60 (1.0 Cavalry), 0.46 with 1 AI side, and none
 in Cities. The army at turns 20 / 40 / 60 is 3.8 / 5.0 / 6.1 against 3.8 / 4.9 / 5.9 without it.
 `PROTOCOL_VERSION` 38.
+
+## Round 11 report: the economy as it stands
+
+After #374 and #375, a report on the whole economy as it stands (#239): tempo, which good limits
+what and when, what the AI builds, queueing ahead, animals and the bigger maps, and the user's
+four questions (Grow or upkeep, a Pasture on dry open ground, the farmland spread, Cut Forest),
+with knobs measured. It recommends a Pasture of +1 food on dry open ground and citizens eating
+1.5 food; nothing was retuned. [economy/round11-economy-report.md](economy/round11-economy-report.md).

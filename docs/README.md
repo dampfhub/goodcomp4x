@@ -12,6 +12,7 @@
 | [rts-economy.md](rts-economy.md) | The stockpile economy experiment: model, numbers, findings, next tests | experiment; built on `claude/rts-economy`, rules in game-rules.md |
 | [economy/round6-tempo-report.md](economy/round6-tempo-report.md) | The Round 6 tempo report (#239): is the game too fast, and the tuning options measured; with [the rules then](economy/round6-how-it-works.md) and [every knob](economy/round6-knobs.md) | record of `main` at 6f5c4c8; option B was chosen (rts-economy.md, Round 7) |
 | [economy/supply-237-tempo.md](economy/supply-237-tempo.md) | What the supply limit (#237) does to the tempo, and why its values | record of `main` at 5663dbc with the limit |
+| [economy/round11-economy-report.md](economy/round11-economy-report.md) | The Round 11 report (#239): the whole economy after unit prices (#374) and the Pikeman (#375), what limits what, the AI's builds, and the user's four questions answered with measured knobs | record of `main` at f4e720f; recommendations not yet decided |
 | [history.md](history.md) | How the prototype got here | append an entry per milestone |
 
 Agent instructions are not here: they live in `AGENTS.md` at the repo root and in `src/`,
