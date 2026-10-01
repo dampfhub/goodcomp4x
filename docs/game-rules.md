@@ -60,7 +60,7 @@ the cap is applied is `Tile::yields` (`terrain.rs`).
 | Forest | wood only: 2 wood and no food, whatever the ground; workers can cut it for a lump of wood (Cut Forest, see Workers) | +15% defense |
 | Jungle (marsh only) | none: the marsh's 1 food and 1 wood | +15% defense |
 | Hills | 1 metal, plus 1 of the tile's main good (food on a tie; none on snow) | +25% defense, +1 sight |
-| Fresh water | +1 food, within the cap: it adds only where the tile has room | a farm can go only here |
+| Fresh water | +1 food, within the cap: it adds only where the tile has room | a farm can go only here; dry grassland and plains take a pasture instead |
 
 So, unimproved (food / wood / metal):
 
@@ -78,7 +78,8 @@ So, unimproved (food / wood / metal):
 - **Water:** land units cannot enter it. Patrol Galleys, Landing Craft and Bombard Ships move only on water; attacks may cross the shoreline. Cities can work it: a route may end on a water
   tile but never continues across one.
 - **Rivers** run along hex edges (World maps only). Land beside a river or a lake has fresh water:
-  +1 food within the cap (see above), and the only ground where a farm can go (see Yields). A
+  +1 food within the cap (see above), and the only ground where a farm can go (see Yields; dry
+  grassland and plains take a pasture). A
   Canoe House makes the connected riverbank a transport corridor (see Buildings).
 - **Terrain and goods:** terrain never slows goods. A delivery route counts only the hexes it
   crosses, a road step as half a hex (see Cities, Logistics).
@@ -701,12 +702,16 @@ only).
   tile a placed building stands on (`closed_to_citizens`): such a tile can't be assigned or take
   the manager, and a citizen already there moves off. Improvements (built by workers, see Workers) add to the tile's
   unimproved yield, past the cap: a mine on hills (+2 metal), a lumber mill under forest or jungle
-  (+1 wood), or a farm (+2 food) on other ground, but **only with fresh water** (a river edge or a
-  lake beside it); dry open ground and snow can't be improved, and Improve there says why. So a
-  farm by a river on plains gives 4 food, a mine on plains hills 1 food and 3 metal, and a lumber
-  mill in a forest 3 wood. The Cities scenario's preplaced farms (4/0), mines (0/4) and
+  (+1 wood), a farm (+2 food) on other ground, but **only with fresh water** (a river edge or a
+  lake beside it), or a **pasture (+1 food) on dry grassland or plains**. Dry desert, tundra and
+  marsh, and snow, can't be improved, and Improve there says why. So a farm by a river on plains
+  gives 4 food, a pasture on dry plains 3 food, a mine on plains hills 1 food and 3 metal, and a
+  lumber mill in a forest 3 wood. A citizen eats 2 food, so on a pasture it feeds itself and
+  half of another. The tile tooltip says what Improve would build on a tile and what it adds.
+  The Cities scenario's preplaced farms (4/0), mines (0/4) and
   pastures (3/1) have fixed yields (food / production), and that map has no fresh water, so its
-  only other improvement is the mine on the middle hills.
+  workers can add no farm there: its open grassland and plains take pastures (+1 food), and its
+  middle hills a mine.
 - **Logistics:** each worked tile's goods travel its shortest route to the city, counted in hexes
   moved: a step onto a road or a city hex, or along a Canoe House river, counts half a hex, and any
   other step one hex, whatever its terrain. Delivery is 100% at up to 2 hexes and 75% from there
@@ -977,8 +982,8 @@ only).
   | Job | Work | Effect |
   |---|---|---|
   | Road | 2 turns | a dirt road: goods count a step onto it as half a hex (see Logistics) |
-  | Improve | 3 turns | a mine, lumber mill or farm (see Yields) |
-  | Cut Forest | 2 turns | on a forest with no improvement or building: +10 wood into the stockpile once, when done, and the forest is gone for good (plains + forest becomes plains: 2 food instead of 2 wood, and with fresh water a farm can follow) |
+  | Improve | 3 turns | a mine, lumber mill, farm or pasture (see Yields) |
+  | Cut Forest | 2 turns | on a forest with no improvement or building: +10 wood into the stockpile once, when done, and the forest is gone for good (plains + forest becomes plains: 2 food instead of 2 wood, and a farm can follow with fresh water, a pasture without) |
   | Wall | 2 turns | on an edge: no unit, worker or goods cross it, yours included |
   | Gate | 3 turns | on an edge: only your units, workers and goods cross it |
   | Outpost | 3 turns | you see 2 hexes around it |
@@ -1123,7 +1128,8 @@ pay. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted
 else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one). An AI city with a worker at home and an empty list places one job it can
 pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
 ground); while its side has less wood than a Ranged costs, cutting the nearest forest within
-workers' reach that no city works; an improvement on a tile it works; a road there. At a contested friendly city gate, AI
+workers' reach that no city works; an improvement on a tile it works, the one that adds most
+first (food counting double: a farm, then a mine or pasture, then a lumber mill); a road there. At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
 
@@ -1135,7 +1141,8 @@ The AI builds Scouts and expands with Settlers:
   founding rules allow as far as it knows: open land, no ruins or enemy in sight on it, 6 hexes
   from its own cities and every enemy city it has seen, and within 10 of its nearest city;
   searched up to 14 steps on foot, the best by what the land around it (2 hexes) yields as last
-  seen, food counting double (and a farm's 2 food where one could go), less 2 a step to get there.
+  seen, food counting double (and a farm's 2 food where one could go, or a pasture's 1), less 2 a
+  step to get there.
 - **Settlers:** each turn a settler picks its site again from where it stands, walks toward it
   (keeping out of reach of enemies in sight where it can; no escort), and founds there once it
   stands on it. A site the rules refuse (a city its side hadn't seen stands too near) is

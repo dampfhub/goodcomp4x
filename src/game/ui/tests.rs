@@ -1213,6 +1213,30 @@ fn the_tile_tooltip_shows_capped_goods_fresh_water_and_a_specials_bonus() {
     let woods = text(woods);
     assert_shows(&woods, &goods(1, 2, 0));
     assert_shows(&woods, "ORCHARD +1 FOOD");
+
+    // What Improve would build: a farm by fresh water, a pasture on dry
+    // plains, a lumber mill in forest; nothing on a tile improved already.
+    assert_shows(&plains, "IMPROVE: FARM +2 FOOD");
+    assert_shows(&woods, "IMPROVE: LUMBER MILL +1 WOOD");
+    let dry = open
+        .iter()
+        .copied()
+        .find(|&h| !game.grid.has_fresh_water(h))
+        .expect("a dry plains tile");
+    let dry = text(dry);
+    assert_shows(&dry, &goods(2, 0, 0));
+    assert_shows(&dry, "IMPROVE: PASTURE +1 FOOD");
+    let (&pasture, _) = game
+        .sites
+        .iter()
+        .find(|(_, site)| site.team == Team::Blue && site.label == "PASTURE")
+        .expect("Blue's pasture");
+    let pasture = text(pasture);
+    assert_shows(&pasture, "BLUE PASTURE");
+    assert!(
+        !pasture.iter().any(|l| l.contains("IMPROVE:")),
+        "{pasture:?}"
+    );
 }
 
 #[test]

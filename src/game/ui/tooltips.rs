@@ -285,6 +285,15 @@ impl GameState {
         };
         if let Some((label, team)) = site {
             notes.push(format!("{team:?} {label}").to_uppercase());
+        } else if city.is_none()
+            && barracks.is_none()
+            && placed.is_none()
+            && seen_city.is_none()
+            && seen_barracks.is_none()
+        {
+            // What a worker's Improve would build here: a farm, a pasture,
+            // a mine or a lumber mill.
+            notes.extend(self.improvement_note(hex));
         }
         if road {
             notes.push("ROAD".into());

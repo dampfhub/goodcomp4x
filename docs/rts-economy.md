@@ -929,3 +929,93 @@ what and when, what the AI builds, queueing ahead, animals and the bigger maps, 
 four questions (Grow or upkeep, a Pasture on dry open ground, the farmland spread, Cut Forest),
 with knobs measured. It recommends a Pasture of +1 food on dry open ground and citizens eating
 1.5 food; nothing was retuned. [economy/round11-economy-report.md](economy/round11-economy-report.md).
+
+## Round 12: a Pasture on dry open ground (#379)
+
+The user took the Round 11 report's first recommendation and not its second: Improve on dry
+grassland or plains (no river or lake beside it) now builds a **Pasture, +1 food** past the cap,
+so dry plains give 3 food. A farm keeps +2 and still needs fresh water, so river land stays the
+better choice, and a citizen still eats 2 food. A Pasture costs and takes what any Improve does
+(4 wood, 3 turns). Dry desert, tundra and marsh still take no improvement. The tile tooltip now
+says what Improve would build on a tile and what it adds, and the map shows a Pasture with the
+fence icon. The rules are in `game-rules.md` (Yields, Workers), the rule in `improvement`
+(`workers.rs`) and `HexGrid::takes_pasture`.
+
+The AI's workers now improve first the worked tile whose improvement adds most, food counting
+double (a farm, then a mine or pasture, then a lumber mill), and its site scoring counts a
+pasture's food where one could go, as it counts a farm's.
+
+### Measured
+
+`economy_report` and Round 11's `sides_csv` (a local addition, not in the tree), 100 turns,
+seeds 0-23, the default games, on `main` at b9becd4 and this change:
+
+```
+SIM_SEEDS=24 REPORT_TURNS=100 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side (turns are medians, with the share of sides that never got
+there in brackets):
+
+| | before | after |
+|---|---|---|
+| First troop | 8 | 8 |
+| Population at turn 20 / 40 / 60 / 100 | 2.6 / 3.7 / 5.4 / 12.8 | 2.9 / 3.7 / 6.6 / 16.2 |
+| Second city (never by 60, by 100) | 47 (43%, 11%) | 46 (14%, 8%) |
+| Third city (never by 100) | 68 (26%) | 66 (16%) |
+| Cities at turn 60 / 100 | 1.7 / 3.3 | 2.1 / 3.8 |
+| Army at turn 20 / 40 / 60 / 100 | 3.8 / 5.0 / 6.1 / 14.8 | 3.8 / 5.1 / 6.5 / 17.9 |
+| Food income at turn 40 / 60 | 11.1 / 16.6 | 12.5 / 21.1 |
+| Stockpile f / w / m at turn 60 | 20 / 57 / 19 | 20 / 46 / 18 |
+| Stockpile f / w / m at turn 100 | 19 / 143 / 47 | 19 / 132 / 55 |
+| Barracks idle, 100 turns (at supply / short of metal) | 33% (55 / 45) | 32% (41 / 59) |
+| Improvements built (all sides, 24 games) | 602 | 1435 |
+
+The other games, before → after:
+- **World with 1 AI side:** population at turns 60 / 100 6.8 / 16.0 → 7.8 / 20.2; no second city
+  by turn 60 21% → 8%; cities at turn 100 3.8 → 4.4; army at turns 60 / 100 7.8 / 18.9 → 8.3 / 21.7.
+- **World with 5 AI sides:** population 5.5 / 12.4 → 6.5 / 15.9; no second city by 60 37% → 20%;
+  cities at 100 3.1 → 3.6; army 6.0 / 14.4 → 6.6 / 17.9.
+- **World with 6 AI sides:** population 6.1 / 13.5 → 7.0 / 17.2; no second city by 60 33% → 18%;
+  cities at 100 3.3 → 3.9; army 6.0 / 14.9 → 6.5 / 17.5.
+- **Cities:** population at turn 60 7.5 → 8.5, army 10.0 → 11.0, and wood at turn 60 67 → 39: its
+  map has no fresh water, so its open land all takes pastures.
+
+**Farmland by the start**, over the 480 sides of the four worlds (farmable tiles within 2 hexes):
+
+| Farmland | Sides | Population at turn 60 | Army at turn 60 | Cities at turn 60 | No second city by 60 | No third city by 100 |
+|---|---|---|---|---|---|---|
+| 2-3 | 170 | 4.9 → 6.3 | 6.0 → 6.5 | 1.6 → 2.0 | 46% → 16% | 34% → 17% |
+| 4-5 | 187 | 5.9 → 6.9 | 6.0 → 6.6 | 1.8 → 2.1 | 35% → 17% | 26% → 16% |
+| 6-7 | 93 | 6.6 → 7.1 | 6.3 → 7.1 | 1.9 → 2.1 | 25% → 19% | 25% → 16% |
+| 8+ | 30 | 7.7 → 8.3 | 8.0 → 7.8 | 2.3 → 2.4 | 7% → 7% | 13% → 10% |
+
+Within one game, the side with the most farmland against the side with the least: population at
+turn 60 6.6 against 5.2 before, 7.4 against 6.5 after; no second city by turn 60 24% against 42%
+before, 12% against 14% after. Farmland's correlation with population at turn 60 falls from 0.27
+to 0.18.
+
+### What it shows
+
+- **It does what Round 11 measured** for a Pasture alone: the second city that never came by turn
+  60 for 43% of sides now fails to come for 14%, and the poorest starts nearly catch up.
+- **Growth compounds a little, late.** Population at turn 100 rises by a quarter (12.8 → 16.2),
+  and cities by half a city. The opening doesn't move: first troop at turn 8, the same army at
+  turn 20. With upkeep at 2 food, it's well short of what upkeep 1.5 added (Round 11: 23
+  citizens and 4.3 cities at turn 100 with both).
+- **The army follows** the larger population through supply: 6.5 at turn 60, 17.9 at turn 100.
+  More of the idle Barracks turns are now short of metal (59% against 45%).
+- **Wood gets a use:** the AI builds more than twice the improvements, and banks 11 less wood at
+  turn 60 and at turn 100.
+- **The AI's changes matter little.** Without the improvement order, or without the pasture in
+  site scoring, World with 4 AI sides gives within 0.2 citizens and 0.2 cities of these numbers
+  at turn 100.
+- **Start scoring was left alone.** Counting each pasture tile in `start_score` (3 points, as a
+  food) evens the starts' land more: farmland's correlation with population at turn 60 drops to
+  0.05. But it changes every map, and the averages didn't improve: World with 4 AI sides gave
+  population 6.9 / 17.3 at turns 60 / 100 and an army of 5.8 / 16.6, and World with 5 and 6 AI
+  sides did a little worse than with the Pasture alone. The Pasture already closes most of the
+  gap in play.
+
+`PROTOCOL_VERSION` 39. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.

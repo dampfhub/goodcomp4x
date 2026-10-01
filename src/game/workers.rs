@@ -37,9 +37,11 @@ pub(super) const WORKER_SIGHT: i32 = 1;
 /// placeholder until forts get their real role.
 pub(super) const FORT_DEFENSE: f32 = 1.5;
 /// What each improvement (`improvement`) adds to its tile's unimproved yield,
-/// past the cap: a farm's food (only by fresh water), a mine's metal (on
-/// hills) and a lumber mill's wood (under forest or jungle).
+/// past the cap: a farm's food (only by fresh water), a pasture's food (on
+/// dry grassland or plains), a mine's metal (on hills) and a lumber mill's
+/// wood (under forest or jungle).
 pub(super) const FARM_FOOD: i32 = 2;
+pub(super) const PASTURE_FOOD: i32 = 1;
 pub(in crate::game) const MINE_METAL: i32 = 2;
 pub(super) const LUMBER_MILL_WOOD: i32 = 1;
 /// Cutting a forest (`JobKind::CutForest`): the wood it puts in its side's
@@ -48,6 +50,10 @@ pub(super) const LUMBER_MILL_WOOD: i32 = 1;
 pub(super) const CUT_FOREST_WOOD: i32 = 10;
 const CUT_FOREST_TURNS: u32 = 2;
 const CUT_FOREST_PRICE: Stock = Stock::whole(2, 0, 0);
+/// Why Improve can't go on open ground that takes neither a farm nor a
+/// pasture: dry desert, tundra or marsh.
+const NO_IMPROVEMENT_HERE: &str =
+    "FARMS NEED FRESH WATER, PASTURES GRASSLAND OR PLAINS: NOTHING TO BUILD HERE";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
 pub enum JobKind {
@@ -117,7 +123,9 @@ impl JobKind {
     pub fn description(self) -> &'static str {
         match self {
             Self::Road => "CHEAPER DELIVERY, AND WORKERS REACH ALONG IT.",
-            Self::Improve => "MINE ON HILLS, LUMBER MILL IN FOREST, FARM BY FRESH WATER.",
+            Self::Improve => {
+                "MINE ON HILLS, LUMBER MILL IN FOREST, FARM BY FRESH WATER, PASTURE ON DRY GRASSLAND OR PLAINS."
+            }
             Self::CutForest => "+10 WOOD AT ONCE, AND THE FOREST IS GONE FOR GOOD.",
             Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
             Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
@@ -305,7 +313,7 @@ impl GameState {
     }
 
     /// What `job` builds, as the player reads it: an improvement by its kind
-    /// (FARM, MINE or LUMBER MILL), anything else by the job's name.
+    /// (FARM, PASTURE, MINE or LUMBER MILL), anything else by the job's name.
     pub(super) fn job_name(&self, job: WorkerJob) -> &'static str {
         match job.kind {
             JobKind::Improve => self
@@ -328,9 +336,10 @@ impl GameState {
     /// The improvement a worker would build at `hex`, as the food and
     /// production it gives (the tile's unimproved yield plus the
     /// improvement's, past the cap) and its label: a mine on hills, a lumber
-    /// mill in forest or jungle, a farm on other ground with fresh water.
-    /// Otherwise why none can go there: snow, or dry open ground.
-    fn improvement(&self, hex: Hex) -> Result<(i32, i32, &'static str), &'static str> {
+    /// mill in forest or jungle, a farm on other ground with fresh water, a
+    /// pasture on dry grassland or plains (`HexGrid::takes_pasture`).
+    /// Otherwise why none can go there: snow, or dry desert, tundra or marsh.
+    pub(super) fn improvement(&self, hex: Hex) -> Result<(i32, i32, &'static str), &'static str> {
         let tile = self.grid.tile(hex);
         let (food, wood, metal) = self.grid.unimproved_yield(hex);
         let production = wood + metal;
@@ -342,9 +351,26 @@ impl GameState {
             Ok((food, production + LUMBER_MILL_WOOD, "LUMBER MILL"))
         } else if self.grid.farmable(hex) {
             Ok((food + FARM_FOOD, production, "FARM"))
+        } else if self.grid.takes_pasture(hex) {
+            Ok((food + PASTURE_FOOD, production, "PASTURE"))
         } else {
-            Err("FARMS NEED FRESH WATER: A RIVER OR LAKE BESIDE THE TILE")
+            Err(NO_IMPROVEMENT_HERE)
         }
+    }
+
+    /// What Improve would build at `hex` and add, for a tile's tooltip, like
+    /// "IMPROVE: PASTURE +1 FOOD", or `None` where nothing can go.
+    pub(super) fn improvement_note(&self, hex: Hex) -> Option<String> {
+        let (food, production, label) = self.improvement(hex).ok()?;
+        let (bare_food, wood, metal) = self.grid.unimproved_yield(hex);
+        let gain = if food > bare_food {
+            format!("+{} FOOD", food - bare_food)
+        } else if label == "MINE" {
+            format!("+{} METAL", production - wood - metal)
+        } else {
+            format!("+{} WOOD", production - wood - metal)
+        };
+        Some(format!("IMPROVE: {label} {gain}"))
     }
 
     /// Why a forest can't be cut at `hex`, or `None` if it can: it needs a
@@ -1316,7 +1342,9 @@ impl GameState {
     ///   (fresh water, open ground): a lump of wood now, and food after;
     /// - while its side is short of wood (less than a Ranged's), cutting the
     ///   nearest forest in its workers' reach that no city works;
-    /// - improving the tiles it works, then roads on them.
+    /// - improving the tiles it works, the improvement that adds most first
+    ///   (food counting twice: a farm, then a mine or pasture, then a lumber
+    ///   mill), then roads on them.
     ///
     /// None where `unsafe_tile` says an animal would attack (`animals.rs`),
     /// and only on ground its side has seen.
@@ -1353,9 +1381,28 @@ impl GameState {
                 woods.sort_by_key(|h| (h.distance(c.pos), h.q, h.r));
                 jobs.extend(woods.into_iter().map(cut));
             }
-            for kind in [JobKind::Improve, JobKind::Road] {
-                jobs.extend(worked.iter().map(|&hex| WorkerJob::on_tile(hex, kind)));
-            }
+            // The improvements that add most first (food counting twice, as
+            // it's what growth waits for): a farm, then a mine or pasture,
+            // then a lumber mill; ties in the order the city works them.
+            let mut improve: Vec<(i32, Hex)> = worked
+                .iter()
+                .filter_map(|&hex| {
+                    let (food, production, _) = self.improvement(hex).ok()?;
+                    let (bare_food, wood, metal) = self.grid.unimproved_yield(hex);
+                    Some((2 * (food - bare_food) + production - (wood + metal), hex))
+                })
+                .collect();
+            improve.sort_by_key(|&(gain, _)| std::cmp::Reverse(gain));
+            jobs.extend(
+                improve
+                    .into_iter()
+                    .map(|(_, hex)| WorkerJob::on_tile(hex, JobKind::Improve)),
+            );
+            jobs.extend(
+                worked
+                    .iter()
+                    .map(|&hex| WorkerJob::on_tile(hex, JobKind::Road)),
+            );
             let job = jobs.into_iter().find(|&job| {
                 stock.covers(job.kind.price())
                     && self.job_problem(city, job).is_none()
@@ -1435,18 +1482,19 @@ mod tests {
         );
     }
 
-    /// A farm goes only on open ground with fresh water; a mine (hills) and
-    /// a lumber mill (forest) need none. Each adds its yield to the tile's
-    /// unimproved one, past the cap.
+    /// A farm goes only on open ground with fresh water, and a pasture on dry
+    /// grassland or plains; dry desert, tundra or marsh takes neither. A mine
+    /// (hills) and a lumber mill (forest) need no water. Each adds its yield
+    /// to the tile's unimproved one, past the cap.
     #[test]
-    fn farms_need_fresh_water_and_improvements_pass_the_cap() {
+    fn farms_need_fresh_water_pastures_dry_grass_and_improvements_pass_the_cap() {
         use crate::game::fast_hash::HashSet;
         use crate::game::hex::HexGrid;
         use crate::game::terrain::{Feature, Tile};
 
         let mut game = cities();
         let city = game.cities[0].pos;
-        let [wet, dry, hills, forest] = [0, 1, 2, 3].map(|i| city.neighbors()[i]);
+        let [wet, dry, hills, forest, desert, grass] = city.neighbors();
         // A river on the edge of `wet` away from the city.
         let across = wet.neighbors().into_iter().find(|n| n.distance(city) == 2);
         let river: HashSet<_> = [(wet, across.unwrap())].into_iter().collect();
@@ -1454,27 +1502,61 @@ mod tests {
             feature: Some(Feature::Forest),
             ..Tile::from(Terrain::Plains)
         };
-        game.grid = HexGrid::new(6, [(hills, Tile::HILLS), (forest, woods)]).with_rivers(river);
+        game.grid = HexGrid::new(
+            6,
+            [
+                (hills, Tile::HILLS),
+                (forest, woods),
+                (desert, Tile::from(Terrain::Desert)),
+                (grass, Tile::from(Terrain::Grassland)),
+            ],
+        )
+        .with_rivers(river);
         game.sites.clear();
         assert!(game.grid.has_fresh_water(wet) && !game.grid.has_fresh_water(dry));
+        assert!(!game.grid.has_fresh_water(desert) && !game.grid.has_fresh_water(grass));
         let improve =
             |game: &GameState, hex| game.job_problem(0, WorkerJob::on_tile(hex, JobKind::Improve));
-        assert_eq!(
-            improve(&game, dry),
-            Some("FARMS NEED FRESH WATER: A RIVER OR LAKE BESIDE THE TILE")
-        );
-        assert_eq!(improve(&game, wet), None);
-        assert_eq!(improve(&game, hills), None);
-        assert_eq!(improve(&game, forest), None);
+        assert_eq!(improve(&game, desert), Some(NO_IMPROVEMENT_HERE));
+        for hex in [wet, dry, grass, hills, forest] {
+            assert_eq!(improve(&game, hex), None);
+        }
         assert_eq!(game.improvement(wet), Ok((2 + FARM_FOOD, 0, "FARM")));
+        assert_eq!(game.improvement(dry), Ok((2 + PASTURE_FOOD, 0, "PASTURE")));
+        assert_eq!(
+            game.improvement(grass),
+            Ok((2 + PASTURE_FOOD, 0, "PASTURE"))
+        );
         assert_eq!(game.improvement(hills), Ok((1, 1 + MINE_METAL, "MINE")));
         assert_eq!(
             game.improvement(forest),
             Ok((0, 2 + LUMBER_MILL_WOOD, "LUMBER MILL"))
         );
+        // The job and the tile's tooltip name it.
+        assert_eq!(
+            game.job_name(WorkerJob::on_tile(dry, JobKind::Improve)),
+            "PASTURE"
+        );
+        assert_eq!(
+            game.improvement_note(dry).as_deref(),
+            Some("IMPROVE: PASTURE +1 FOOD")
+        );
+        assert_eq!(
+            game.improvement_note(wet).as_deref(),
+            Some("IMPROVE: FARM +2 FOOD")
+        );
+        assert_eq!(
+            game.improvement_note(hills).as_deref(),
+            Some("IMPROVE: MINE +2 METAL")
+        );
+        assert_eq!(
+            game.improvement_note(forest).as_deref(),
+            Some("IMPROVE: LUMBER MILL +1 WOOD")
+        );
+        assert_eq!(game.improvement_note(desert), None);
 
         // Built, each gives its goods: the mine's production is all metal.
-        for hex in [wet, hills, forest] {
+        for hex in [wet, dry, hills, forest] {
             let (food, production, label) = game.improvement(hex).unwrap();
             game.sites.insert(
                 hex,
@@ -1487,6 +1569,7 @@ mod tests {
             );
         }
         assert_eq!(game.tile_goods(wet), (4, 0, 0));
+        assert_eq!(game.tile_goods(dry), (3, 0, 0));
         assert_eq!(game.tile_goods(hills), (1, 0, 3));
         assert_eq!(game.tile_goods(forest), (0, 3, 0));
     }
@@ -2304,6 +2387,47 @@ mod tests {
             game.cities[red].worker_jobs,
             [WorkerJob::on_tile(spare, JobKind::CutForest)]
         );
+    }
+
+    /// The AI's workers build pastures on the dry plains its city works,
+    /// and of the tiles it works improve first the one that adds most: a
+    /// farm (+2 food) before a pasture (+1).
+    #[test]
+    fn the_ai_builds_pastures_and_a_farm_first() {
+        use crate::game::fast_hash::HashSet;
+        use crate::game::hex::HexGrid;
+
+        let red = 1;
+        let dry_game = || {
+            let mut game = cities();
+            game.grid = HexGrid::new(6, [] as [(Hex, Tile); 0]);
+            game.sites.retain(|_, site| site.team != Team::Red);
+            game.stockpiles[Team::Red.index()] = Stock::whole(20, 20, 20);
+            game
+        };
+        let mut game = dry_game();
+        let worked: Vec<Hex> = game.cities[red].worked().collect();
+        assert!(worked.len() >= 2, "{worked:?}");
+        game.plan_ai_workers(Team::Red, |_| false);
+        let job = WorkerJob::on_tile(worked[0], JobKind::Improve);
+        assert_eq!(game.cities[red].worker_jobs, [job]);
+        assert_eq!(game.job_name(job), "PASTURE");
+
+        // A river by the last tile it works: a farm there comes first.
+        let mut game = dry_game();
+        let wet = *worked.last().unwrap();
+        let city = game.cities[red].pos;
+        let across = wet
+            .neighbors()
+            .into_iter()
+            .find(|&n| n != city && !worked.contains(&n))
+            .unwrap();
+        let river: HashSet<_> = [(wet, across)].into_iter().collect();
+        game.grid = game.grid.clone().with_rivers(river);
+        game.plan_ai_workers(Team::Red, |_| false);
+        let job = WorkerJob::on_tile(wet, JobKind::Improve);
+        assert_eq!(game.cities[red].worker_jobs, [job]);
+        assert_eq!(game.job_name(job), "FARM");
     }
 
     #[test]
