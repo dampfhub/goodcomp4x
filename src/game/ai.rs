@@ -332,7 +332,9 @@ impl GameState {
     /// they're unpaid, and planned again. Nothing is queued past the side's
     /// supply (`city/supply.rs`): at the cap the Barracks stays idle, and
     /// the city grows or gathers instead. The Barracks is
-    /// the military building (`city/barracks.rs`): an idle one trains
+    /// the military building (`city/barracks.rs`): an idle one trains a
+    /// Pikeman, paid in food alone, while its side sees more enemy mounted
+    /// troops (Cavalry) than it has Pikemen alive and queued; else
     /// Cavalry or Armored when its deposits allow and the side can pay, else
     /// Melee, or Ranged for one in three (the other when the side can pay
     /// only for it). A city's own queue trains a worker
@@ -395,6 +397,26 @@ impl GameState {
         }
         // Emptying queues of unpaid items leaves what they start unchanged.
         let mut spare = forecast.spare;
+        // Enemy mounted troops in sight, against the Pikemen it has or is
+        // training: while there are more of them, a Barracks trains Pikemen.
+        let mounted = self
+            .units
+            .iter()
+            .filter(|u| u.team != team && u.unit_type.is_mounted() && fog.sees(u.pos))
+            .count();
+        let pike = BuildUnit::Pikeman;
+        let mut pikes = soldiers(self, Some(UnitType::Pikeman))
+            + cities
+                .iter()
+                .map(|&c| {
+                    let c = &self.cities[c];
+                    c.barracks_queue.iter().filter(|q| q.build == pike).count()
+                        + c.queue
+                            .iter()
+                            .filter(|q| q.build == Build::Unit(pike))
+                            .count()
+                })
+                .sum::<usize>();
         for &city in &cities {
             let stock = self.stock(team);
             self.place_ai_barracks(city, fog);
@@ -411,12 +433,16 @@ impl GameState {
                 } else {
                     [BuildUnit::Melee, BuildUnit::Ranged]
                 };
-                let builds = [BuildUnit::Cavalry, BuildUnit::Armored].into_iter();
+                let against_mounted = (pikes < mounted).then_some(pike);
+                let builds = against_mounted
+                    .into_iter()
+                    .chain([BuildUnit::Cavalry, BuildUnit::Armored]);
                 for build in builds.chain(basics) {
                     if self.barracks_lock(city, build).is_none() && spare.covers(build.price()) {
                         self.queue_barracks(city, build);
                         spare -= build.price();
                         army += 1;
+                        pikes += usize::from(build == pike);
                         break;
                     }
                 }
@@ -2298,6 +2324,36 @@ mod expansion_tests {
             game.cities[0].queue.first().map(|q| q.build),
             Some(Build::Settler)
         );
+    }
+
+    /// #375: an idle Barracks trains Pikemen while its side sees more enemy
+    /// Cavalry than it has Pikemen, and not otherwise.
+    #[test]
+    fn a_barracks_trains_pikemen_against_cavalry_it_sees() {
+        let trains = |game: &mut GameState| {
+            game.plan_ai_turn(Team::Red);
+            game.cities[0].barracks_queue.first().map(|q| q.build)
+        };
+        // No enemy in sight: no Pikeman.
+        let mut game = red_ready_to_expand();
+        assert_eq!(trains(&mut game), Some(BuildUnit::Melee));
+        // A Blue Cavalry by its city: a Pikeman.
+        let mut game = red_ready_to_expand();
+        game.units
+            .push(Unit::new(7, Hex::new(-3, 0), Team::Blue, UnitType::Cavalry));
+        assert_eq!(trains(&mut game), Some(BuildUnit::Pikeman));
+        // With a Pikeman for it already, back to its usual troops.
+        let mut game = red_ready_to_expand();
+        game.units
+            .push(Unit::new(7, Hex::new(-3, 0), Team::Blue, UnitType::Cavalry));
+        game.units
+            .push(Unit::new(8, Hex::new(-6, 1), Team::Red, UnitType::Pikeman));
+        assert_eq!(trains(&mut game), Some(BuildUnit::Melee));
+        // Cavalry out of sight counts for nothing.
+        let mut game = red_ready_to_expand();
+        game.units
+            .push(Unit::new(7, Hex::new(6, 0), Team::Blue, UnitType::Cavalry));
+        assert_eq!(trains(&mut game), Some(BuildUnit::Melee));
     }
 
     #[test]

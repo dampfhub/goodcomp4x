@@ -242,6 +242,7 @@ pub(in crate::game) const HEAVY_TROOP_TURNS: i32 = 4;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum BuildUnit {
     Melee,
+    Pikeman,
     Ranged,
     Cavalry,
     Siege,
@@ -253,8 +254,9 @@ pub enum BuildUnit {
 
 impl BuildUnit {
     /// Every troop and ship a queue trains.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Melee,
+        Self::Pikeman,
         Self::Ranged,
         Self::Cavalry,
         Self::Siege,
@@ -267,6 +269,7 @@ impl BuildUnit {
     pub(in crate::game) fn unit_type(self) -> UnitType {
         match self {
             Self::Melee => UnitType::Melee,
+            Self::Pikeman => UnitType::Pikeman,
             Self::Ranged => UnitType::Ranged,
             Self::Cavalry => UnitType::Cavalry,
             Self::Siege => UnitType::Siege,
@@ -279,6 +282,7 @@ impl BuildUnit {
     pub fn name(self) -> &'static str {
         match self {
             Self::Melee => "MELEE",
+            Self::Pikeman => "PIKEMAN",
             Self::Ranged => "RANGED",
             Self::Cavalry => "CAVALRY",
             Self::Siege => "SIEGE",
@@ -294,10 +298,13 @@ impl BuildUnit {
     /// bows, engines and ships, built of timber, wood and metal. The amounts
     /// keep the army's tempo near what it was (`docs/rts-economy.md`,
     /// Round 11). Before, Melee was 3/9/0, Ranged 3/11/0, Cavalry 5/6/5,
-    /// Siege 2/12/6, Armored 5/3/11, and each ship 1 food more.
+    /// Siege 2/12/6, Armored 5/3/11, and each ship 1 food more. The Pikeman
+    /// (#375) is the one troop paid in food alone: cheap, and weak but for
+    /// its bonus against mounted troops.
     pub fn price(self) -> Stock {
         let (food, wood, metal) = match self {
             Self::Melee => (5, 0, 2),
+            Self::Pikeman => (6, 0, 0),
             Self::Ranged => (0, 9, 2),
             Self::Cavalry => (6, 0, 5),
             Self::Siege => (0, 12, 6),
@@ -312,7 +319,7 @@ impl BuildUnit {
     /// `CITY_TRAINING_SLOWDOWN` times as long for a land troop.
     pub fn turns(self) -> i32 {
         match self {
-            Self::Melee | Self::Ranged => LIGHT_TROOP_TURNS,
+            Self::Melee | Self::Pikeman | Self::Ranged => LIGHT_TROOP_TURNS,
             Self::Cavalry | Self::Siege | Self::Armored => HEAVY_TROOP_TURNS,
             Self::PatrolGalley => 3,
             Self::LandingCraft | Self::BombardShip => 4,
@@ -325,6 +332,7 @@ impl BuildUnit {
     pub fn description(self) -> &'static str {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
+            Self::Pikeman => "CHEAP PIKES: STRONG AGAINST MOUNTED UNITS, WEAK OTHERWISE",
             Self::Ranged => "FIRES FROM 2 TILES",
             Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
@@ -340,7 +348,8 @@ impl BuildUnit {
             Self::Melee => Some('1'),
             Self::Ranged => Some('2'),
             Self::Siege => Some('3'),
-            Self::Cavalry
+            Self::Pikeman
+            | Self::Cavalry
             | Self::Armored
             | Self::PatrolGalley
             | Self::LandingCraft

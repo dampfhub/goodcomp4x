@@ -53,6 +53,17 @@ impl InteriorFighter {
         stats
     }
 
+    /// Damage it deals `defender` in one blow inside the city: the combat
+    /// formula on their stats, a Pikeman's bonus against a mounted unit
+    /// included (`combat::versus_mounted`).
+    pub(in crate::game) fn damage_to(&self, defender: &InteriorFighter) -> f32 {
+        let (a, d) = (self.unit_type, defender.unit_type);
+        combat::damage_against(
+            self.stats().attack + combat::versus_mounted(a, d),
+            defender.stats().defense + combat::versus_mounted(d, a),
+        )
+    }
+
     pub(in crate::game) fn move_reaches(&self, tile: Hex) -> bool {
         self.planned_move.unwrap_or(self.pos).distance(tile) <= self.stats().move_range.max(1)
     }
@@ -356,7 +367,7 @@ impl GameState {
             let attack = fighter.stats().attack;
             match defender {
                 Some(defender) => {
-                    let hit = combat::damage_against(attack, defender.stats().defense);
+                    let hit = fighter.damage_to(defender);
                     preview.add(Hurt::Fighter(defender.source_id), hit, defender.hp, true);
                 }
                 None => {
@@ -554,8 +565,7 @@ impl GameState {
                 .enumerate()
                 .find(|(_, other)| other.pos == target && other.team != fighter.team)
             {
-                let defense = defender.stats().defense;
-                damage[index] += combat::damage_against(attack, defense);
+                damage[index] += fighter.damage_to(defender);
             } else if target == CENTER && fighter.team != owner && interior.core_hp > 0.0 {
                 core_damage += combat::damage_against(attack, CORE_DEFENSE);
             }

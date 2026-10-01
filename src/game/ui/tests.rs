@@ -4513,6 +4513,10 @@ fn imgui_queues_a_scout_and_a_settler_from_their_cards() {
     game.cities[city].population = 3;
     let mut screen = ImGuiScreen::new();
     screen.click(&mut game, Target::BuildScout);
+    // The Settler's card is further down the catalogue: scrolled to.
+    let card = screen.button(Target::BuildScout).expect("the Scout's card");
+    screen.context.io_mut().add_mouse_wheel_event([0.0, -1.0]);
+    screen.frame(&mut game, Some(card), false);
     screen.click(&mut game, Target::BuildSettler);
     assert_eq!(
         game.cities[city].queue,
@@ -5183,6 +5187,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
     }
     let full = format!("SUPPLY FULL ({cap}/{cap})");
     for target in [Target::Build(BuildUnit::Melee), Target::BuildScout] {
+        catalog_cursor(&mut game, target);
         let card = find_button(&game, target);
         assert_eq!(card.state(), ButtonState::Disabled, "{target:?}");
         assert_eq!(card.hint, full, "{target:?}");
@@ -5190,7 +5195,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
         assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
     }
     let queued = game.cities[0].queue.len();
-    let at = button_cursor(&game, Target::Build(BuildUnit::Melee));
+    let at = catalog_cursor(&mut game, Target::Build(BuildUnit::Melee));
     game.handle_click(at, SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[0].queue.len(), queued);
     // ImGui: the same card, locked, with the same reason.
@@ -5905,4 +5910,38 @@ fn a_hover_text_a_file_gives_replaces_the_label_while_hovered_in_both_presentati
     );
     screen.settle(&mut game);
     assert!(!labels().iter().any(|l| l.starts_with("CLOSE THE MENU")));
+}
+
+/// #375: the Pikeman's cards, in a city's production and at its Barracks,
+/// show its food-only price and queue it in both presentations, and its
+/// unit tray says what it gains against mounted units.
+#[test]
+fn pikeman_cards_queue_it_in_both_presentations() {
+    let pike = BuildUnit::Pikeman;
+    let mut game = GameState::city_scenario();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.fund(Team::Blue);
+    game.open_city(0);
+    let price = stock_icons(pike.price());
+    assert!(!price.contains(METAL_ICON) && !price.contains(WOOD_ICON));
+    // Classic: the city's card.
+    let card = catalog_cursor(&mut game, Target::Build(pike));
+    let hint = find_button(&game, Target::Build(pike)).hint;
+    assert!(hint.contains(&price), "{hint}");
+    game.handle_click(card, SCREEN, ClickMode::Normal);
+    assert_eq!(game.cities[0].queue, [Queued::new(Build::Unit(pike))]);
+    // ImGui: the Barracks' card.
+    game.open_barracks(0);
+    let hint = find_button(&game, Target::BarracksBuild(pike)).hint;
+    assert!(hint.contains(&price), "{hint}");
+    screen_click(&mut game, Target::BarracksBuild(pike));
+    assert_eq!(game.cities[0].barracks_queue, [Queued::new(pike)]);
+    // Its tray: the bonus against mounted units.
+    game.units
+        .push(Unit::new(50, Hex::new(2, 2), Team::Blue, UnitType::Pikeman));
+    let idx = game.units.len() - 1;
+    let tray = panel_strings(|panel| game.unit_info(idx, panel));
+    assert_shows(&tray, "+12 ATTACK AND DEFENSE AGAINST MOUNTED UNITS");
 }

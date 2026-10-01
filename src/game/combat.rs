@@ -12,11 +12,28 @@ use super::hex::{Hex, HexGrid};
 use super::turn::{Phase, moves_before_attacking, step_rank};
 use super::unit::{Unit, UnitType};
 
+/// The attack and defense a Pikeman gains against a mounted unit
+/// (`UnitType::is_mounted`), before terrain multiplies its defense.
+pub const PIKE_BONUS: f32 = 12.0;
+
+/// What `unit` adds to its attack or defense in a fight with `foe`:
+/// `PIKE_BONUS` for a Pikeman against a mounted unit, else nothing.
+pub fn versus_mounted(unit: UnitType, foe: UnitType) -> f32 {
+    if unit == UnitType::Pikeman && foe.is_mounted() {
+        PIKE_BONUS
+    } else {
+        0.0
+    }
+}
+
 /// Damage `attacker` deals to `target` in one blow, with `defense_multiplier`
 /// the terrain and fort bonus on the target (`GameState::defense_multiplier`).
+/// A Pikeman fighting a mounted unit adds `PIKE_BONUS` to its attack or
+/// defense (`versus_mounted`).
 pub fn damage(attacker: &Unit, target: &Unit, defense_multiplier: f32) -> f32 {
-    let defense = target.stats().defense * defense_multiplier;
-    damage_against(attacker.stats().attack, defense)
+    let (a, t) = (attacker.unit_type, target.unit_type);
+    let defense = (target.stats().defense + versus_mounted(t, a)) * defense_multiplier;
+    damage_against(attacker.stats().attack + versus_mounted(a, t), defense)
 }
 
 /// Damage an attack of `attack` deals in one blow against `defense`: the one
@@ -410,6 +427,75 @@ mod tests {
         let shown = previewed(&game, &preview, &before);
 
         game.group_order(target, ClickMode::Attack);
+        resolve_every_step(&mut game);
+        assert_close(&hp_lost(&game, &before), &shown);
+    }
+
+    /// #375: a Pikeman beats Cavalry, attacking or attacked, charging or
+    /// not, and loses to Melee either way; the bonus is only against mounted
+    /// units.
+    #[test]
+    fn a_pikeman_is_strong_against_cavalry_and_weak_otherwise() {
+        let unit = |kind| Unit::new(1, Hex::new(0, 0), Team::Blue, kind);
+        let (pike, cavalry, melee) = (
+            unit(UnitType::Pikeman),
+            unit(UnitType::Cavalry),
+            unit(UnitType::Melee),
+        );
+        assert!(UnitType::Cavalry.is_mounted());
+        assert!(!UnitType::Melee.is_mounted() && !UnitType::Wolf.is_mounted());
+        // Against Cavalry: 16 + 12 attack on 14 defense, and 24 attack on
+        // 14 + 12 defense.
+        let pike_hits = damage(&pike, &cavalry, 1.0);
+        let cavalry_hits = damage(&cavalry, &pike, 1.0);
+        assert!((pike_hits - damage_against(28.0, 14.0)).abs() < 1e-4);
+        assert!((cavalry_hits - damage_against(24.0, 26.0)).abs() < 1e-4);
+        assert!(
+            pike_hits > 50.0 && cavalry_hits < 30.0,
+            "{pike_hits} {cavalry_hits}"
+        );
+        // Even a charge (+50% attack) does less than the pikes strike back.
+        let mut charging = cavalry.clone();
+        charging.ability_queued = true;
+        assert!(damage(&charging, &pike, 1.0) < pike_hits);
+        // A Melee does better against Cavalry than a Pikeman without its
+        // bonus would, and far better against the Pikeman than it does back.
+        let melee_hits = damage(&melee, &pike, 1.0);
+        let pike_on_melee = damage(&pike, &melee, 1.0);
+        assert!((melee_hits - damage_against(22.0, 14.0)).abs() < 1e-4);
+        assert!((pike_on_melee - damage_against(16.0, 20.0)).abs() < 1e-4);
+        assert!(
+            melee_hits > pike_on_melee * 1.5,
+            "{melee_hits} {pike_on_melee}"
+        );
+        // Weaker than a Melee all round without the bonus.
+        let (p, m) = (UnitType::Pikeman.stats(), UnitType::Melee.stats());
+        assert!(p.max_hp < m.max_hp && p.attack < m.attack && p.defense < m.defense);
+        // No bonus against animals, nor for anyone but the Pikeman.
+        let wolf = unit(UnitType::Wolf);
+        assert!((damage(&pike, &wolf, 1.0) - damage_against(16.0, 12.0)).abs() < 1e-4);
+        assert!((damage(&melee, &cavalry, 1.0) - damage_against(22.0, 14.0)).abs() < 1e-4);
+    }
+
+    /// The attack preview shows a Pikeman's bonus: what it previews against
+    /// a Cavalry, blow and blow back, is what the turn deals.
+    #[test]
+    fn the_preview_shows_a_pikemans_bonus_against_cavalry() {
+        let target = Hex::new(1, 0);
+        let units = vec![
+            Unit::new(1, Hex::new(0, 0), Team::Blue, UnitType::Pikeman),
+            Unit::new(2, target, Team::Red, UnitType::Cavalry),
+        ];
+        let mut game = board(units, &[]);
+        game.selected = Some(0);
+        game.hovered_tile = Some(target);
+        let preview = game.attack_preview().expect("it can attack");
+        let before = game.units.clone();
+        let shown = previewed(&game, &preview, &before);
+        let (pike, cavalry) = (&before[0], &before[1]);
+        assert!((shown[1].1 - damage(pike, cavalry, 1.0)).abs() < 1e-3);
+        assert!(shown[1].1 > damage_against(16.0, 14.0), "the bonus counts");
+        game.try_queue_attack(0, target);
         resolve_every_step(&mut game);
         assert_close(&hp_lost(&game, &before), &shown);
     }

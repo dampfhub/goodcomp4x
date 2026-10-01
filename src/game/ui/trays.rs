@@ -221,6 +221,12 @@ impl GameState {
         if unit.deployed {
             notes.push(text!("unit_deployed").to_string());
         }
+        if unit.unit_type == crate::game::unit::UnitType::Pikeman {
+            notes.push(text!(
+                "unit_pike_bonus",
+                bonus = format!("{:.0}", crate::game::combat::PIKE_BONUS)
+            ));
+        }
         // Instructions, and what a landing craft carries, are the player's
         // own units' alone.
         if self.is_player_controlled(idx) {
@@ -690,6 +696,7 @@ impl GameState {
             if self.city_is_coastal(i) && city.placed_site(Building::Harbor).is_some() {
                 vec![
                     BuildUnit::Melee,
+                    BuildUnit::Pikeman,
                     BuildUnit::Ranged,
                     BuildUnit::Siege,
                     BuildUnit::PatrolGalley,
@@ -697,7 +704,12 @@ impl GameState {
                     BuildUnit::BombardShip,
                 ]
             } else {
-                vec![BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
+                vec![
+                    BuildUnit::Melee,
+                    BuildUnit::Pikeman,
+                    BuildUnit::Ranged,
+                    BuildUnit::Siege,
+                ]
             };
         // The side's supply, which every troop, ship and Scout card below
         // uses, on one line with the Barracks' pace.
@@ -1038,6 +1050,7 @@ impl GameState {
         }
         let builds = [
             BuildUnit::Melee,
+            BuildUnit::Pikeman,
             BuildUnit::Ranged,
             BuildUnit::Cavalry,
             BuildUnit::Siege,

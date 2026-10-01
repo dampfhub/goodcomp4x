@@ -57,6 +57,7 @@ fn city_supply(population: usize) -> u32 {
 pub(in crate::game) fn unit_type_supply(kind: UnitType) -> u32 {
     match kind {
         UnitType::Melee
+        | UnitType::Pikeman
         | UnitType::Ranged
         | UnitType::Cavalry
         | UnitType::Siege
