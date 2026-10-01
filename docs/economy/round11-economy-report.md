@@ -25,7 +25,7 @@ SIM_SEEDS=24 REPORT_TURNS=60 cargo test --release animal_report -- --ignored --n
 ```
 Two measures came from a local addition that isn't in the tree: each side's third city, and its
 start's land (farmland, dry open ground, forest and hills within 2 hexes) against how it did.
-The knobs were local edits read from environment variables, one build for every run.
+The knobs were local edits read from environment variables, so one build served every run.
 
 ## Summary
 
