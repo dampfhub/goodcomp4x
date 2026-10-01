@@ -908,3 +908,16 @@ The crowded settler world (`a_crowded_world_of_settlers_keeps_the_board_consiste
 old slip on the new games: a side whose city was taken founded its next one 2 hexes from it,
 because a settler of a side without a city that knew no site founded where it stood, whatever
 the rules said. It now waits, like any settler with no site.
+
+### Then: the Pikeman (#375)
+
+The user's next decision: a troop paid in food alone, the Pikeman, at 6 food and Melee's 3 turns.
+It's weaker than a Melee all round (90 HP, 16 attack, 14 defense), but it gains 12 attack and 12
+defense against mounted units (Cavalry), so it beats Cavalry, even charging. It's the one troop
+that needs no metal: what a side short of metal can still raise against horse. The AI trains one
+at an idle Barracks while it sees more enemy Cavalry than it has Pikemen.
+
+Measured the same way (seeds 0-23), it changes little, as the AI meets few Cavalry: a side in the
+World with 4 AI sides trains 0.44 Pikemen by turn 60 (1.0 Cavalry), 0.46 with 1 AI side, and none
+in Cities. The army at turns 20 / 40 / 60 is 3.8 / 5.0 / 6.1 against 3.8 / 4.9 / 5.9 without it.
+`PROTOCOL_VERSION` 38.

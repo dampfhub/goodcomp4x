@@ -77,6 +77,9 @@ pub enum UnitType {
     PatrolGalley,
     LandingCraft,
     BombardShip,
+    /// Cheap pikes, paid in food alone: weak in general, but set against
+    /// mounted troops (`combat::versus_mounted`).
+    Pikeman,
     /// An animal (`animals.rs`): a wolf pack, fast and fierce but frail.
     Wolf,
     /// An animal: a bear, slow and tough.
@@ -111,6 +114,12 @@ impl UnitType {
         )
     }
 
+    /// Whether it fights mounted: the troops a Pikeman is set against
+    /// (`combat::versus_mounted`).
+    pub fn is_mounted(self) -> bool {
+        matches!(self, Self::Cavalry)
+    }
+
     /// Whether it's an animal (`animals.rs`), which only the wild owns.
     pub fn is_animal(self) -> bool {
         matches!(self, Self::Wolf | Self::Bear)
@@ -119,6 +128,8 @@ impl UnitType {
     /// Melee is the balanced baseline; ranged trades toughness for reach,
     /// cavalry trades defense for mobility, and siege hits hardest but folds
     /// once anything reaches it. Scouts give up fighting for speed and sight.
+    /// Pikemen are weaker than melee all round, but against mounted troops
+    /// they gain `combat::PIKE_BONUS` attack and defense.
     /// Of the animals, a wolf pack runs down scouts and settlers and bloodies
     /// a lone troop, and a bear beats a lone melee troop.
     pub fn stats(self) -> UnitStats {
@@ -132,6 +143,7 @@ impl UnitType {
             UnitType::PatrolGalley => (115.0, 23.0, 17.0, 3, 1),
             UnitType::LandingCraft => (125.0, 8.0, 15.0, 2, 1),
             UnitType::BombardShip => (105.0, 30.0, 12.0, 2, 3),
+            UnitType::Pikeman => (90.0, 16.0, 14.0, 1, 1),
             UnitType::Wolf => (80.0, 24.0, 12.0, 2, 1),
             UnitType::Bear => (130.0, 28.0, 20.0, 1, 1),
         };
@@ -149,7 +161,12 @@ impl UnitType {
     pub fn takes_alert(self) -> bool {
         matches!(
             self,
-            Self::Melee | Self::Cavalry | Self::Armored | Self::Ranged | Self::Siege
+            Self::Melee
+                | Self::Cavalry
+                | Self::Armored
+                | Self::Ranged
+                | Self::Siege
+                | Self::Pikeman
         )
     }
 

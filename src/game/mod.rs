@@ -579,6 +579,7 @@ impl GameState {
         } else {
             match unit.unit_type {
                 UnitType::Melee => text!("unit_melee"),
+                UnitType::Pikeman => text!("unit_pikeman"),
                 UnitType::Ranged => text!("unit_ranged"),
                 UnitType::Cavalry => text!("unit_cavalry"),
                 UnitType::Siege => text!("unit_siege"),
@@ -1014,12 +1015,14 @@ mod tests {
         use turn::step_rank;
         assert_eq!(step_rank(UnitType::Scout, Phase::Move), 1);
         assert_eq!(step_rank(UnitType::Cavalry, Phase::Move), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 7);
+        assert_eq!(step_rank(UnitType::Pikeman, Phase::Move), 5);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Move), 8);
         assert_eq!(step_rank(UnitType::Ranged, Phase::Attack), 1);
         assert_eq!(step_rank(UnitType::Scout, Phase::Attack), 2);
-        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 7);
+        assert_eq!(step_rank(UnitType::Pikeman, Phase::Attack), 6);
+        assert_eq!(step_rank(UnitType::Siege, Phase::Attack), 8);
         assert_eq!(step_rank(UnitType::Wolf, Phase::Move), 3);
-        assert_eq!(step_rank(UnitType::Bear, Phase::Attack), 6);
+        assert_eq!(step_rank(UnitType::Bear, Phase::Attack), 7);
     }
 
     /// Selects `idx` and toggles its ability, as the button would.

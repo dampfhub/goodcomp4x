@@ -23,7 +23,7 @@ controls: the game's startup log (`CONTROLS_HELP` in `src/game/mod.rs`) just poi
 | Space / Hold button | Hold the unit this turn, keeping queued orders, and move on to what's next; on a unit already holding, stop holding (it's back in the turn order). Any new order also ends a hold |
 | Clear Orders button | Clear the selected unit's (or group's) orders, queue, hold, guard and alert, like Ctrl-right-click |
 | G / Guard button | Guard: stay put and be skipped every turn until given an order (G again unguards) |
-| E / Alert button | Alert: stay put, be skipped every turn, and in its attack step attack the nearest enemy in range, until given another order (E again takes it off). Melee, cavalry, armored, ranged, and siege once set up (Q first); with a group, every member that can |
+| E / Alert button | Alert: stay put, be skipped every turn, and in its attack step attack the nearest enemy in range, until given another order (E again takes it off). Melee, pikemen, cavalry, armored, ranged, and siege once set up (Q first); with a group, every member that can |
 | Delete / Disband button, twice | Remove the selected unit for good (the first press asks to confirm, until the turn ends; a loaded Landing Craft takes its passengers with it, and the first press says how many) |
 | Tab | Look at the next unit without holding this one; leave the city or barracks view |
 | Left-drag a box on the map | Select every one of your units inside it (two or more become a group) |

@@ -26,20 +26,23 @@ pub(super) enum Phase {
 /// - Cavalry moves before anyone attacks, so it can't be caught mid-charge.
 /// - Ranged fires before melee closes in, then repositions (shoot, then move).
 /// - Melee moves and fights in the middle, screening for ranged and siege.
+///   Pikemen move and fight just after it, bracing the line.
 /// - Siege is slow: it moves and fires last, and may die before it acts.
 /// - Animals (`animals.rs`) act beside their like: wolves after cavalry,
 ///   bears after melee.
-pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 22] = [
+pub(super) const RESOLUTION_ORDER: [(UnitType, Phase); 24] = [
     (UnitType::Scout, Phase::Move),
     (UnitType::Cavalry, Phase::Move),
     (UnitType::Wolf, Phase::Move),
     (UnitType::Melee, Phase::Move),
+    (UnitType::Pikeman, Phase::Move),
     (UnitType::Bear, Phase::Move),
     (UnitType::Ranged, Phase::Attack),
     (UnitType::Scout, Phase::Attack),
     (UnitType::Cavalry, Phase::Attack),
     (UnitType::Wolf, Phase::Attack),
     (UnitType::Melee, Phase::Attack),
+    (UnitType::Pikeman, Phase::Attack),
     (UnitType::Bear, Phase::Attack),
     (UnitType::Ranged, Phase::Move),
     (UnitType::Siege, Phase::Move),

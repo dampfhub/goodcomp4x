@@ -62,8 +62,8 @@ const CONTACT_RANGE: i32 = 3;
 /// The army sizes whose first turn is an event.
 const ARMY_STEPS: [usize; 4] = [3, 5, 10, 15];
 /// Kinds of unit a side gains, for "trained by type".
-const KINDS: [&str; 7] = [
-    "melee", "ranged", "cavalry", "siege", "armored", "ship", "recruit",
+const KINDS: [&str; 8] = [
+    "melee", "ranged", "cavalry", "siege", "armored", "ship", "recruit", "pikeman",
 ];
 /// Where resources go: what paying for things spends them on.
 const SPENDING: [&str; 5] = ["troops", "growth", "workers", "buildings", "works"];
@@ -292,6 +292,7 @@ fn kind(unit: &Unit) -> usize {
         UnitType::Cavalry => 2,
         UnitType::Siege => 3,
         UnitType::Armored => 4,
+        UnitType::Pikeman => 7,
         _ => 5,
     }
 }

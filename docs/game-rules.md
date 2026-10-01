@@ -176,6 +176,7 @@ So, unimproved (food / wood / metal):
 | Type | HP | Attack | Defense | Move | Range | Sight | Ability | Icon |
 |---|---|---|---|---|---|---|---|---|
 | Melee | 100 | 22 | 20 | 1 | 1 | 2 | Shield Wall | sword |
+| Pikeman | 90 | 16 (28 against mounted) | 14 (26 against mounted) | 1 | 1 | 2 | Shield Wall | pike |
 | Ranged | 75 | 24 | 10 | 1 | 2 | 2 | Volley | bow and arrow |
 | Cavalry | 100 | 24 | 14 | 2 | 1 | 3 | Charge | horse head |
 | Siege | 65 | 32 | 6 | 1 | 2 | 2 | Deploy | catapult |
@@ -206,6 +207,11 @@ is), each ends a hold, guard or alert and counts as the unit's orders for the tu
 other order (a move, attack, swap, queued turn, group move or attack, Alert, Ctrl-right-click)
 calls either off. Disbanding a loaded craft disbands its passengers too; the first press says
 how many.
+A **Pikeman** is the cheap troop paid in food alone (6 food): weaker than a Melee all round,
+but set against mounted units, which are Cavalry for now (the animals aren't mounted): it adds 12
+to its attack and to its defense in any fight with one, attacking or attacked, on the map and
+inside a city (`combat::versus_mounted`). So a Pikeman beats a Cavalry, even a charging one,
+and loses to a Melee. Its unit tray says so, and the damage preview counts it.
 Patrol Galleys fight ships well but deal 35% damage to land troops; Bombard Ships attack from
 three hexes. Land melee troops cannot attack ships; Ranged deal 40% and Siege 60% damage to
 ships. These attack restrictions apply to direct, group, queued, AI and resolving orders.
@@ -432,14 +438,14 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Turn resolution (`turn.rs`)
 
-After a 0.6 s pause (so the last order is visible), the turn plays out in 17 steps on land, one
+After a 0.6 s pause (so the last order is visible), the turn plays out in 19 steps on land, one
 every 0.6 s, with the acting units flashing (or all at once with instant playback). Steps where
 nobody acts are skipped.
 
-1. Scout move  2. Cavalry move  3. Wolf move  4. Melee move  5. Bear move  6. Ranged attack
-7. Scout attack  8. Cavalry attack  9. Wolf attack  10. Melee attack  11. Bear attack
-12. Ranged move  13. Siege move  14. Siege attack  15. Armored move  16. Armored attack
-17. Workers
+1. Scout move  2. Cavalry move  3. Wolf move  4. Melee move  5. Pikeman move  6. Bear move
+7. Ranged attack  8. Scout attack  9. Cavalry attack  10. Wolf attack  11. Melee attack
+12. Pikeman attack  13. Bear attack  14. Ranged move  15. Siege move  16. Siege attack
+17. Armored move  18. Armored attack  19. Workers
 
 Ships move and attack after the Armored steps, before the workers. Animals act beside their like
 (see Animals): wolves after cavalry, bears after melee. Workers go last, after every unit has
@@ -557,7 +563,7 @@ Everyone in a step acts simultaneously:
 
 | Ability | Units | Effect | Cooldown |
 |---|---|---|---|
-| Shield Wall | Melee, Armored | +50% defense this turn, can't move | 1 turn |
+| Shield Wall | Melee, Pikeman, Armored | +50% defense this turn, can't move | 1 turn |
 | Volley | Ranged | attack also hits enemies adjacent to the target, all hits at 60% | 2 turns |
 | Charge | Cavalry | +1 move, +50% attack this turn | 2 turns |
 | Deploy / Pack Up | Siege | spend a turn setting up (no move or attack); deployed: +1 range, can't move; packing up takes a turn too | none |
@@ -570,7 +576,7 @@ every turn end.
 
 - Damage = `30 * e^((attack - defense) * 0.04)`, clamped to 1..100, with no random spread: the
   same fight always deals the same damage. Defense includes terrain and Shield Wall; attack
-  includes Charge. Volley (60%) and attacks across the waterline (above) scale the result.
+  includes Charge. A Pikeman fighting a mounted unit adds 12 to its attack or defense first. Volley (60%) and attacks across the waterline (above) scale the result.
 - Melee attacks (base range 1) draw retaliation from a defender that survives the hit (that
   one hit, not the step's sum). Two units trading blows across the waterline each take the
   other's shore-scaled damage.
@@ -836,13 +842,14 @@ only).
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 5/0/2, 3; Ranged
+- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 5/0/2, 3; Pikeman
+  6/0/0, 3; Ranged
   0/9/2, 3; Cavalry 6/0/5, 4; Siege 0/12/6, 4; Armored 6/0/10, 4; Patrol Galley 0/10/2, 3; Landing
   Craft 0/12/2, 4; Bombard Ship 0/12/6, 4; Scout 2/4/0, 2; Worker 4/2/0, 2; Settler 30/10/0, 6;
   Grow as above, 2; Gather free, 1. A unit costs at most two kinds of goods: every troop and ship
   pays metal, the foot and horse troops with food and those built of timber (Ranged, Siege,
-  ships) with wood, so metal is what most often limits an army; Scouts, Workers and Settlers
-  pay food and wood. A city center
+  ships) with wood, so metal is what most often limits an army; the Pikeman, paid in food
+  alone, is the exception. Scouts, Workers and Settlers pay food and wood. A city center
   trains land troops at half a Barracks' pace (twice the turns: a Melee takes 6); ships, which
   only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
@@ -863,7 +870,7 @@ only).
     for a Canoe House) and keeps it picked. One placed can't be placed again until it's done or
     taken off the city's job list (refunded).
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
-    (Melee, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's (when work
+    (Melee, Pikeman, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's (when work
     on an item starts; one it can't pay for waits), training
     twice as fast as a city center, wherever the city's managers are (with production speeding
     builds, each manager beside the barracks adds its cluster's production, times their delivery
@@ -1111,7 +1118,8 @@ it places a Barracks for its workers to build, paid like the player's: on a Hors
 deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
 within 2. Its queue otherwise grows the city. A city without a Barracks (built or going up) trains Melee itself,
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
-pay. An idle AI Barracks trains Cavalry or Armored when its deposits allow and the side can pay,
+pay. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted troops
+(Cavalry) than it has Pikemen alive and queued; else Cavalry or Armored when its deposits allow and the side can pay,
 else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one). An AI city with a worker at home and an empty list places one job it can
 pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
 ground); while its side has less wood than a Ranged costs, cutting the nearest forest within

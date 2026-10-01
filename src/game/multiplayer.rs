@@ -35,7 +35,7 @@ use super::workers::WorkerJob;
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 37;
+pub const PROTOCOL_VERSION: u32 = 38;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -3358,8 +3358,9 @@ mod tests {
             for _ in 0..rng.random_range(0..8) {
                 let len = game.cities[city].queue.len();
                 let troops = game.cities[city].barracks_queue.len();
-                match rng.random_range(0..9) {
+                match rng.random_range(0..10) {
                     0 => game.queue_selected_city_unit(BuildUnit::Melee),
+                    9 => game.queue_selected_barracks_unit(BuildUnit::Pikeman),
                     1 => game.queue_selected_city_growth(),
                     2 => game.queue_selected_city_worker(),
                     3 => game.queue_selected_city_gather(),
@@ -3628,6 +3629,7 @@ mod tests {
         let hexes: Vec<Hex> = start.grid.all_hexes().collect();
         let builds = [
             Build::Unit(BuildUnit::Melee),
+            Build::Unit(BuildUnit::Pikeman),
             Build::Unit(BuildUnit::Ranged),
             Build::Unit(BuildUnit::Siege),
             Build::Unit(BuildUnit::PatrolGalley),

@@ -2874,8 +2874,8 @@ fn no_city_is_founded_in_a_contested_hex() {
 }
 
 /// #374: a unit costs at most two kinds of goods, and every troop and ship
-/// pays metal, the good that most often limits an army. Scouts, workers and
-/// settlers pay none.
+/// pays metal, the good that most often limits an army, but the Pikeman,
+/// paid in food alone (#375). Scouts, workers and settlers pay no metal.
 #[test]
 fn every_unit_costs_at_most_two_goods_and_troops_pay_metal() {
     let kinds = |price: Stock| {
@@ -2887,7 +2887,11 @@ fn every_unit_costs_at_most_two_goods_and_troops_pay_metal() {
     for unit in BuildUnit::ALL {
         let price = unit.price();
         assert!(kinds(price) <= 2, "{unit:?}: {price:?}");
-        assert!(price.metal > 0, "{unit:?} pays metal");
+        if unit == BuildUnit::Pikeman {
+            assert_eq!(price, Stock::whole(price.food / 4, 0, 0), "food alone");
+        } else {
+            assert!(price.metal > 0, "{unit:?} pays metal");
+        }
     }
     for build in [Build::Scout, Build::Worker, Build::Settler] {
         let price = build.price();

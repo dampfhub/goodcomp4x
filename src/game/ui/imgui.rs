@@ -3531,7 +3531,19 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
         flush(&mut run, &mut x);
         let mut vertices = Vec::new();
         map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, &mut vertices);
-        let center = [x + size / 2.0, middle];
+        // Centered on the line by what it draws: the wheat stands a little
+        // higher than low, and would reach into the line above.
+        let (low, high) = vertices
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(low, high), v| {
+                (low.min(v.pos[1]), high.max(v.pos[1]))
+            });
+        let lift = if vertices.is_empty() {
+            0.0
+        } else {
+            (low + high) / 2.0
+        };
+        let center = [x + size / 2.0, middle + lift];
         // The icon is built Y-up around the origin; ImGui's Y points down.
         if dim {
             for vertex in &mut vertices {

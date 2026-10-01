@@ -32,6 +32,8 @@ pub(super) enum UnitIcon {
     Spyglass,
     /// Armored: a heater shield.
     Shield,
+    /// Pikeman: a long pike, slanted, its leaf-shaped head up.
+    Pike,
     /// Patrol galley: a narrow hull with oars.
     Galley,
     /// Landing craft: a broad troop transport.
@@ -57,6 +59,7 @@ impl UnitIcon {
             UnitType::Siege => Self::Catapult,
             UnitType::Scout => Self::Spyglass,
             UnitType::Armored => Self::Shield,
+            UnitType::Pikeman => Self::Pike,
             UnitType::PatrolGalley => Self::Galley,
             UnitType::LandingCraft => Self::LandingCraft,
             UnitType::BombardShip => Self::BombardShip,
@@ -175,6 +178,13 @@ fn build_pictogram(icon: UnitIcon, out: &mut Vec<Vertex>) {
             outline.extend(quadratic((0.0, 31.0), (-22.0, 18.0), (-22.0, -4.0)));
             outline.pop();
             pen.polygon(&outline);
+        }
+        UnitIcon::Pike => {
+            pen.turn(25.0);
+            pen.rect(-3.0, -14.0, 6.0, 43.0);
+            pen.polygon(&[(0.0, -34.0), (9.0, -21.0), (0.0, -12.0), (-9.0, -21.0)]);
+            pen.rect(-10.0, -13.0, 20.0, 5.0);
+            pen.circle(0.0, 29.0, 4.5);
         }
         UnitIcon::Galley => {
             pen.polygon(&[(-30.0, 8.0), (30.0, 8.0), (21.0, 21.0), (-21.0, 21.0)]);
@@ -327,13 +337,14 @@ impl Pen<'_> {
 mod tests {
     use super::*;
 
-    const ICONS: [UnitIcon; 13] = [
+    const ICONS: [UnitIcon; 14] = [
         UnitIcon::Sword,
         UnitIcon::Bow,
         UnitIcon::HorseHead,
         UnitIcon::Catapult,
         UnitIcon::Spyglass,
         UnitIcon::Shield,
+        UnitIcon::Pike,
         UnitIcon::Galley,
         UnitIcon::LandingCraft,
         UnitIcon::BombardShip,
