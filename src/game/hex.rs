@@ -303,6 +303,17 @@ impl HexGrid {
             && self.has_fresh_water(hex)
     }
 
+    /// Whether a pasture can go on `hex`: dry open grassland or plains (no
+    /// hills, forest or jungle, and no fresh water, or it would take a farm).
+    pub fn takes_pasture(&self, hex: Hex) -> bool {
+        let tile = self.tile(hex);
+        self.is_passable(hex)
+            && matches!(tile.terrain, Terrain::Grassland | Terrain::Plains)
+            && !tile.hills
+            && tile.feature.is_none()
+            && !self.has_fresh_water(hex)
+    }
+
     /// Land beside a river or a lake. Fresh water adds food, and a farm can
     /// go only on a tile with it.
     pub fn has_fresh_water(&self, hex: Hex) -> bool {
