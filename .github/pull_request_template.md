@@ -8,6 +8,7 @@
 
 - [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
 - [ ] Docs updated where behavior changed (`docs/game-rules.md`, `docs/controls.md`, `AGENTS.md`)
+- [ ] Player-facing text added or changed is checked for brevity and plain, non-AI wording (`docs/text.md`, "Writing it: short and plain"), and listed here, or there is none
 
 - [ ] Latest PR head CI passed; after merging, `main` CI passed before marking the board item Done.
 

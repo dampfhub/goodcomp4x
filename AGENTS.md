@@ -44,6 +44,10 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
    for everyone goes in CI or a script, not in one agent's settings or hooks.
 8. The ImGui presentation is active by default, with F11 switching to the classic UI.
    Shared panel content and actions must work in both; read `docs/ui-system.md` before UI edits.
+9. Before submitting anything, check every piece of player-facing text you added or changed
+   (names, labels, tooltips, hints, notices, reasons) against `docs/text.md`, "Writing it:
+   short and plain". Make it as short as it can be, and make sure it doesn't read as written by
+   an AI. List the strings you checked in the PR.
 
 ## Where things are
 
