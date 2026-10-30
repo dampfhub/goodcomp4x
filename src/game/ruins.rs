@@ -40,8 +40,8 @@ impl RuinReward {
     pub fn description(self) -> String {
         match self {
             RuinReward::Recruits => "A CAVALRY UNIT".into(),
-            RuinReward::Supplies => format!("+{} FOR THE STOCKPILE", stock_words(SUPPLIES)),
-            RuinReward::Harvest => format!("+{} FOR THE STOCKPILE", stock_words(HARVEST)),
+            RuinReward::Supplies => format!("+{}", stock_words(SUPPLIES)),
+            RuinReward::Harvest => format!("+{}", stock_words(HARVEST)),
         }
     }
 }
@@ -169,7 +169,7 @@ impl GameState {
                     HARVEST
                 };
                 *self.stock_mut(team) += goods;
-                format!("+{} FOR THE STOCKPILE", stock_words(goods))
+                format!("+{}", stock_words(goods))
             }
             RuinReward::Recruits => {
                 let spot = ruin
@@ -190,7 +190,7 @@ impl GameState {
                             .push(Unit::new(id, spot, team, UnitType::Cavalry));
                         "A CAVALRY UNIT JOINS YOU".into()
                     }
-                    None => "BUT THERE WAS NO ROOM FOR RECRUITS".into(),
+                    None => "NO ROOM FOR THE CAVALRY".into(),
                 }
             }
         };
@@ -200,7 +200,7 @@ impl GameState {
             ruin.pos.r
         );
         if team == self.local_team {
-            self.notice = format!("RUINS CLAIMED - {what}");
+            self.notice = format!("RUINS CLAIMED: {what}");
         } else if self.fog().sees(ruin.pos) {
             self.notice = format!("{team:?} CLAIMED THE RUINS").to_uppercase();
         }
