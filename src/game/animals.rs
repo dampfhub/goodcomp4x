@@ -30,7 +30,7 @@
 //! (`world_animals`).
 
 use super::GameState;
-use super::city::{Stock, stock_words};
+use super::city::{Stock, stock_words, turns_icon};
 use super::hex::Hex;
 use super::unit::{Team, Unit, UnitType};
 
@@ -187,35 +187,32 @@ impl GameState {
         let (kind, animals) = (den.kind, animals_name(den.kind));
         let mut notes = vec![
             format!(
-                "{}: UP TO {} {animals}, ROAMING WITHIN {} HEXES OF IT",
+                "{}: UP TO {} {animals}, ROAMING WITHIN {} HEXES",
                 den.name(),
                 den.cap,
                 territory(kind)
             ),
             format!(
-                "THEY HUNT WHOEVER COMES WITHIN {} HEXES OF THEM",
+                "THEY HUNT ANYONE WITHIN {} HEXES OF THEM",
                 hunting_range(kind)
             ),
             format!(
-                "END A TURN ON IT WITH A UNIT TO CLEAR IT: +{} FOR THE STOCKPILE",
+                "END A TURN ON IT WITH A UNIT TO CLEAR IT: +{}",
                 stock_words(DEN_SPOILS)
             ),
-            "CLEARED, ITS LAND IS FREE TO SETTLE".into(),
+            "ONCE CLEARED, FREE TO SETTLE".into(),
         ];
-        let turns = den.next_in.max(1);
+        let turns = turns_icon(den.next_in.max(1) as i32);
         let full = self.den_animals_at(hex) >= den.cap;
         notes.push(if full {
-            format!(
-                "FULL: ANOTHER {} LEAVES IT AS A STRAY IN {turns} TURNS",
-                animal_name(kind)
-            )
+            format!("FULL: A STRAY {} LEAVES IN {turns}", animal_name(kind))
         } else {
-            format!("ANOTHER {} IN {turns} TURNS", animal_name(kind))
+            format!("ANOTHER {} IN {turns}", animal_name(kind))
         });
         notes.push(format!(
-            "STRAYS ROAM ANYWHERE, HUNTING WITHIN {} HEXES: UP TO {} IN THE WORLD",
-            hunting_range(kind) + STRAY_EXTRA_HUNTING,
-            self.stray_limit
+            "UP TO {} STRAYS ROAM THE WORLD, HUNTING WITHIN {} HEXES",
+            self.stray_limit,
+            hunting_range(kind) + STRAY_EXTRA_HUNTING
         ));
         notes
     }
@@ -267,10 +264,7 @@ impl GameState {
             if let Some(team) = clearer {
                 let den = self.dens.remove(d);
                 *self.stock_mut(team) += DEN_SPOILS;
-                let what = format!(
-                    "+{} FOR THE STOCKPILE - ITS LAND IS FREE TO SETTLE",
-                    stock_words(DEN_SPOILS)
-                );
+                let what = format!("+{}. FREE TO SETTLE", stock_words(DEN_SPOILS));
                 log::info!("{team:?} clears the {} at {pos:?}: {what}", den.name());
                 if team == self.local_team {
                     self.notice = format!("{} CLEARED: {what}", den.name());
@@ -324,7 +318,7 @@ impl GameState {
     fn reward_kill(&mut self, team: Team, kind: UnitType, pos: Hex) {
         let goods = bounty(kind);
         *self.stock_mut(team) += goods;
-        let what = format!("+{} FOR THE STOCKPILE", stock_words(goods));
+        let what = format!("+{}", stock_words(goods));
         log::info!(
             "{team:?} kills the {} at {pos:?}: {what}",
             animal_name(kind)
@@ -936,24 +930,30 @@ mod tests {
         assert_eq!(
             notes[..2],
             [
-                "WOLF DEN: UP TO 2 WOLF PACKS, ROAMING WITHIN 4 HEXES OF IT",
-                "THEY HUNT WHOEVER COMES WITHIN 4 HEXES OF THEM",
+                "WOLF DEN: UP TO 2 WOLF PACKS, ROAMING WITHIN 4 HEXES",
+                "THEY HUNT ANYONE WITHIN 4 HEXES OF THEM",
             ]
         );
         assert!(
             notes[2].contains("CLEAR IT") && notes[2].contains("FOOD"),
             "{notes:?}"
         );
-        assert_eq!(notes[3], "CLEARED, ITS LAND IS FREE TO SETTLE");
+        assert_eq!(notes[3], "ONCE CLEARED, FREE TO SETTLE");
         assert_eq!(
             notes[4],
-            format!("ANOTHER WOLF PACK IN {DEN_BREED_TURNS} TURNS")
+            format!(
+                "ANOTHER WOLF PACK IN {}",
+                turns_icon(DEN_BREED_TURNS as i32)
+            )
         );
         game.resolve_dens();
         let notes = game.den_notes(Hex::new(0, 0), false);
         assert_eq!(
             notes[4],
-            format!("ANOTHER WOLF PACK IN {} TURNS", DEN_BREED_TURNS - 1)
+            format!(
+                "ANOTHER WOLF PACK IN {}",
+                turns_icon(DEN_BREED_TURNS as i32 - 1)
+            )
         );
         // Full, its next goes out as a stray; the world keeps so many.
         let mut full = wolf_den();
@@ -961,8 +961,11 @@ mod tests {
         assert_eq!(
             full.den_notes(Hex::new(0, 0), false)[4..],
             [
-                format!("FULL: ANOTHER WOLF PACK LEAVES IT AS A STRAY IN {DEN_BREED_TURNS} TURNS"),
-                "STRAYS ROAM ANYWHERE, HUNTING WITHIN 6 HEXES: UP TO 4 IN THE WORLD".into(),
+                format!(
+                    "FULL: A STRAY WOLF PACK LEAVES IN {}",
+                    turns_icon(DEN_BREED_TURNS as i32)
+                ),
+                "UP TO 4 STRAYS ROAM THE WORLD, HUNTING WITHIN 6 HEXES".into(),
             ]
         );
         // Out of sight, only what was seen: nothing, before anyone looked.

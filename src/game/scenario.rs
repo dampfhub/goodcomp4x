@@ -189,10 +189,11 @@ impl GameState {
     /// F8: switches turn playback between one step at a time and all at once.
     pub fn toggle_instant_playback(&mut self) {
         self.settings.instant_playback = !self.settings.instant_playback;
+        let key = Command::Playback.key();
         self.notice = if self.settings.instant_playback {
-            "TURNS NOW PLAY OUT ALL AT ONCE - F8 FOR STEP BY STEP".into()
+            format!("TURNS PLAY OUT ALL AT ONCE. {key}: STEP BY STEP")
         } else {
-            "TURNS NOW PLAY OUT STEP BY STEP - F8 FOR ALL AT ONCE".into()
+            format!("TURNS PLAY OUT STEP BY STEP. {key}: ALL AT ONCE")
         };
     }
 
@@ -210,8 +211,9 @@ impl GameState {
         let snapshot = self.clone();
         self.savestate = Some(Box::new(snapshot));
         self.notice = format!(
-            "SAVED {} - F7 LOADS IT",
-            self.saved_summary().unwrap_or_default()
+            "SAVED {}. {} LOADS IT",
+            self.saved_summary().unwrap_or_default(),
+            Command::Load.key()
         );
     }
 
@@ -225,7 +227,7 @@ impl GameState {
             return;
         }
         let Some(saved) = self.savestate.take() else {
-            self.notice = "NOTHING SAVED YET - F6 SAVES".into();
+            self.notice = format!("NOTHING SAVED YET. {} SAVES", Command::Save.key());
             return;
         };
         let mut restored = (*saved).clone();

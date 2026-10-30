@@ -49,7 +49,7 @@ const MAX_REASON: usize = 120;
 /// What the top bar says once this side's plan is sent, while it waits for
 /// the others'.
 pub(super) const WAITING_NOTICE: &str =
-    "ORDERS SENT - A NEW ORDER OR THE WAITING BUTTON TAKES THEM BACK";
+    "ORDERS SENT. A NEW ORDER OR THE WAITING BUTTON TAKES THEM BACK";
 
 /// The port a host listens on unless told another.
 pub const DEFAULT_PORT: u16 = 7777;
@@ -368,7 +368,7 @@ impl GameState {
         let code: String = (0..CODE_LENGTH)
             .map(|_| CODE_LETTERS[rand::random_range(0..CODE_LETTERS.len())] as char)
             .collect();
-        game.notice = format!("HOSTING - JOIN CODE {code}");
+        game.notice = format!("HOSTING. JOIN CODE {code}");
         if let Some(lockstep) = game.lockstep.as_mut() {
             lockstep.join_code = code;
             lockstep.seated = vec![HOST_SEAT];
@@ -445,9 +445,9 @@ impl GameState {
         };
         let open = self.open_seats().len();
         self.notice = if open == 0 {
-            format!("{seat:?} JOINED - EVERYONE'S HERE").to_uppercase()
+            format!("{seat:?} JOINED. ALL SEATS FILLED").to_uppercase()
         } else {
-            format!("{seat:?} JOINED - {open} MORE TO COME").to_uppercase()
+            format!("{seat:?} JOINED. WAITING FOR {open} MORE").to_uppercase()
         };
         // Who has ended the first turn already, for the newcomer too.
         self.announce_ready();
@@ -661,7 +661,7 @@ impl GameState {
 
     /// The host turned away too many players and stopped listening.
     pub fn stop_listening(&mut self) {
-        self.notice = "TOO MANY FAILED JOINS - NO LONGER LISTENING".into();
+        self.notice = "TOO MANY FAILED JOINS. NO ONE ELSE CAN JOIN".into();
     }
 
     /// A guest: the host is gone, and the game with it (or it dropped this
@@ -670,7 +670,7 @@ impl GameState {
         let dropped = self.lockstep.as_ref().and_then(|l| l.dropped.clone());
         self.notice = match dropped {
             Some(why) => format!("THE HOST DROPPED YOU: {why}"),
-            None => format!("{HOST_SEAT:?} (THE HOST) LEFT - THE GAME CAN'T GO ON").to_uppercase(),
+            None => format!("{HOST_SEAT:?} (THE HOST) LEFT. THE GAME CAN'T GO ON").to_uppercase(),
         };
     }
 
@@ -692,13 +692,13 @@ impl GameState {
         lockstep.plans.retain(|p| p.team != team);
         lockstep.late.1.retain(|&(t, _)| t != team);
         if !started {
-            self.notice = format!("{team:?} LEFT - WAITING FOR A PLAYER").to_uppercase();
+            self.notice = format!("{team:?} LEFT. WAITING FOR A PLAYER").to_uppercase();
             self.announce_ready();
             return;
         }
         lockstep.outbox.push(Message::SeatLeft(team));
         self.humans.retain(|&t| t != team);
-        self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
+        self.notice = format!("{team:?} LEFT. THE AI PLAYS THEM NOW").to_uppercase();
         self.resolve_when_ready();
     }
 
@@ -859,7 +859,7 @@ impl GameState {
                 }
                 self.resolve_with_plans(plans);
                 if too_late {
-                    self.notice = "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT".into();
+                    self.notice = "TOO LATE TO CHANGE: THE TURN PLAYS OUT AS SENT".into();
                 }
             }
             (Role::Guest, Message::SeatLeft(team)) => {
@@ -867,7 +867,7 @@ impl GameState {
                     return Err(format!("{team:?} CAN'T LEAVE"));
                 }
                 self.humans.retain(|&t| t != team);
-                self.notice = format!("{team:?} LEFT - THE AI PLAYS THEM NOW").to_uppercase();
+                self.notice = format!("{team:?} LEFT. THE AI PLAYS THEM NOW").to_uppercase();
             }
             (Role::Guest, Message::Refused(why)) => {
                 // The host is dropping this guest; the link closes next.
@@ -953,7 +953,7 @@ impl GameState {
             }
             Role::Guest => lockstep.outbox.push(Message::Withdraw { turn }),
         }
-        self.notice = "TURN TAKEN BACK - CHANGE YOUR ORDERS, THEN END IT AGAIN".into();
+        self.notice = "TURN TAKEN BACK. CHANGE ORDERS, THEN END IT AGAIN".into();
     }
 
     /// The plan this side sent (or, on the host, holds) for the turn, while
@@ -982,7 +982,7 @@ impl GameState {
             return;
         }
         self.take_back_turn();
-        self.notice = "ORDERS CHANGED - TURN TAKEN BACK; END IT AGAIN TO SEND THEM".into();
+        self.notice = "ORDERS CHANGED: TURN TAKEN BACK. END IT AGAIN TO SEND THEM".into();
     }
 
     /// Why `plan` can't be applied to this turn's game, if it can't: it's
@@ -2150,7 +2150,7 @@ mod tests {
     }
 
     /// What the top bar says once an order has taken the turn back.
-    const ORDERS_CHANGED: &str = "ORDERS CHANGED - TURN TAKEN BACK; END IT AGAIN TO SEND THEM";
+    const ORDERS_CHANGED: &str = "ORDERS CHANGED: TURN TAKEN BACK. END IT AGAIN TO SEND THEM";
 
     #[test]
     fn waiting_for_the_others_any_order_takes_the_turn_back() {
@@ -2404,7 +2404,7 @@ mod tests {
             assert!(guest.is_playing_out());
             assert_eq!(
                 guest.notice,
-                "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"
+                "TOO LATE TO CHANGE: THE TURN PLAYS OUT AS SENT"
             );
             // Once it plays out, orders are refused.
             guest.selected_city = Some(city);
@@ -2714,7 +2714,7 @@ mod tests {
         exchange(&mut host, &mut guest);
         assert_eq!(
             guest.notice,
-            "TOO LATE TO CHANGE - THE TURN PLAYS OUT AS SENT"
+            "TOO LATE TO CHANGE: THE TURN PLAYS OUT AS SENT"
         );
         play_out(&mut guest);
         exchange(&mut host, &mut guest);

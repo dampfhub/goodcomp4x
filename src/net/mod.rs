@@ -568,7 +568,7 @@ mod tests {
             assert!(join(&mut host_net, &mut host, "NOPE00").is_err());
         }
         pump_host_until(&mut host_net, &mut host, |n| n.listener.is_none());
-        assert_eq!(host.notice(), "TOO MANY FAILED JOINS - NO LONGER LISTENING");
+        assert_eq!(host.notice(), "TOO MANY FAILED JOINS. NO ONE ELSE CAN JOIN");
     }
 
     #[test]
@@ -703,10 +703,7 @@ mod tests {
             guest_net.pump(&mut guest);
             thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(
-            guest.notice(),
-            "BLUE (THE HOST) LEFT - THE GAME CAN'T GO ON"
-        );
+        assert_eq!(guest.notice(), "BLUE (THE HOST) LEFT. THE GAME CAN'T GO ON");
     }
 
     /// Pumps `game`'s session a few times, without playing anything out,
