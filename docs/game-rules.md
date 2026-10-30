@@ -324,7 +324,7 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
   Ctrl-right-click; Hold keeps it, and going on alert ends a guard. Melee, cavalry, armored and
   ranged troops can go on alert, and siege once set up (or setting up this turn: set it up with
   Q, then E; packing it up ends the alert). Scouts, ships and settlers can't ("ONLY MELEE,
-  CAVALRY, ARMORED, RANGED AND SET-UP SIEGE CAN GO ON ALERT"). With a group, every member that
+  CAVALRY, ARMORED, RANGED AND DEPLOYED SIEGE CAN GO ON ALERT"). With a group, every member that
   can goes on alert, or all come off it if they all already are. Units on alert wear a red
   reticle: a ring with four diagonal ticks. The AI never puts a unit on alert; one it plans
   orders for (a side whose player left) comes off alert as the turn resolves.

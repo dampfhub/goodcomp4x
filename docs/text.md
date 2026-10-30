@@ -21,16 +21,16 @@ Each entry is a tag in square brackets, then its fields:
 
 ```ini
 # A comment: a line starting with #.
-[setting_turn_transition]
-text = TURN TRANSITION
-tooltip = UNITS GLIDE TO THEIR NEW HEXES AND THE NEW TURN FLASHES AS A TURN
-  RESOLVES.
+[net_host_button]
+text = HOST GAME
+tooltip = STARTS A NEW WORLD FOR THIS MANY PLAYERS AND SHOWS ITS JOIN CODE.
+  THEY ALSO NEED YOUR ADDRESS AND THE PORT OPEN.
 
 [setting_queue_limit_many]
 text = {turns} TURNS
 ```
 
-- **The tag** (`setting_turn_transition`) is what the code asks for. It's lower-case letters,
+- **The tag** (`net_host_button`) is what the code asks for. It's lower-case letters,
   digits and `_`, starting with a letter, and it's unique across all the files. Don't rename
   one without renaming it in the code: the tests fail until the two match.
 - **`text`** (needed): what the game shows, such as a label or a heading.

@@ -3857,7 +3857,7 @@ mod tests {
         assert!(!host.waiting_for_peers(), "Green hasn't joined");
         assert_eq!(
             host.resolving_label(),
-            format!("JOIN CODE {} - 1 TO COME", host.join_code().unwrap())
+            format!("JOIN CODE {} · 1 TO COME", host.join_code().unwrap())
         );
         // A guest who leaves before the start frees their seat.
         host.seat_left(Team::Red);
