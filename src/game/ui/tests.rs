@@ -2827,7 +2827,7 @@ fn the_multiplayer_page_in_a_network_game_shows_the_code_and_leaves() {
     host.set_host_address(55741, None);
     let text = network_page_text(&host);
     assert!(
-        text.contains("NO LOCAL NETWORK ADDRESS FOUND - PORT 55741"),
+        text.contains("NO LOCAL NETWORK ADDRESS FOUND. PORT 55741"),
         "{text}"
     );
     let layout = host.layout(SCREEN);
@@ -5799,7 +5799,7 @@ fn every_disabled_button_says_why_in_every_scenario() {
         "NOTHING SAVED YET",
         "SELECT A TROOP ON THE MAP FIRST",
         "NOT WHILE THE TURN PLAYS OUT",
-        "A NETWORK GAME NEEDS 2 PLAYERS OR MORE",
+        "2 PLAYERS AT LEAST",
     ] {
         assert!(reasons.contains(expected), "{expected}: {reasons:?}");
     }
@@ -5967,5 +5967,5 @@ fn pikeman_cards_queue_it_in_both_presentations() {
         .push(Unit::new(50, Hex::new(2, 2), Team::Blue, UnitType::Pikeman));
     let idx = game.units.len() - 1;
     let tray = panel_strings(|panel| game.unit_info(idx, panel));
-    assert_shows(&tray, "+12 ATTACK AND DEFENSE AGAINST MOUNTED UNITS");
+    assert_shows(&tray, "+12 ATTACK AND DEFENSE AGAINST CAVALRY");
 }

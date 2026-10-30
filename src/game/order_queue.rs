@@ -888,7 +888,7 @@ mod tests {
         assert_eq!(g.notice, "QUEUED UP TO THE \u{E003}6 LIMIT");
         assert!(!g.queue_move(far), "no more on another click");
         assert_eq!(g.units[0].plan_len(), 6);
-        assert_eq!(g.notice, "QUEUE FULL - \u{E003}6 LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL: \u{E003}6 LIMIT");
         // An attack still fits into the last turn, but a second one would
         // need a turn of its own.
         g.units
@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(g.units[0].plan_len(), 6);
         assert!(!g.queue_attack(Hex::new(3, 0)));
         assert_eq!(g.units[0].plan_len(), 6);
-        assert_eq!(g.notice, "QUEUE FULL - \u{E003}6 LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL: \u{E003}6 LIMIT");
 
         // Each turn played frees a turn of the queue.
         g.units.pop();
@@ -984,7 +984,7 @@ mod tests {
         assert!(ranged.iter().all(Option::is_some), "{ranged:?}");
 
         assert!(!g.queue_move(far), "both queues are full");
-        assert_eq!(g.notice, "QUEUE FULL - \u{E003}5 LIMIT");
+        assert_eq!(g.notice, "QUEUE FULL: \u{E003}5 LIMIT");
     }
 
     #[test]
@@ -1516,10 +1516,7 @@ mod tests {
         g.cities.push(City::new(7, Team::Red, Hex::new(-3, 0)));
         g.selected = Some(0);
         assert!(!g.queue_attack(Hex::new(-3, 0)));
-        assert_eq!(
-            g.notice,
-            "CITY CENTER CAN ONLY BE CAPTURED FROM ITS INTERIOR"
-        );
+        assert_eq!(g.notice, "CAPTURE A CITY CENTER FROM ITS INTERIOR");
     }
 
     #[test]
