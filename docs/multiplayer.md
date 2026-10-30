@@ -37,7 +37,7 @@ vulkan_engine --join 192.168.1.20 --code K7M2QX    # HOST or HOST:PORT
 The world is made as the F4 world is, from the host's settings (AI Players, Start With, Animals), with
 at least a side for every player. The host plays Blue; guests take Red, Green and the sides
 after as they join. The End Turn button (and the log) shows the **join code** and how many are
-still to come, like `JOIN CODE K7M2QX - 2 TO COME`, until every seat is filled. Guests need
+still to come, like `JOIN CODE K7M2QX · 2 TO COME`, until every seat is filled. Guests need
 to reach the host's port: on a home network, forward it on the router and let the game through
 the host's firewall.
 
