@@ -36,18 +36,18 @@ pub(super) fn wait_text(wait: &HeadWait) -> String {
     let name = wait.build.name();
     match wait.waits_for {
         WaitsFor::Stock(short) => format!("{name} WAITS, SHORT OF {}", stock_icons(short)),
-        WaitsFor::Supply => format!("{name} WAITS FOR SUPPLY: NO ROOM TO START IT"),
+        WaitsFor::Supply => format!("{name} WAITS FOR SUPPLY"),
         WaitsFor::Citizens => format!("{name} WAITS FOR POPULATION {SETTLER_MIN_POPULATION}"),
     }
 }
 
 /// A panel's line for a queue whose first item waits (`wait_text`): when
-/// the queue works nothing else, a warning in the waiting red, "IDLE —
+/// the queue works nothing else, a warning in the waiting red, "IDLE:
 /// RANGED WAITS, SHORT OF [wood]3" (`idle_word`); otherwise, small, the
 /// wait alone.
 pub(super) fn waiting_line(wait: &HeadWait) -> (u32, Line) {
     if wait.idle {
-        let text = format!("{} — {}", idle_word(wait.lane), wait_text(wait));
+        let text = format!("{}: {}", idle_word(wait.lane), wait_text(wait));
         (BODY, vec![(text, WAITING_TEXT)])
     } else {
         (SMALL, vec![(wait_text(wait), REDUCED_TEXT)])
@@ -260,7 +260,7 @@ impl GameState {
             (job.hex.to_world() + across.to_world()) / 2.0
         });
         self.camera.focus_on(spot);
-        self.notice = format!("{} - WAITING FOR A WORKER", self.job_title(job));
+        self.notice = format!("{}: WAITING FOR A WORKER", self.job_title(job));
     }
 
     pub(super) fn reorder_queue(&mut self, kind: QueueKind, source: usize, target: usize) {
@@ -460,7 +460,7 @@ impl GameState {
             ));
         }
         self.queue_title(
-            "BARRACKS QUEUE - DRAG TO REORDER",
+            "BARRACKS QUEUE: DRAG TO REORDER",
             Target::ClearBarracksQueue,
             panel,
         );
@@ -501,9 +501,9 @@ impl GameState {
         // Everything in it waits: the city gathers by itself
         // (`gathers_this_turn`).
         let title = if status.gathers {
-            "CITY QUEUE - GATHERING THIS TURN"
+            "CITY QUEUE: GATHERING THIS TURN"
         } else {
-            "CITY QUEUE - DRAG TO REORDER"
+            "CITY QUEUE: DRAG TO REORDER"
         };
         self.queue_title(title, Target::ClearCityQueue, panel);
         let drag = self.queue_drag.filter(|drag| drag.kind == QueueKind::City);

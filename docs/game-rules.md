@@ -794,8 +794,8 @@ only).
   missing resources, each with how much), the city tray, Barracks tray and hover panel name the
   first item's wait. When that queue works nothing else this turn, so that the item isn't
   getting built (the city **gathers while it waits**, see Gathering by itself; a Barracks is
-  **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS — MELEE WAITS,
-  SHORT OF" the resources, or "IDLE — RANGED WAITS, ..." for a Barracks), the turn strip adds a
+  **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS: MELEE WAITS,
+  SHORT OF" the resources, or "IDLE: RANGED WAITS, ..." for a Barracks), the turn strip adds a
   red-rimmed chip for it, and End Turn counts it as WAITING. On the map, always, a tag rimmed in
   red over the building whose first item waits (the city's tower for its queue, the Barracks
   for its own) shows the item's pictogram (or GROW, GATHER) and what it waits for: each

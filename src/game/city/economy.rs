@@ -495,7 +495,7 @@ impl GameState {
         log::debug!("{team:?} city {} gathers: nothing to work", id + 1);
         if team == self.local_team {
             self.notice = format!(
-                "CITY {} GATHERED {} - NOTHING ELSE TO WORK",
+                "CITY {} GATHERED {}: NOTHING ELSE TO WORK",
                 id + 1,
                 stock_icons(GATHER_YIELD)
             );
@@ -733,7 +733,7 @@ impl GameState {
                 log::info!("{team:?} city {} starves", self.cities[city].id + 1);
                 if team == self.local_team {
                     self.notice = format!(
-                        "CITY {} STARVES - NOT ENOUGH FOOD FOR EVERY CITIZEN",
+                        "CITY {} STARVES AND LOSES A CITIZEN",
                         self.cities[city].id + 1
                     );
                 }

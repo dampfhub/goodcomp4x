@@ -30,7 +30,7 @@ impl GameState {
         self.selected = None;
         let city = self.found_city(id, team, pos);
         self.selected_city = Some(city);
-        self.notice = "CITY FOUNDED - CHOOSE WHAT IT BUILDS".into();
+        self.notice = "CITY FOUNDED. CHOOSE WHAT IT BUILDS".into();
     }
 
     /// Why no city can be founded on `hex`, if none can: only on passable
@@ -43,7 +43,7 @@ impl GameState {
             || !self.grid.is_passable(hex)
             || self.grid.terrain(hex).is_water()
         {
-            return Some("A CITY STANDS ON OPEN LAND".into());
+            return Some("NEEDS OPEN LAND".into());
         }
         if self.ruin_at(hex).is_some() {
             return Some("NOT ON RUINS: CLAIM THEM FIRST".into());
@@ -61,7 +61,7 @@ impl GameState {
             .any(|c| c.pos.distance(hex) < MIN_CITY_DISTANCE)
         {
             return Some(format!(
-                "TOO CLOSE TO ANOTHER CITY - CITIES STAND {MIN_CITY_DISTANCE} HEXES APART"
+                "TOO CLOSE: CITIES STAND {MIN_CITY_DISTANCE} HEXES APART"
             ));
         }
         None

@@ -1817,7 +1817,7 @@ fn a_worker_out_can_be_recalled_and_released_from_the_city_panel() {
     assert_eq!(game.cities[0].held_workers, 1);
     let layout = game.layout(SCREEN);
     let button = layout.buttons.iter().find(|b| b.target == release).unwrap();
-    assert_eq!(button.label, "HELD AT HOME - RELEASE");
+    assert_eq!(button.label, "HELD AT HOME: RELEASE");
     assert!(
         layout
             .panels
@@ -2133,7 +2133,7 @@ fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
 
     // The panels: a large line in the waiting red, with how much is short.
     let warning = format!(
-        "GATHERING WHILE IT WAITS — MELEE WAITS, SHORT OF {}",
+        "GATHERING WHILE IT WAITS: MELEE WAITS, SHORT OF {}",
         stock_icons(short)
     );
     let mut tray = PanelBuilder::default();
@@ -2148,7 +2148,7 @@ fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
         .unwrap_or_else(|| panic!("{warning} in the city tray"));
     assert_eq!(line, (BODY, WAITING_TEXT));
     let barracks = panel_strings(|panel| game.barracks_tray(0, panel));
-    assert_shows(&barracks, "IDLE — RANGED WAITS, SHORT OF");
+    assert_shows(&barracks, "IDLE: RANGED WAITS, SHORT OF");
     let hover = panel_strings(|panel| game.structure_hover_panel(0, false, panel));
     assert_shows(&hover, &warning);
 
@@ -2664,7 +2664,7 @@ fn the_barracks_panel_shows_each_deposits_cap_and_why_a_troop_is_locked() {
     game.open_barracks(0);
     let tray = panel_strings(|panel| game.barracks_tray(0, panel));
     assert_shows(&tray, "CAVALRY: 3 OF 3 LEFT (1 HORSES DEPOSIT × 3)");
-    assert_shows(&tray, "ARMORED: LOCKED - PUT A BARRACKS ON IRON");
+    assert_shows(&tray, "ARMORED: NEEDS A BARRACKS ON IRON");
     let cavalry = find_button(&game, Target::BarracksBuild(BuildUnit::Cavalry));
     assert_eq!(cavalry.state(), ButtonState::Ready);
     let armored = find_button(&game, Target::BarracksBuild(BuildUnit::Armored));
@@ -3434,7 +3434,7 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
         game.cities[city].queue,
         [Queued::new(Build::Unit(BuildUnit::Siege))]
     );
-    assert!(game.notice.contains("WAITS FOR"), "{}", game.notice);
+    assert!(game.notice.contains("WAITS, SHORT OF"), "{}", game.notice);
     // The queue's row is drawn, from the shared content that marks it
     // waiting; the tray says what the city waits for.
     screen.settle(&mut game);
@@ -3470,7 +3470,7 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
         Row::TitleWithButton(line, _) => Some(line_strings([line.clone()]).join(" ")),
         _ => None,
     });
-    assert_eq!(title.as_deref(), Some("CITY QUEUE - GATHERING THIS TURN"));
+    assert_eq!(title.as_deref(), Some("CITY QUEUE: GATHERING THIS TURN"));
     let hover = panel_strings(|panel| game.structure_hover_panel(city, false, panel));
     assert_shows(&hover, &format!("QUEUE: {gathering}"));
     // Paid for as things stand, it's worked, and nothing says the city gathers.
@@ -4598,14 +4598,17 @@ fn fit_text_keeps_whole_words_and_ends_in_an_ellipsis() {
 }
 
 /// The longest notice the game gives (`city_click`, `city/view.rs`).
-const LONG_NOTICE: &str = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN";
+const LONG_NOTICE: &str =
+    "CLICK A WORKED TILE TO MOVE OR RELEASE IT, OR AN OPEN TILE BESIDE A MANAGER TO ASSIGN";
 
 /// Whether `shown` is `notice`, or its first whole words then "…".
 fn whole_words_of(shown: &str, notice: &str) -> bool {
     let Some(kept) = shown.strip_suffix('…') else {
         return shown == notice;
     };
-    !kept.is_empty() && notice.starts_with(kept) && notice[kept.len()..].starts_with([' ', ';'])
+    !kept.is_empty()
+        && notice.starts_with(kept)
+        && notice[kept.len()..].starts_with([' ', ';', ','])
 }
 
 #[test]
@@ -5277,10 +5280,10 @@ fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
             .collect()
     };
     assert!(rows[0].contains("WAITS FOR SUPPLY"), "{rows:?}");
-    let waits = "MELEE WAITS FOR SUPPLY: NO ROOM TO START IT";
+    let waits = "MELEE WAITS FOR SUPPLY";
     assert_eq!(status.head.map(|wait| wait_text(&wait)), Some(waits.into()));
     let tray = panel_strings(|panel| game.city_tray(0, panel));
-    assert_shows(&tray, &format!("GATHERING WHILE IT WAITS — {waits}"));
+    assert_shows(&tray, &format!("GATHERING WHILE IT WAITS: {waits}"));
 }
 
 /// Where ImGui has the panel titled `title`, and how big.

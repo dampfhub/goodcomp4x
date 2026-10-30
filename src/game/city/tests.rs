@@ -466,7 +466,7 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
     // Taken off paid, it refunds its price; its work is lost.
     g.remove_selected_city_queue_item(0);
     assert_eq!(g.stock(Team::Blue), expected);
-    assert!(g.notice.ends_with("- REFUNDED"), "{}", g.notice);
+    assert!(g.notice.ends_with(": REFUNDED"), "{}", g.notice);
 
     // Short of metal, it's queued all the same, and waits unpaid; the notice
     // says what for.
@@ -478,7 +478,7 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
     assert!(short.metal > 0 && short.food == 0);
     assert!(
         g.notice
-            .contains(&format!("WAITS FOR {}", stock_icons(short))),
+            .contains(&format!("WAITS, SHORT OF {}", stock_icons(short))),
         "{}",
         g.notice
     );
@@ -511,7 +511,7 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     let siege = Build::Unit(BuildUnit::Siege);
     let melee = Build::Unit(BuildUnit::Melee);
     g.queue_selected_city_unit(BuildUnit::Siege);
-    assert!(g.notice.contains("WAITS FOR"), "{}", g.notice);
+    assert!(g.notice.contains("WAITS, SHORT OF"), "{}", g.notice);
     g.queue_selected_city_unit(BuildUnit::Melee);
     let forecast = g.forecast(Team::Blue);
     let lane = forecast.lane(0, Lane::City).unwrap();
@@ -1041,7 +1041,7 @@ fn a_barracks_is_placed_for_a_worker_who_walks_out_and_builds_it() {
     // A second can't be placed while this one waits.
     g.queue_selected_city_building(Building::Barracks);
     assert_eq!(g.placing_job, None);
-    assert_eq!(g.notice, "BARRACKS IS ALREADY PLACED FOR THIS CITY");
+    assert_eq!(g.notice, "BARRACKS PLACED ALREADY");
     build_all(&mut g);
     assert_eq!(g.cities[0].barracks, Some(site));
     assert!(g.cities[0].built.contains(&Building::Barracks));
@@ -1247,7 +1247,7 @@ fn placed_buildings_cannot_share_a_site() {
     g.cities[0].mill = Some(site);
     assert!(!place_building(&mut g, Building::Workshop, site));
     assert!(g.cities[0].worker_jobs.is_empty());
-    assert_eq!(g.notice, "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+    assert_eq!(g.notice, "A CITY OR BUILDING STANDS HERE");
     assert_eq!(
         g.placing_job,
         Some(JobKind::Build(Building::Workshop)),
@@ -1819,10 +1819,7 @@ fn coastal_construction_requires_the_city_center_to_touch_the_sea() {
     for building in [Building::Harbor, Building::CoastalBattery] {
         inland.queue_selected_city_building(building);
         assert_eq!(inland.placing_job, None);
-        assert_eq!(
-            inland.notice,
-            "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS"
-        );
+        assert_eq!(inland.notice, "NEEDS A COASTAL CITY");
         assert!(!inland.site_available(0, building, Hex::new(-2, 1)));
     }
     inland.cities[0]
@@ -2030,10 +2027,7 @@ fn clearing_a_queue_refunds_it_as_taking_each_item_off_would() {
     assert_eq!(cleared.stock(Team::Blue), from_head.stock(Team::Blue));
     assert_eq!(cleared.stock(Team::Blue), from_tail.stock(Team::Blue));
     assert!(cleared.stock(Team::Blue).food > start.stock(Team::Blue).food);
-    assert_eq!(
-        cleared.notice,
-        "CLEARED THE CITY QUEUE - 3 PAID OF 5 REFUNDED"
-    );
+    assert_eq!(cleared.notice, "CLEARED CITY QUEUE: 3 PAID OF 5 REFUNDED");
     assert_eq!(
         cleared.cities[0].barracks_queue, start.cities[0].barracks_queue,
         "the Barracks keeps its own"
@@ -2236,7 +2230,7 @@ fn clicking_a_units_token_in_the_barracks_view_selects_it_and_closes_it() {
     click_at(&mut g, tile.to_world() + OFF_TOKEN, false);
     assert_eq!(g.selected_barracks, Some(0));
     assert_eq!(g.selected, None);
-    assert_eq!(g.notice, "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
+    assert_eq!(g.notice, "BARRACKS: ESC OR SPACE TO EXIT");
     click_at(&mut g, tile.to_world(), false);
     assert_eq!(g.selected, Some(unit));
     assert_eq!(g.selected_barracks, None);
@@ -2402,11 +2396,11 @@ fn moving_a_manager_or_a_work_camp_keeps_the_open_view() {
         g.cities[0].set_placed_site(Building::WorkCamp, camp);
         click_centered(&mut g, camp.to_world(), classic);
         assert_eq!(g.selected_city, Some(0), "classic: {classic}");
-        assert_eq!(g.notice, "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT");
+        assert_eq!(g.notice, "A BUILDING STANDS THERE: NO CITIZEN CAN WORK IT");
         g.open_barracks(0);
         click_centered(&mut g, camp.to_world(), classic);
         assert_eq!(g.selected_barracks, Some(0), "classic: {classic}");
-        assert_eq!(g.notice, "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT");
+        assert_eq!(g.notice, "BARRACKS: ESC OR SPACE TO EXIT");
     }
 }
 
@@ -2551,7 +2545,7 @@ fn clicks_add_a_worker_beside_a_manager_or_start_a_cluster_when_allowed() {
     let far = away(&g, false);
     g.city_click(far);
     assert!(
-        g.notice.contains("ANOTHER MANAGER AT 15 CITIZENS"),
+        g.notice.contains("NEXT MANAGER AT 15 CITIZENS"),
         "{}",
         g.notice
     );
@@ -2581,7 +2575,7 @@ fn clicks_add_a_worker_beside_a_manager_or_start_a_cluster_when_allowed() {
     }
     let land_far = away(&g, true);
     g.city_click(land_far);
-    assert_eq!(g.notice, "MANAGER ASSIGNED - A NEW CLUSTER");
+    assert_eq!(g.notice, "MANAGER ASSIGNED: A NEW CLUSTER");
     assert_eq!(g.cities[0].clusters.len(), clusters + 1);
     assert_eq!(g.cities[0].clusters.last().unwrap().manager, land_far);
     assert_eq!(g.cities[0].remembered, g.cities[0].clusters);
