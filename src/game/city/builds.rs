@@ -332,7 +332,7 @@ impl BuildUnit {
     pub fn description(self) -> &'static str {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
-            Self::Pikeman => "CHEAP. STRONG AGAINST MOUNTED UNITS, WEAK OTHERWISE",
+            Self::Pikeman => "CHEAP. STRONG AGAINST CAVALRY, WEAK OTHERWISE",
             Self::Ranged => "FIRES FROM 2 TILES",
             Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
@@ -790,7 +790,7 @@ impl GameState {
         self.complete_builds_for(Some((city, lane == Lane::Barracks)));
         self.notice = match lane {
             _ if self.lane_len(city, lane) == before => {
-                "DEBUG: PRODUCTION READY - NO OPEN SPAWN TILE".into()
+                "DEBUG: PRODUCTION READY, NO OPEN SPAWN TILE".into()
             }
             Lane::City => format!("DEBUG: {name} PRODUCTION COMPLETED"),
             Lane::Barracks => format!("DEBUG: {name} TRAINING COMPLETED"),
