@@ -28,6 +28,7 @@ use super::GameState;
 use super::city::{BARRACKS_MAX_HP, Building, Routes};
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::{Hex, edge};
+use super::keys::Command;
 use super::terrain::Terrain;
 use super::unit::{Team, Unit, UnitType};
 use super::workers::{
@@ -560,10 +561,11 @@ impl GameState {
     pub fn toggle_fog(&mut self) {
         self.fog_of_war = !self.fog_of_war;
         self.explore();
+        let key = Command::Fog.key();
         self.notice = if self.fog_of_war {
-            "FOG OF WAR ON - F10 TO LIFT IT".into()
+            format!("FOG OF WAR ON. {key} TURNS IT OFF")
         } else {
-            "FOG OF WAR OFF - F10 TO BRING IT BACK".into()
+            format!("FOG OF WAR OFF. {key} TURNS IT ON")
         };
     }
 }

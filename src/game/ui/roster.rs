@@ -286,7 +286,7 @@ impl GameState {
             RosterKey::Production(id) => (
                 format!("CITY {}", id + 1),
                 "CLICK",
-                "HAS NOTHING TO BUILD. CLICK: OPEN IT.".into(),
+                "NOTHING TO BUILD. CLICK: OPEN IT.".into(),
             ),
             RosterKey::Waiting(id, lane) => {
                 let wait = self.idle_queue(id, lane);
@@ -310,8 +310,8 @@ impl GameState {
                 (
                     format!("{role} x{}", units.len()),
                     CLICKS,
-                    "NEED ORDERS. CLICK: SELECT THEM ALL. SHIFT-CLICK: ADD THEM TO THE \
-                     SELECTION. CTRL-CLICK: DESELECT THEM."
+                    "NEED ORDERS. CLICK: SELECT ALL. SHIFT-CLICK: ADD TO SELECTION. \
+                     CTRL-CLICK: DESELECT."
                         .into(),
                 )
             }
@@ -324,9 +324,7 @@ impl GameState {
                 (
                     role.into(),
                     CLICKS,
-                    "CLICK: SELECT IT. SHIFT-CLICK: ADD IT TO THE SELECTION. CTRL-CLICK: \
-                     DESELECT IT."
-                        .into(),
+                    "CLICK: SELECT. SHIFT-CLICK: ADD TO SELECTION. CTRL-CLICK: DESELECT.".into(),
                 )
             }
         }

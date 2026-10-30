@@ -97,7 +97,7 @@ impl GameState {
         let short = self.build_shortfall(self.card_spare(city), city, build);
         (short != Default::default()).then(|| {
             format!(
-                "SHORT OF {} THIS TURN: QUEUED, IT WAITS UNTIL PAID",
+                "SHORT OF {} THIS TURN: IT WAITS UNTIL PAID",
                 stock_icons(short)
             )
         })
@@ -588,14 +588,13 @@ impl GameState {
                 Target::CityQueueRemove(_) | Target::BarracksQueueRemove(_) => (
                     "REMOVE".into(),
                     "CLICK".into(),
-                    "REFUNDED IF IT WAS PAID FOR (WORK ON IT STARTED). ITS WORK IS LOST.".into(),
+                    "REFUNDED IF PAID (WORK STARTED). ITS WORK IS LOST.".into(),
                     None,
                 ),
                 Target::ClearCityQueue | Target::ClearBarracksQueue => (
                     "CLEAR QUEUE".into(),
                     "CLICK".into(),
-                    "TAKES EVERY ITEM OFF, EACH REFUNDED AS ITS X WOULD. THEIR WORK IS LOST."
-                        .into(),
+                    "REMOVES EVERY ITEM, EACH REFUNDED IF PAID. THEIR WORK IS LOST.".into(),
                     None,
                 ),
                 Target::WorkerJobRemove(_) => {
@@ -615,28 +614,25 @@ impl GameState {
                 Target::QueueItem(QueueKind::Workers, _) => (
                     "PLACED JOB".into(),
                     "CLICK · DRAG".into(),
-                    "CLICK: SHOW IT ON THE MAP. DRAG ONTO ANOTHER ROW: MOVE IT THERE. ITS X \
-                     TAKES IT OFF."
-                        .into(),
+                    "CLICK: SHOW IT ON THE MAP. DRAG: MOVE IT. X: REMOVE IT.".into(),
                     None,
                 ),
                 Target::QueueItem(..) => (
                     "QUEUED".into(),
                     "DRAG".into(),
-                    "DRAG ONTO ANOTHER ROW: MOVE IT THERE. ITS X TAKES IT OFF.".into(),
+                    "DRAG: MOVE IT. X: REMOVE IT.".into(),
                     None,
                 ),
                 Target::RecallWorker(_) => (
                     "RECALL".into(),
                     "CLICK".into(),
-                    "SENDS IT HOME TO STAY UNTIL RELEASED. ITS JOB WAITS ON THE LIST.".into(),
+                    "SENDS IT HOME UNTIL RELEASED. ITS JOB WAITS ON THE LIST.".into(),
                     None,
                 ),
                 Target::ReleaseWorker => (
                     "RELEASE".into(),
                     "CLICK".into(),
-                    "A WORKER HELD AT HOME GOES BACK TO WORK: IT TAKES THE NEXT JOB ON THE LIST."
-                        .into(),
+                    "A WORKER HELD AT HOME TAKES THE NEXT JOB ON THE LIST.".into(),
                     None,
                 ),
                 Target::BuildWorker => (
@@ -662,8 +658,8 @@ impl GameState {
                     "SETTLER".into(),
                     SETTLER_SHORTCUT.to_string(),
                     format!(
-                        "FOUNDS A CITY (F) {MIN_CITY_DISTANCE} HEXES OR MORE FROM ANY OTHER. \
-                         NEEDS POPULATION {SETTLER_MIN_POPULATION}, AND TAKES A CITIZEN WHEN DONE. {}",
+                        "FOUNDS A CITY (F) {MIN_CITY_DISTANCE}+ HEXES FROM ANY OTHER. \
+                         NEEDS POPULATION {SETTLER_MIN_POPULATION}. TAKES A CITIZEN WHEN DONE. {}",
                         self.price_text(Build::Settler, false, city)
                     ),
                     self.shortfall_text(Build::Settler, city),
@@ -704,7 +700,7 @@ impl GameState {
                 Target::CancelPlacing => (
                     "CANCEL PLACING".into(),
                     "ESC · RIGHT-CLICK".into(),
-                    "STOPS PLACING, LEAVING THE CITY OPEN. NOTHING IS PLACED OR PAID.".into(),
+                    "STOPS PLACING. THE CITY STAYS OPEN. NOTHING IS PAID.".into(),
                     None,
                 ),
                 Target::Priority(good) => (
@@ -713,10 +709,9 @@ impl GameState {
                         None => good.name().into(),
                     },
                     "CLICK · DRAG".into(),
-                    "CITIZENS WORK THE TILES WORTH THE MOST, EACH GOOD COUNTING BY ITS PLACE: \
-                     1ST ×9, 2ND ×3, 3RD ×1. FOOD COMES FIRST UNTIL THE CITY'S TILES FEED ITS \
-                     CITIZENS WITH 1 TO SPARE. CLICK: PUT IT FIRST. DRAG ONTO ANOTHER: MOVE IT \
-                     THERE. EITHER REASSIGNS THE CITIZENS."
+                    "CITIZENS WORK THE BEST TILES, EACH GOOD WEIGHTED BY ITS PLACE: 1ST ×9, \
+                     2ND ×3, 3RD ×1. FOOD COMES FIRST UNTIL THE CITIZENS ARE FED WITH 1 TO \
+                     SPARE. CLICK: PUT IT FIRST. DRAG: MOVE IT. EITHER REASSIGNS THE CITIZENS."
                         .into(),
                     None,
                 ),

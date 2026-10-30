@@ -418,7 +418,7 @@ impl App {
                 self.game = game;
                 self.game.set_net_status(String::new(), false);
                 self.game
-                    .set_ui_notice("LEFT THE NETWORK GAME - A NEW WORLD");
+                    .set_ui_notice("LEFT THE NETWORK GAME. NEW WORLD STARTED");
             }
             NetRequest::Copy(text) => self.copy(&text),
         }
@@ -571,8 +571,7 @@ impl App {
             Command::Presentation => self.switch_presentation(),
             Command::ResetLayout => {
                 if self.imgui_layout.request_reset_active_view() {
-                    self.game
-                        .set_ui_notice("VIEW DEBUG LAYOUT RESET TO DEFAULT");
+                    self.game.set_ui_notice("VIEW LAYOUT RESET TO DEFAULT");
                 }
             }
             // The typing map's (`type_key`).
@@ -769,10 +768,11 @@ impl App {
     fn switch_presentation(&mut self) {
         self.use_imgui = !self.use_imgui;
         self.cancel_drags();
-        self.game.set_ui_notice(if self.use_imgui {
-            "IMGUI UI (F11 TO COMPARE)"
+        let key = Command::Presentation.key();
+        self.game.set_ui_notice(&if self.use_imgui {
+            format!("IMGUI UI. {key}: CLASSIC")
         } else {
-            "CLASSIC UI (F11 TO COMPARE)"
+            format!("CLASSIC UI. {key}: IMGUI")
         });
     }
 

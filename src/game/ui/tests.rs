@@ -3402,7 +3402,7 @@ fn placing_shows_a_cancel_button_that_stops_it_with_nothing_placed() {
     );
     assert!(!game.notice.contains("BARRACKSS"), "{}", game.notice);
     let tooltip = line_strings(game.tooltip_lines(cancel).into_iter().map(|(_, l)| l)).join(" ");
-    assert!(tooltip.contains("NOTHING IS PLACED OR PAID"), "{tooltip}");
+    assert!(tooltip.contains("NOTHING IS PAID"), "{tooltip}");
 
     game.handle_click(
         button_cursor(&game, Target::CancelPlacing),
