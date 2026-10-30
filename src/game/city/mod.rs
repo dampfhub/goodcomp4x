@@ -412,7 +412,7 @@ impl GameState {
         for i in 0..self.cities.len() {
             self.auto_assign_city(i);
         }
-        self.notice = "C CITY - SPACE HOLD OR END TURN - F1 COMBAT - F2 CITIES".into();
+        self.notice = "C CITY · SPACE HOLD OR END TURN · F1 COMBAT · F2 CITIES".into();
     }
 
     pub(super) fn setup_frontier(&mut self) {

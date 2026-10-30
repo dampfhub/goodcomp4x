@@ -209,7 +209,7 @@ impl GameState {
         self.cities[city].clusters[cluster] = relocated;
         self.cities[city].remembered = self.cities[city].clusters.clone();
         self.reconcile_citizens(city);
-        self.notice = "MANAGER MOVED - WORKERS FOLLOWED WHERE POSSIBLE".into();
+        self.notice = "MANAGER MOVED. WORKERS FOLLOWED WHERE POSSIBLE".into();
     }
 
     /// Assigns the city's citizens afresh (`fill_citizens`).
@@ -372,7 +372,7 @@ impl GameState {
     /// item it starts and does a turn's work (`work_queues`), and finished
     /// builds complete.
     pub(in crate::game) fn resolve_economy(&mut self) {
-        self.notice = "PLANNING - C CITY - SPACE HOLD OR END TURN".into();
+        self.notice = "PLANNING: C CITY · SPACE HOLD OR END TURN".into();
         let income: Vec<_> = (0..self.cities.len()).map(|i| self.income(i)).collect();
         let rates: Vec<_> = (0..self.cities.len())
             .map(|i| {

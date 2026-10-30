@@ -183,7 +183,7 @@ impl GameState {
         self.hovered_tile = None;
         self.hovered_city = None;
         self.notice = if self.selected_city.is_some() {
-            "CITY VIEW: CLICK THE CITY CENTER TO RE-ENTER THE INTERIOR".into()
+            "CITY VIEW: CLICK THE CENTER TO RE-ENTER THE INTERIOR".into()
         } else {
             "EXTERIOR MAP: HOVER THE CITY AND PRESS V TO RE-ENTER".into()
         };
@@ -208,7 +208,7 @@ impl GameState {
             return;
         }
         let Some(source) = self.interior_selected else {
-            self.notice = "SELECT A BLUE INTERIOR UNIT FIRST".into();
+            self.notice = "SELECT A BLUE TROOP FIRST".into();
             return;
         };
         let Some(fighter) = interior.fighters.iter().find(|f| f.source_id == source) else {
@@ -230,7 +230,7 @@ impl GameState {
                 fighter.planned_attack = (fighter.planned_attack != Some(tile)).then_some(tile);
                 self.notice = "INTERIOR ATTACK QUEUED".into();
             } else {
-                self.notice = "TARGET OUT OF RANGE: MOVE THE COPY CLOSER FIRST".into();
+                self.notice = "OUT OF RANGE: MOVE CLOSER FIRST".into();
             }
         } else if clicked.is_none()
             && (tile != CENTER || self.cities[city].interior.core_hp <= 0.0)
@@ -245,13 +245,13 @@ impl GameState {
             fighter.planned_move = (fighter.planned_move != Some(tile)).then_some(tile);
             fighter.planned_attack = None;
             self.notice = if tile == CENTER && self.cities[city].interior.core_hp <= 0.0 {
-                "CAPTURE MOVE QUEUED - END TURN TO TAKE THE CITY"
+                "CAPTURE MOVE QUEUED. END TURN TO TAKE THE CITY"
             } else {
                 "INTERIOR MOVE QUEUED"
             }
             .into();
         } else {
-            self.notice = "CHOOSE AN OPEN TILE IN MOVE RANGE, OR AN ENEMY IN ATTACK RANGE".into();
+            self.notice = "CLICK AN OPEN TILE IN MOVE RANGE OR AN ENEMY IN ATTACK RANGE".into();
         }
     }
 
@@ -612,9 +612,9 @@ impl GameState {
             let player = self.local_team;
             let id = self.cities[city].id + 1;
             self.notice = if owner == player {
-                "YOUR POST BREACHED - KEEP THE ENEMY OFF THE CENTER".into()
+                "YOUR POST BREACHED: KEEP THE ENEMY OFF THE CENTER".into()
             } else if player_inside {
-                format!("ENEMY POST BREACHED - MOVE A {player:?} TROOP ONTO THE CENTER TO CAPTURE")
+                format!("ENEMY POST BREACHED: MOVE A {player:?} TROOP ONTO THE CENTER TO CAPTURE")
                     .to_uppercase()
             } else {
                 format!("{owner:?} CITY {id}'S POST BREACHED").to_uppercase()
@@ -1125,7 +1125,7 @@ mod tests {
         assert_eq!(game.cities[1].interior.core_hp, 0.0);
         assert_eq!(
             game.notice,
-            "ENEMY POST BREACHED - MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
+            "ENEMY POST BREACHED: MOVE A BLUE TROOP ONTO THE CENTER TO CAPTURE"
         );
     }
 

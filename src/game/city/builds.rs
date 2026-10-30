@@ -332,13 +332,13 @@ impl BuildUnit {
     pub fn description(self) -> &'static str {
         match self {
             Self::Melee => "TOUGH CLOSE FIGHTER",
-            Self::Pikeman => "CHEAP PIKES: STRONG AGAINST MOUNTED UNITS, WEAK OTHERWISE",
+            Self::Pikeman => "CHEAP. STRONG AGAINST MOUNTED UNITS, WEAK OTHERWISE",
             Self::Ranged => "FIRES FROM 2 TILES",
             Self::Cavalry => "FAST FLANKER",
             Self::Siege => "LONG RANGE, SLOW",
             Self::Armored => "HEAVY IRON INFANTRY",
             Self::PatrolGalley => "FAST COASTAL FIGHTER; STRONG AGAINST SHIPS",
-            Self::LandingCraft => "CARRIES UP TO FOUR LAND TROOPS",
+            Self::LandingCraft => "CARRIES UP TO 4 LAND TROOPS",
             Self::BombardShip => "RANGE 3 SHORE AND SHIP BOMBARDMENT",
         }
     }
@@ -399,7 +399,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.cities[city].team != self.local_team {
@@ -411,7 +411,7 @@ impl GameState {
         }
         if build.unit_type().is_naval() && self.cities[city].placed_site(Building::Harbor).is_none()
         {
-            self.notice = "BUILD A HARBOR BEFORE TRAINING SHIPS".into();
+            self.notice = "SHIPS NEED A HARBOR".into();
             return;
         }
         if let Some(resource) = build.required_resource() {
@@ -461,14 +461,14 @@ impl GameState {
                 .find(|&(waiting, _)| waiting == index)
         });
         if let Some((_, short)) = waits {
-            return format!("QUEUED {name} - WAITS FOR {}", stock_icons(short));
+            return format!("QUEUED {name}: WAITS, SHORT OF {}", stock_icons(short));
         }
         let cost = [stock_icons(price), turns_icon(turns)]
             .into_iter()
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-        format!("QUEUED {name} - {cost}")
+        format!("QUEUED {name}: {cost}")
     }
 
     /// 9 or the Grow card: one more citizen, bought with food.
@@ -477,7 +477,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.cities[city].team != self.local_team {
@@ -504,7 +504,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.cities[city].team != self.local_team {
@@ -530,7 +530,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.cities[city].team != self.local_team {
@@ -573,13 +573,13 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILDING".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if matches!(building, Building::Harbor | Building::CoastalBattery)
             && !self.city_is_coastal(city)
         {
-            self.notice = "ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into();
+            self.notice = "NEEDS A COASTAL CITY".into();
             return;
         }
         let c = &self.cities[city];
@@ -587,7 +587,7 @@ impl GameState {
             return;
         }
         if c.built.contains(&building) {
-            self.notice = format!("{} ALREADY EXISTS IN THIS CITY", building.name());
+            self.notice = format!("{} BUILT ALREADY", building.name());
             return;
         }
         // Placed on the map, and the city's workers build it there
@@ -601,7 +601,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.selected_city else {
-            self.notice = "OPEN A CITY WITH C BEFORE CHOOSING A BUILD".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.cities[city].team != self.local_team {
@@ -628,12 +628,12 @@ impl GameState {
                     .into_iter()
                     .any(|kind| c.placed_site(kind) == Some(hex))
         }) {
-            return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+            return Some("A CITY OR BUILDING STANDS HERE");
         }
         if matches!(building, Building::Harbor | Building::CoastalBattery)
             && !self.city_is_coastal(city)
         {
-            return Some("NEEDS A CITY CENTER ON THE COAST");
+            return Some("NEEDS A COASTAL CITY");
         }
         match building {
             Building::CanoeHouse
@@ -831,7 +831,7 @@ impl GameState {
         };
         let removed = self.take_queue_item(city, index);
         self.notice = format!(
-            "REMOVED {} FROM CITY QUEUE - {}",
+            "REMOVED {} FROM CITY QUEUE: {}",
             removed.name(),
             refund_word(paid)
         );
@@ -857,7 +857,7 @@ impl GameState {
             self.take_queue_item(city, last);
         }
         self.city_queue_scroll = 0;
-        self.notice = format!("CLEARED THE CITY QUEUE - {}", cleared_words(count, paid));
+        self.notice = format!("CLEARED CITY QUEUE: {}", cleared_words(count, paid));
     }
 
     #[cfg(test)]
@@ -891,7 +891,7 @@ impl GameState {
         };
         let removed = self.take_barracks_item(city, index);
         self.notice = format!(
-            "REMOVED {} FROM BARRACKS QUEUE - {}",
+            "REMOVED {} FROM BARRACKS QUEUE: {}",
             removed.name(),
             refund_word(paid)
         );
@@ -919,10 +919,7 @@ impl GameState {
             self.take_barracks_item(city, last);
         }
         self.barracks_queue_scroll = 0;
-        self.notice = format!(
-            "CLEARED THE BARRACKS QUEUE - {}",
-            cleared_words(count, paid)
-        );
+        self.notice = format!("CLEARED BARRACKS QUEUE: {}", cleared_words(count, paid));
     }
 
     /// Queue hotkeys operate on the city line currently being produced.
@@ -973,9 +970,7 @@ impl GameState {
                 self.cities[i].workers += 1;
                 log::info!("{:?} city completed a worker", self.cities[i].team);
                 if self.cities[i].team == self.local_team {
-                    self.notice =
-                        "WORKER READY - PLACE ROADS, IMPROVEMENTS AND BUILDINGS FROM THE CITY"
-                            .into();
+                    self.notice = "WORKER READY: PLACE BUILDINGS AND WORKS FROM THE CITY".into();
                 }
                 continue;
             }
@@ -1028,7 +1023,7 @@ impl GameState {
                 log::info!("{:?} city {} completed a settler", c.team, c.id + 1);
                 if c.team == self.local_team {
                     self.notice = format!(
-                        "CITY {} TRAINED A SETTLER - F FOUNDS A CITY {MIN_CITY_DISTANCE} HEXES FROM ANY OTHER",
+                        "CITY {} TRAINED A SETTLER. F FOUNDS A CITY {MIN_CITY_DISTANCE} HEXES FROM ANY OTHER",
                         c.id + 1
                     );
                 }

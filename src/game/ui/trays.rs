@@ -597,12 +597,12 @@ impl GameState {
         let status = self.queue_status(i, Lane::City);
         let worked = self.worked_item(i, Lane::City, &status);
         let building = match worked {
-            Some((_, 0, _)) => ("READY - WAITING FOR AN OPEN HEX".to_string(), GOLD_TEXT),
+            Some((_, 0, _)) => ("READY: WAITING FOR AN OPEN HEX".to_string(), GOLD_TEXT),
             Some((name, turns, _)) => (
                 format!("{name} · {} LEFT", turns_text(turns as u32)),
                 GOLD_TEXT,
             ),
-            None if city.queue.is_empty() => ("NOTHING - CHOOSE BELOW".to_string(), DIM_TEXT),
+            None if city.queue.is_empty() => ("NOTHING: CHOOSE BELOW".to_string(), DIM_TEXT),
             // Everything queued waits: it gathers by itself.
             None if status.gathers => (
                 format!("GATHERING {}", stock_icons(GATHER_YIELD)),
@@ -623,7 +623,7 @@ impl GameState {
         // on framed.
         panel.text(
             SMALL,
-            vec![("PRIORITY - DRAG TO REORDER".into(), LABEL_TEXT)],
+            vec![("PRIORITY: DRAG TO REORDER".into(), LABEL_TEXT)],
         );
         let drag = self
             .queue_drag
@@ -674,7 +674,7 @@ impl GameState {
         } else {
             ButtonSpec::new(Target::Grow, "GROW", format!("{GROW_SHORTCUT} · FULL")).unavailable(
                 Some(format!(
-                    "FULL: {MAX_CITY_POPULATION} CITIZENS, COUNTING THE GROWTH QUEUED"
+                    "FULL: {MAX_CITY_POPULATION} CITIZENS, COUNTING QUEUED GROWS"
                 )),
             )
         };
@@ -715,7 +715,7 @@ impl GameState {
         // uses, on one line with the Barracks' pace.
         let mut line = self.supply_spans(city.team);
         line.push((
-            format!(" · A BARRACKS TRAINS TROOPS {CITY_TRAINING_SLOWDOWN}× FASTER THAN THE CITY"),
+            format!(" · A BARRACKS TRAINS {CITY_TRAINING_SLOWDOWN}× FASTER"),
             DIM_TEXT,
         ));
         panel.text(SMALL, line);
@@ -859,14 +859,14 @@ impl GameState {
             let training = match self.worked_item(i, Lane::Barracks, &status) {
                 Some((name, ..)) => (format!("BARRACKS: TRAINING {name}"), GOLD_TEXT),
                 None if city.barracks_queue.is_empty() => {
-                    ("BARRACKS: IDLE - TRAIN TROOPS THERE".into(), GOLD_TEXT)
+                    ("BARRACKS IDLE: TRAIN TROOPS THERE".into(), GOLD_TEXT)
                 }
                 // Its first item waits: the same warning as its own panel's
                 // (`waiting_line`).
                 None => match &status.head {
                     Some(wait) => (
                         format!(
-                            "BARRACKS {} — {}",
+                            "BARRACKS {}: {}",
                             idle_word(Lane::Barracks),
                             wait_text(wait)
                         ),
@@ -906,9 +906,9 @@ impl GameState {
         // Recalled workers stay home until released, one a click.
         if city.held_workers > 0 && city.team == self.local_team {
             let label = if city.held_workers == 1 {
-                "HELD AT HOME - RELEASE"
+                "HELD AT HOME: RELEASE"
             } else {
-                "HELD AT HOME - RELEASE ONE"
+                "HELD AT HOME: RELEASE ONE"
             };
             list.push(Row::Buttons(
                 vec![button(Target::ReleaseWorker, label.into())],
@@ -933,10 +933,7 @@ impl GameState {
         if !city.worker_jobs.is_empty() {
             list.push(Row::Text(
                 SMALL,
-                vec![(
-                    "PLACED, WAITING FOR A WORKER - DRAG TO REORDER".into(),
-                    LABEL_TEXT,
-                )],
+                vec![("WAITING FOR A WORKER: DRAG TO REORDER".into(), LABEL_TEXT)],
             ));
         }
         let drag = self
@@ -1004,11 +1001,7 @@ impl GameState {
         ] {
             let line = if self.barracks_deposits(i, resource).is_empty() {
                 (
-                    format!(
-                        "{}: LOCKED - PUT A BARRACKS ON {}",
-                        unit.name(),
-                        resource.name()
-                    ),
+                    format!("{}: NEEDS A BARRACKS ON {}", unit.name(), resource.name()),
                     REDUCED_TEXT,
                 )
             } else {

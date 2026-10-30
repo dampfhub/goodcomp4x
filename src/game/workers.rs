@@ -126,10 +126,10 @@ impl JobKind {
             Self::Improve => {
                 "MINE ON HILLS, LUMBER MILL IN FOREST, FARM BY FRESH WATER, PASTURE ON DRY GRASSLAND OR PLAINS."
             }
-            Self::CutForest => "+10 WOOD AT ONCE, AND THE FOREST IS GONE FOR GOOD.",
+            Self::CutForest => "+10 WOOD ONCE. THE FOREST IS GONE.",
             Self::Wall => "ON AN EDGE: NOBODY CROSSES.",
             Self::Gate => "ON AN EDGE: ONLY YOUR SIDE CROSSES.",
-            Self::Outpost => "SEES 2 HEXES AROUND IT.",
+            Self::Outpost => "SEES 2 HEXES.",
             Self::Fort => "+50% DEFENSE FOR YOUR UNITS IN IT.",
             Self::Build(building) => building.description(),
         }
@@ -378,11 +378,11 @@ impl GameState {
     /// (`improved`), whose yield stands on the forest.
     fn cut_forest_problem(&self, hex: Hex, building: bool, improved: bool) -> Option<&'static str> {
         if self.grid.tile(hex).feature != Some(Feature::Forest) {
-            Some("NO FOREST TO CUT HERE")
+            Some("NO FOREST HERE")
         } else if building {
             Some("A BUILDING STANDS HERE")
         } else if improved {
-            Some("THIS TILE IS IMPROVED ALREADY")
+            Some("IMPROVED ALREADY")
         } else {
             None
         }
@@ -396,9 +396,7 @@ impl GameState {
             return Some("WORKERS CAN'T WORK THIS TERRAIN");
         }
         if !self.in_worker_reach(team, hex) {
-            return Some(
-                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
-            );
+            return Some("OUT OF REACH: 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD");
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
@@ -427,12 +425,12 @@ impl GameState {
                 .any(|b| c.placed_site(b) == Some(hex))
         });
         match job.kind {
-            JobKind::Road if self.is_road_hex(hex) => Some("THERE IS A ROAD HERE ALREADY"),
+            JobKind::Road if self.is_road_hex(hex) => Some("A ROAD RUNS HERE ALREADY"),
             JobKind::Road => None,
             JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
             JobKind::Improve => match self.sites.get(&hex) {
                 Some(site) if site.team != team => Some("THIS TILE BELONGS TO THE ENEMY"),
-                Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
+                Some(_) => Some("IMPROVED ALREADY"),
                 None => self.improvement(hex).err(),
             },
             JobKind::CutForest => {
@@ -519,9 +517,7 @@ impl GameState {
             return Some("WORKERS CAN'T WORK THIS TERRAIN");
         }
         if !self.known_worker_reach(hex) {
-            return Some(
-                "OUT OF REACH: WORKERS GO 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD",
-            );
+            return Some("OUT OF REACH: 3 TILES FROM A CITY OR WORK CAMP, OR NEXT TO A ROAD");
         }
         if let Some(across) = job.across {
             return if hex.distance(across) != 1 || !self.grid.contains(across) {
@@ -575,7 +571,7 @@ impl GameState {
                 return Some("THIS CITY HAS ONE ALREADY");
             }
             if building {
-                return Some("SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+                return Some("A CITY OR BUILDING STANDS HERE");
             }
             if structure {
                 return Some("A STRUCTURE STANDS HERE");
@@ -584,15 +580,15 @@ impl GameState {
             // that one drops the job (refunded) when a worker gets there.
             return self
                 .ai_site_issue(home, placed, hex)
-                .filter(|&issue| issue != "SITE IS ALREADY CLAIMED BY A CITY OR BUILDING");
+                .filter(|&issue| issue != "A CITY OR BUILDING STANDS HERE");
         }
         match job.kind {
-            JobKind::Road if road => Some("THERE IS A ROAD HERE ALREADY"),
+            JobKind::Road if road => Some("A ROAD RUNS HERE ALREADY"),
             JobKind::Road => None,
             JobKind::Improve if building => Some("A BUILDING STANDS HERE"),
             JobKind::Improve => match site {
                 Some(owner) if owner != self.local_team => Some("THIS TILE BELONGS TO THE ENEMY"),
-                Some(_) => Some("THIS TILE IS IMPROVED ALREADY"),
+                Some(_) => Some("IMPROVED ALREADY"),
                 None => self.improvement(hex).err(),
             },
             JobKind::CutForest => self.cut_forest_problem(hex, building, site.is_some()),
@@ -662,27 +658,24 @@ impl GameState {
         let c = &self.cities[city];
         if let JobKind::Build(building) = kind {
             if c.built.contains(&building) {
-                return Some(format!("{} ALREADY EXISTS IN THIS CITY", building.name()));
+                return Some(format!("{} BUILT ALREADY", building.name()));
             }
             if self.building_job_queued(city, building) {
-                return Some(format!(
-                    "{} IS ALREADY PLACED FOR THIS CITY",
-                    building.name()
-                ));
+                return Some(format!("{} PLACED ALREADY", building.name()));
             }
             if matches!(building, Building::Harbor | Building::CoastalBattery)
                 && !self.city_is_coastal(city)
             {
-                return Some("ONLY COASTAL CITIES CAN BUILD NAVAL BUILDINGS".into());
+                return Some("NEEDS A COASTAL CITY".into());
             }
         }
         if !self.has_workers(city) {
-            return Some("TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES".into());
+            return Some("TRAIN A WORKER FIRST: WORKERS BUILD WHAT THE CITY PLACES".into());
         }
         let stock = self.stock(c.team);
         (!stock.covers(kind.price())).then(|| {
             format!(
-                "{} - SHORT OF {}",
+                "{}: SHORT OF {}",
                 kind.name(),
                 stock_icons(stock.shortfall(kind.price()))
             )
@@ -711,7 +704,7 @@ impl GameState {
             return;
         }
         let Some(city) = self.job_city() else {
-            self.notice = "OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into();
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
         if self.placing_job == Some(kind) {
@@ -726,7 +719,7 @@ impl GameState {
         }
         self.placing_job = Some(kind);
         // Short, to fit the status bar; the city panel says how to place it.
-        self.notice = format!("PLACING {} - RIGHT-CLICK OR ESC TO CANCEL", kind.name());
+        self.notice = format!("PLACING {}: RIGHT-CLICK OR ESC TO CANCEL", kind.name());
     }
 
     /// With a job armed: where a map point would place it, as the tile the
@@ -797,11 +790,11 @@ impl GameState {
             return false;
         }
         if let Err(short) = self.try_queue_job(city, job) {
-            self.notice = format!("{} - SHORT OF {}", kind.name(), stock_icons(short));
+            self.notice = format!("{}: SHORT OF {}", kind.name(), stock_icons(short));
             return false;
         }
         self.notice = format!(
-            "{} QUEUED FOR CITY {} - {} JOBS WAITING - ESC TO STOP",
+            "{} PLACED FOR CITY {}: {} JOBS WAITING. ESC TO STOP",
             kind.name(),
             self.cities[city].id + 1,
             self.cities[city].worker_jobs.len()
@@ -834,22 +827,22 @@ impl GameState {
     pub(super) fn job_unavailable(&self, hex: Hex, kind: JobKind) -> Option<String> {
         let job = WorkerJob::on_tile(hex, kind);
         let Some(city) = self.job_city() else {
-            return Some("OPEN A CITY FIRST - ITS WORKERS BUILD WHAT IT PLACES".into());
+            return Some("OPEN A CITY WITH C FIRST".into());
         };
         if let Some(reason) = self.job_kind_unavailable(city, kind) {
             Some(reason)
         } else if kind.on_edge() {
             None
         } else if !self.is_explored(hex) {
-            Some("WORKERS CAN'T WORK AN UNEXPLORED TILE".into())
+            Some("UNEXPLORED: SCOUT IT FIRST".into())
         } else if let Some(problem) = self.known_job_problem(city, job) {
             Some(problem.into())
         } else if self.job_taken(self.local_team, job) {
-            Some(format!("{} IS QUEUED HERE ALREADY", kind.name()))
+            Some(format!("{} PLACED HERE ALREADY", kind.name()))
         } else {
             // A tile takes one job at a time.
             self.tile_job_at(self.local_team, hex)
-                .map(|other| format!("{} IS QUEUED HERE - ONE JOB AT A TIME", other.name()))
+                .map(|other| format!("{} PLACED HERE: ONE JOB A TILE", other.name()))
         }
     }
 
@@ -879,7 +872,7 @@ impl GameState {
             return;
         };
         if let Err(short) = self.try_queue_job(city, WorkerJob::on_tile(hex, kind)) {
-            self.notice = format!("{} - SHORT OF {}", kind.name(), stock_icons(short));
+            self.notice = format!("{}: SHORT OF {}", kind.name(), stock_icons(short));
             return;
         }
         // A city has one of each building: placed, it's done placing.
@@ -889,7 +882,7 @@ impl GameState {
         }
         let home = self.cities[city].workers;
         self.notice = format!(
-            "{} PLACED FOR CITY {} - {home} WORKER{} AT HOME",
+            "{} PLACED FOR CITY {}: {home} WORKER{} AT HOME",
             kind.name(),
             self.cities[city].id + 1,
             if home == 1 { "" } else { "S" }
@@ -907,10 +900,7 @@ impl GameState {
         if index < self.cities[city].worker_jobs.len() {
             let job = self.cities[city].worker_jobs.remove(index);
             self.refund_job(self.cities[city].team, job);
-            self.notice = format!(
-                "REMOVED {} FROM THE WORKER JOBS - REFUNDED",
-                job.kind.name()
-            );
+            self.notice = format!("REMOVED {} FROM WORKER JOBS: REFUNDED", job.kind.name());
         }
     }
 
@@ -948,7 +938,7 @@ impl GameState {
         worker.work_left = None;
         worker.recalled = true;
         worker.base = self.cities[worker.home].pos;
-        self.notice = "WORKER RECALLED - IT HEADS HOME TO STAY; ITS JOB WAITS ON THE LIST".into();
+        self.notice = "WORKER RECALLED: IT STAYS HOME. ITS JOB WAITS ON THE LIST".into();
     }
 
     /// Takes the first job in `city`'s queue its workers can still do,
@@ -1073,9 +1063,9 @@ impl GameState {
         }
         c.held_workers -= 1;
         self.notice = if c.worker_jobs.is_empty() {
-            "WORKER RELEASED - IT TAKES THE NEXT JOB PLACED".into()
+            "WORKER RELEASED: IT TAKES THE NEXT JOB PLACED".into()
         } else {
-            "WORKER RELEASED - IT TAKES THE NEXT JOB ON THE LIST".into()
+            "WORKER RELEASED: IT TAKES THE NEXT JOB ON THE LIST".into()
         };
     }
 
@@ -1133,7 +1123,7 @@ impl GameState {
                 self.refund_job(worker.team, job);
                 if worker.team == self.local_team {
                     self.notice = format!(
-                        "A WORKER CAN'T REACH ITS {} - IT'S COMING HOME, REFUNDED",
+                        "A WORKER CAN'T REACH ITS {}: REFUNDED, IT'S COMING HOME",
                         self.job_title(job)
                     );
                 }
@@ -1302,7 +1292,7 @@ impl GameState {
             if worker.team == self.local_team {
                 self.notice = "AN ENEMY CAPTURED ONE OF YOUR WORKERS".into();
             } else if captor_team == self.local_team {
-                self.notice = "WORKER CAPTURED - IT JOINS YOUR NEAREST CITY".into();
+                self.notice = "WORKER CAPTURED: IT JOINS YOUR NEAREST CITY".into();
             }
         }
     }
@@ -1649,7 +1639,11 @@ mod tests {
         // No city open: nothing to place from.
         game.arm_worker_job(JobKind::Road);
         assert_eq!(game.placing_job, None);
-        assert!(game.notice.contains("OPEN A CITY FIRST"), "{}", game.notice);
+        assert!(
+            game.notice.contains("OPEN A CITY WITH C FIRST"),
+            "{}",
+            game.notice
+        );
 
         // R picks roads in the open city; Escape puts them down, keeping
         // the city open.
@@ -1671,7 +1665,7 @@ mod tests {
         assert_eq!(game.placing_job, None);
         assert_eq!(
             game.notice,
-            "TRAIN A WORKER FIRST - WORKERS BUILD WHAT THE CITY PLACES"
+            "TRAIN A WORKER FIRST: WORKERS BUILD WHAT THE CITY PLACES"
         );
     }
 
@@ -1688,11 +1682,7 @@ mod tests {
         *game.stock_mut(PLAYER_TEAM) = Stock::default();
         queue(&mut game, tile, JobKind::Road);
         assert!(game.cities[0].worker_jobs.is_empty());
-        assert!(
-            game.notice.starts_with("ROAD - SHORT OF"),
-            "{}",
-            game.notice
-        );
+        assert!(game.notice.starts_with("ROAD: SHORT OF"), "{}", game.notice);
     }
 
     #[test]
@@ -1704,7 +1694,7 @@ mod tests {
         assert!(!game.is_explored(unseen));
         game.placing_job = Some(JobKind::Road);
         assert!(!game.place_job_at(unseen, None));
-        assert_eq!(game.notice, "WORKERS CAN'T WORK AN UNEXPLORED TILE");
+        assert_eq!(game.notice, "UNEXPLORED: SCOUT IT FIRST");
     }
 
     #[test]
@@ -1722,7 +1712,7 @@ mod tests {
         game.queue_worker_job_at(tile, JobKind::Improve);
         assert_eq!(game.tile_job_at(PLAYER_TEAM, tile), Some(JobKind::Improve));
         let reason = game.job_unavailable(tile, JobKind::Road).expect("refused");
-        assert_eq!(reason, "IMPROVE IS QUEUED HERE - ONE JOB AT A TIME");
+        assert_eq!(reason, "IMPROVE PLACED HERE: ONE JOB A TILE");
         game.queue_worker_job_at(tile, JobKind::Road);
         assert_eq!(game.cities[0].worker_jobs.len(), 1, "no road queued");
         // A wall on one of its edges is another matter.
@@ -2292,7 +2282,7 @@ mod tests {
         let hex = bare_tile(&game, 1);
         assert_eq!(
             game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
-            Some("NO FOREST TO CUT HERE")
+            Some("NO FOREST HERE")
         );
         forest_at(&mut game, hex);
         assert_eq!(game.grid.unimproved_yield(hex), (0, 2, 0));
@@ -2317,7 +2307,7 @@ mod tests {
         // Once only: there's no forest left to cut.
         assert_eq!(
             game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
-            Some("NO FOREST TO CUT HERE")
+            Some("NO FOREST HERE")
         );
         assert!(
             JobKind::CutForest
@@ -2344,7 +2334,7 @@ mod tests {
         );
         assert_eq!(
             game.job_problem(0, WorkerJob::on_tile(hex, JobKind::CutForest)),
-            Some("THIS TILE IS IMPROVED ALREADY")
+            Some("IMPROVED ALREADY")
         );
         assert!(game.job_unavailable(hex, JobKind::CutForest).is_some());
     }

@@ -90,9 +90,9 @@ impl GameState {
         self.notice = if self.waiting_for_peers() {
             WAITING_NOTICE.into()
         } else if self.city_needs_build(i) {
-            format!("CHOOSE WHAT CITY {} BUILDS - 0-9", self.cities[i].id + 1)
+            format!("CHOOSE WHAT CITY {} BUILDS: 0-9", self.cities[i].id + 1)
         } else {
-            "CLICK TILES TO ASSIGN - A AUTO ASSIGN - ESC OR SPACE TO EXIT".into()
+            "CLICK TILES TO ASSIGN · A AUTO ASSIGN · ESC OR SPACE TO EXIT".into()
         };
     }
 
@@ -146,7 +146,7 @@ impl GameState {
         if self.waiting_for_peers() {
             WAITING_NOTICE
         } else {
-            "PLANNING - C CITY - SPACE HOLD OR END TURN"
+            "PLANNING: C CITY · SPACE HOLD OR END TURN"
         }
     }
 
@@ -183,7 +183,7 @@ impl GameState {
         self.notice = if self.waiting_for_peers() {
             WAITING_NOTICE
         } else {
-            "BARRACKS - QUEUE TROOPS OR CLICK CITY TO RETURN"
+            "BARRACKS: QUEUE TROOPS, OR CLICK THE CITY TO RETURN"
         }
         .into();
     }
@@ -276,7 +276,7 @@ impl GameState {
         // A structure menu owns the other map clicks off a unit's token
         // (`city_click_at`) until its explicit exit action.
         if self.selected_barracks.is_some() {
-            self.notice = "BARRACKS MENU - PRESS ESC OR SPACE TO EXIT".into();
+            self.notice = "BARRACKS: ESC OR SPACE TO EXIT".into();
             return true;
         }
         let Some(i) = self.selected_city else {
@@ -286,7 +286,7 @@ impl GameState {
         // may be assigned onto a unit's tile. A tile never seen can't be
         // worked.
         if !self.is_explored(hex) {
-            self.notice = "UNEXPLORED - SCOUT IT FIRST".into();
+            self.notice = "UNEXPLORED: SCOUT IT FIRST".into();
             return true;
         }
         if let Some((city, cluster)) = self.moving_manager
@@ -296,13 +296,13 @@ impl GameState {
                 self.moving_manager = None;
                 self.notice = "MANAGER MOVE CANCELLED".into();
             } else if self.closed_to_citizens(hex) {
-                self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
+                self.notice = "A BUILDING STANDS THERE: NO CITIZEN CAN WORK IT".into();
             } else if self.may_be_manager(i, cluster, hex) {
                 self.moving_manager = None;
                 self.move_manager(i, cluster, hex);
             } else {
                 self.notice =
-                    "MANAGER NEEDS A REACHABLE, UNCLAIMED LAND TILE CLEAR OF THE OTHER MANAGERS"
+                    "A MANAGER NEEDS A REACHABLE, UNCLAIMED LAND TILE, NOT BESIDE ANOTHER MANAGER"
                         .into();
             }
             return true;
@@ -311,7 +311,7 @@ impl GameState {
         if let Some(cluster) = city.cluster_of(hex) {
             if city.clusters[cluster].manager == hex {
                 self.moving_manager = Some((i, cluster));
-                self.notice = "MANAGER PICKED UP - CLICK A DESTINATION".into();
+                self.notice = "MANAGER PICKED UP: CLICK A DESTINATION".into();
                 return true;
             }
             let city = &mut self.cities[i];
@@ -321,23 +321,23 @@ impl GameState {
             }
             self.notice = "CITIZEN UNASSIGNED".into();
         } else if self.closed_to_citizens(hex) {
-            self.notice = "A BUILDING STANDS THERE - NO CITIZEN CAN WORK IT".into();
+            self.notice = "A BUILDING STANDS THERE: NO CITIZEN CAN WORK IT".into();
         } else if !self.is_open(i, hex) {
-            self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE A CITIZEN; CLICK AN OPEN TILE BESIDE A MANAGER TO ASSIGN".into();
+            self.notice = "CLICK A WORKED TILE TO MOVE OR RELEASE IT, OR AN OPEN TILE BESIDE A MANAGER TO ASSIGN".into();
         } else if !self.routes(i).costs.contains_key(&hex) {
             self.notice = "NO OPEN ROUTE WITHIN LOGISTICS BUDGET".into();
         } else if city.working() >= city.capacity() {
-            self.notice = "ALL CITIZENS BUSY - RELEASE A WORKED TILE FIRST".into();
+            self.notice = "ALL CITIZENS BUSY: RELEASE A WORKED TILE FIRST".into();
         } else if let Some(cluster) = self.cluster_with_room(i, hex) {
             self.cities[i].clusters[cluster].workers.push(hex);
             self.cities[i].remembered = self.cities[i].clusters.clone();
             self.notice = "CITIZEN ASSIGNED".into();
         } else if city.clusters.len() >= city.managers_allowed() {
             self.notice = if city.clusters.len() >= MAX_MANAGERS {
-                format!("A CITY HAS AT MOST {MAX_MANAGERS} MANAGERS - CLICK A TILE BESIDE ONE")
+                format!("A CITY HAS AT MOST {MAX_MANAGERS} MANAGERS: CLICK A TILE BESIDE ONE")
             } else {
                 format!(
-                    "ANOTHER MANAGER AT {} CITIZENS - CLICK A TILE BESIDE A MANAGER WITH ROOM",
+                    "NEXT MANAGER AT {} CITIZENS: CLICK A TILE BESIDE A MANAGER WITH ROOM",
                     city.clusters.len() * CLUSTER_SIZE + 1
                 )
             };
@@ -346,7 +346,7 @@ impl GameState {
         } else {
             self.cities[i].clusters.push(Cluster::new(hex));
             self.cities[i].remembered = self.cities[i].clusters.clone();
-            self.notice = "MANAGER ASSIGNED - A NEW CLUSTER".into();
+            self.notice = "MANAGER ASSIGNED: A NEW CLUSTER".into();
         }
         true
     }
