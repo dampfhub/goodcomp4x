@@ -88,6 +88,47 @@ The game shows that tooltip as "PLAY EACH TURN OUT AT ONCE (F8)."
 Mouse clicks aren't keys: CLICK, RIGHT-CLICK, RMB, and CTRL or SHIFT with a click, are written
 out in the files (`CTRL-RIGHT-CLICK`), as the game names them.
 
+## Writing it: short and plain
+
+Every agent, and anyone else, reads over each piece of player-facing text they add or change
+before submitting. That covers labels, names, tooltips, hints, notices, disabled reasons and
+panel lines, whether the text is in `text/` or still in the code. Cut it until nothing more
+can go, and make it read like a terse strategy-game manual, not like a chatbot. List the
+strings you checked in the PR.
+
+- **Short.** A label is one to three words. A tooltip is one or two short lines: what it does,
+  and its numbers. A notice is one line. Don't repeat the label in the tooltip, and don't
+  describe what the icon or the number already shows.
+- **Numbers, not adjectives.** `+2 FOOD`, not `GREATLY BOOSTS FOOD`. `3 TURNS` (the clock icon),
+  not `TAKES A WHILE`.
+- **Plain words.** Avoid these: `SIMPLY`, `EFFECTIVELY`, `SEAMLESSLY`, `ENSURE`, `UTILIZE`,
+  `LEVERAGE`, `ENHANCE`, `ROBUST`, `CRUCIAL`, `VITAL`, `KEY` (as an adjective), `POWERFUL`,
+  `STRATEGIC`, `UNLEASH`, `EMBARK`, `ELEVATE`, `STREAMLINE` and `DELVE`. Avoid `ALLOWS YOU
+  TO`, `IN ORDER TO`, `IT'S IMPORTANT TO` and `PLEASE`.
+- **No AI rhythm.** These read as machine-written:
+  - "not just X, but Y";
+  - lists of three for rhythm;
+  - clauses joined by dashes for effect (use a full stop or a colon);
+  - rhetorical questions;
+  - "whether you're...";
+  - exclamation marks;
+  - a closing line that sums up or cheers the player on.
+- **No hype or flavour padding.** State the rule. A unit's description says what it's good and
+  bad at, not how legendary it is.
+- **Speak to the player as the game does.** Use orders and facts: `CLICK A HEX TO MOVE`,
+  `SHORT OF 4 {metal_icon}`. Don't use first person, and don't talk about yourself.
+- **Use the game's own words.** Name things the way the rest of the game does, such as
+  STOCKPILE, SUPPLY, QUEUE and GATHER, and use one word for one thing everywhere. Check the
+  nearby entries before you name something.
+
+For example:
+
+| Not this | This |
+|---|---|
+| `PIKEMEN ARE A VERSATILE AND COST-EFFECTIVE UNIT THAT EXCELS AT COUNTERING MOUNTED THREATS!` | `CHEAP. STRONG AGAINST CAVALRY, WEAK OTHERWISE.` |
+| `THIS ALLOWS YOU TO SEAMLESSLY GATHER RESOURCES WHEN YOUR CITY ISN'T BUSY.` | `AN IDLE CITY GATHERS.` |
+| `NOT ONLY DOES A FARM BOOST FOOD — IT ALSO HELPS YOUR CITY GROW FASTER.` | `+2 FOOD. NEEDS FRESH WATER.` |
+
 ## Checking a change
 
 Run `cargo test`. It fails, saying the file and line, if a file doesn't read (a line that's
