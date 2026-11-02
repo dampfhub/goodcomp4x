@@ -372,6 +372,7 @@ impl GameState {
         mut stage: impl FnMut(&'static str, usize),
     ) -> Vec<Vertex> {
         out.clear();
+        super::pixel_art::set_active(self.settings.pixel_art, self.local_team);
         if let Some(city) = self.interior_view {
             out.extend(self.build_interior_vertices(city));
             return out;

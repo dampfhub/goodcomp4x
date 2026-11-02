@@ -53,7 +53,7 @@ use super::{GameState, mesh};
 use crate::renderer::Vertex;
 use builder::PanelBuilder;
 use dock::{Dock, Rect, Zone};
-pub use imgui::{ImGuiLayoutState, style_imgui};
+pub use imgui::{ImGuiLayoutState, set_pixel_texture, style_imgui};
 
 /// The least window size, in logical pixels, the game lets the window be
 /// resized to: the ImGui status bar has room for all of its controls
@@ -604,6 +604,7 @@ impl GameState {
     /// to frame.
     pub fn build_ui_into(&self, screen_size: Vec2, cursor: Option<Vec2>, out: &mut Vec<Vertex>) {
         out.clear();
+        crate::game::pixel_art::set_active(self.settings.pixel_art, self.local_team);
         let (layout, over_ui) = self.layout_with_hover(screen_size, cursor);
         let point = cursor.map(|c| to_ui(c, screen_size));
         let hovered = point.and_then(|p| layout.button_at(p)).map(|b| b.target);

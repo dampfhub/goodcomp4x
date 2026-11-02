@@ -4,7 +4,9 @@ use glam::Vec2;
 
 use super::{Target, UnitAction};
 use crate::game::city::{Build, Good};
+use crate::game::map_icons::MapIcon;
 use crate::game::mesh;
+use crate::game::pixel_art::{self, Order, Sprite};
 use crate::game::strings::text;
 use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
@@ -62,6 +64,70 @@ pub(super) fn for_button(target: Target, label: &str) -> Option<ActionIcon> {
     })
 }
 
+impl ActionIcon {
+    /// Its pixel-art sprite (`pixel_art.rs`).
+    pub(super) fn sprite(self) -> Sprite {
+        match self {
+            ActionIcon::Move => Sprite::Order(Order::Move),
+            ActionIcon::Attack => Sprite::Order(Order::Attack),
+            ActionIcon::Swap => Sprite::Order(Order::Swap),
+            ActionIcon::ShieldWall => Sprite::Order(Order::ShieldWall),
+            ActionIcon::Volley => Sprite::Order(Order::Volley),
+            ActionIcon::Charge => Sprite::Order(Order::Charge),
+            ActionIcon::Deploy => Sprite::Order(Order::Deploy),
+            ActionIcon::Lookout => Sprite::Order(Order::Lookout),
+            ActionIcon::Hold => Sprite::Order(Order::Hold),
+            ActionIcon::Guard => Sprite::Order(Order::Guard),
+            ActionIcon::Alert => Sprite::Order(Order::Alert),
+            ActionIcon::Clear => Sprite::Order(Order::Clear),
+            ActionIcon::Disband => Sprite::Order(Order::Disband),
+            ActionIcon::Settle => Sprite::Order(Order::Settle),
+            ActionIcon::Food => Sprite::Icon(MapIcon::Food),
+            ActionIcon::Wood => Sprite::Icon(MapIcon::Wood),
+            ActionIcon::Metal => Sprite::Icon(MapIcon::Metal),
+        }
+    }
+}
+
+/// How opaque a sprite is drawn where a vector icon would be drawn in
+/// `color`: a dark color is a disabled button's, so the sprite fades.
+pub(super) fn sprite_alpha(color: [f32; 4]) -> f32 {
+    if color[..3].iter().all(|&c| c < 0.3) {
+        0.35 * color[3]
+    } else {
+        color[3]
+    }
+}
+
+/// A catalogue card's pixel-art picture, in pixel art (`pixel_art::active`):
+/// what a unit card builds, or a building card's building.
+pub(super) fn card_sprite(target: Target) -> Option<Sprite> {
+    if !pixel_art::active() {
+        return None;
+    }
+    match target {
+        Target::Building(building) => Some(Sprite::Building(building)),
+        _ => production_unit_icon(target).map(Sprite::Unit),
+    }
+    .filter(|&sprite| pixel_art::has(sprite))
+}
+
+/// Draws `target`'s card picture (`card_sprite`) centered on `center`, in
+/// the player's color, faded on a card that's off. Returns false if there
+/// is none.
+pub(super) fn push_card_sprite(
+    target: Target,
+    center: Vec2,
+    room: f32,
+    disabled: bool,
+    out: &mut Vec<Vertex>,
+) -> bool {
+    let alpha = if disabled { 0.35 } else { 1.0 };
+    card_sprite(target).is_some_and(|sprite| {
+        pixel_art::push_ui(sprite, center, room, Some(pixel_art::player()), alpha, out)
+    })
+}
+
 /// What an icon button shows in its corner, from the end of its label,
 /// "NAME (3)": an ability's cooldown, or a priority chip's rank.
 pub(super) fn badge(label: &str) -> Option<&str> {
@@ -75,8 +141,18 @@ pub(super) fn push_icon(
     radius: f32,
     icon: ActionIcon,
     color: [f32; 4],
+    badge: bool,
     out: &mut Vec<Vertex>,
 ) {
+    // In pixel art, its sprite: two screen pixels a texel, as the 16-texel
+    // art fills the button that way, or one beside a badge (a cooldown, a
+    // rank), which needs the corner.
+    let room = if badge { radius } else { 2.0 * radius + 4.0 };
+    if pixel_art::active()
+        && pixel_art::push_ui(icon.sprite(), center, room, None, sprite_alpha(color), out)
+    {
+        return;
+    }
     let line = |out: &mut Vec<Vertex>, a: (f32, f32), b: (f32, f32), width: f32| {
         mesh::segment(
             center + Vec2::new(a.0, a.1) * radius,
@@ -254,7 +330,7 @@ mod tests {
             ActionIcon::Metal,
         ] {
             let mut vertices = Vec::new();
-            push_icon(Vec2::ZERO, 14.0, icon, [1.0; 4], &mut vertices);
+            push_icon(Vec2::ZERO, 14.0, icon, [1.0; 4], false, &mut vertices);
             assert!(!vertices.is_empty(), "{icon:?}");
             assert!(
                 vertices

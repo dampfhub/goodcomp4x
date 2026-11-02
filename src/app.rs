@@ -864,7 +864,10 @@ impl ApplicationHandler for App {
                 &mut imgui,
             )
         } {
-            Ok(renderer) => self.renderer = Some(renderer),
+            Ok(renderer) => {
+                crate::game::set_pixel_texture(renderer.pixel_art_texture());
+                self.renderer = Some(renderer);
+            }
             Err(err) => {
                 self.fail(event_loop, err.context("failed to initialize the renderer"));
                 return;

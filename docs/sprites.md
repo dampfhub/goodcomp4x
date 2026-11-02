@@ -57,63 +57,88 @@ whose forest doesn't is drawn in vector art whole.
 
 | Tag | Size | What it is |
 |---|---|---|
-| `terrain/grassland` | 32x28 | Grassland |
-| `terrain/plains` | 32x28 | Plains |
-| `terrain/desert` | 32x28 | Desert |
-| `terrain/tundra` | 32x28 | Tundra |
-| `terrain/snow` | 32x28 | Snow |
-| `terrain/marsh` | 32x28 | Marsh |
-| `terrain/mountains` | 32x28 | Mountains |
-| `terrain/coast` | 32x28 | Coast |
-| `terrain/ocean` | 32x28 | Ocean |
-| `terrain/lake` | 32x28 | Lake |
-| `terrain/grassland_hills` | 32x28 | Grassland hills |
-| `terrain/plains_hills` | 32x28 | Plains hills |
-| `terrain/desert_hills` | 32x28 | Desert hills |
-| `terrain/tundra_hills` | 32x28 | Tundra hills |
-| `terrain/snow_hills` | 32x28 | Snow hills |
-| `terrain/marsh_hills` | 32x28 | Marsh hills |
-| `feature/forest` | 32x28 | Forest, drawn over the ground (hills or not): transparent where the ground shows |
-| `feature/jungle` | 32x28 | Jungle, drawn over the ground the same way |
-| `unit/melee` | 14x14 | Melee |
-| `unit/ranged` | 14x14 | Ranged |
-| `unit/cavalry` | 14x14 | Cavalry |
-| `unit/siege` | 14x14 | Siege |
-| `unit/scout` | 14x14 | Scout |
-| `unit/armored` | 14x14 | Armored |
-| `unit/pikeman` | 14x14 | Pikeman |
-| `unit/patrol_galley` | 14x14 | Patrol galley |
-| `unit/landing_craft` | 14x14 | Landing craft |
-| `unit/bombard_ship` | 14x14 | Bombard ship |
-| `unit/settler` | 14x14 | Settler |
-| `unit/worker` | 14x14 | Worker (in the field) |
-| `unit/wolf_pack` | 14x14 | Wolf pack (team color: the animals' brown) |
-| `unit/bear` | 14x14 | Bear (team color: the animals' brown) |
-| `building/city` | 16x16 | A city; the game writes its population over the middle |
-| `building/barracks` | 14x14 | Barracks |
-| `building/mill` | 14x14 | Mill |
-| `building/workshop` | 14x14 | Workshop |
-| `building/canoe_house` | 14x14 | Canoe House |
-| `building/forge` | 14x14 | Forge |
-| `building/stable` | 14x14 | Stable |
-| `building/watchpost` | 14x14 | Watchpost |
-| `building/field_hospital` | 14x14 | Field Hospital |
-| `building/cannery` | 14x14 | Cannery |
-| `building/work_camp` | 14x14 | Work Camp |
-| `building/smelter` | 14x14 | Smelter |
-| `building/railhead` | 14x14 | Railhead |
-| `building/harbor` | 14x14 | Harbor |
-| `building/coastal_battery` | 14x14 | Coastal Battery |
-| `icon/horse_head` | 8x8 | Horses (resource) |
-| `icon/ingot` | 8x8 | Iron (resource) |
-| `icon/wheat` | 8x8 | Farm |
-| `icon/ore_cart` | 8x8 | Mine |
-| `icon/fence` | 8x8 | Pasture |
-| `icon/logs` | 8x8 | Lumber mill |
-| `icon/ruins` | 8x8 | Ruins (drawn 1.3 times as big) |
-| `icon/fruit_tree` | 8x8 | Orchard (special tile, drawn 1.3 times as big) |
-| `icon/stone_blocks` | 8x8 | Quarry (special tile, drawn 1.3 times as big) |
-| `icon/paw` | 8x8 | Animal den (drawn 1.3 times as big) |
+| `terrain/grassland` | 64x56 | Grassland |
+| `terrain/plains` | 64x56 | Plains |
+| `terrain/desert` | 64x56 | Desert |
+| `terrain/tundra` | 64x56 | Tundra |
+| `terrain/snow` | 64x56 | Snow |
+| `terrain/marsh` | 64x56 | Marsh |
+| `terrain/mountains` | 64x56 | Mountains |
+| `terrain/coast` | 64x56 | Coast |
+| `terrain/ocean` | 64x56 | Ocean |
+| `terrain/lake` | 64x56 | Lake |
+| `terrain/grassland_hills` | 64x56 | Grassland hills |
+| `terrain/plains_hills` | 64x56 | Plains hills |
+| `terrain/desert_hills` | 64x56 | Desert hills |
+| `terrain/tundra_hills` | 64x56 | Tundra hills |
+| `terrain/snow_hills` | 64x56 | Snow hills |
+| `terrain/marsh_hills` | 64x56 | Marsh hills |
+| `feature/forest` | 64x56 | Forest, drawn over the ground (hills or not): transparent where the ground shows |
+| `feature/jungle` | 64x56 | Jungle, drawn over the ground the same way |
+| `unit/melee` | 28x28 | Melee |
+| `unit/ranged` | 28x28 | Ranged |
+| `unit/cavalry` | 28x28 | Cavalry |
+| `unit/siege` | 28x28 | Siege |
+| `unit/scout` | 28x28 | Scout |
+| `unit/armored` | 28x28 | Armored |
+| `unit/pikeman` | 28x28 | Pikeman |
+| `unit/patrol_galley` | 28x28 | Patrol galley |
+| `unit/landing_craft` | 28x28 | Landing craft |
+| `unit/bombard_ship` | 28x28 | Bombard ship |
+| `unit/settler` | 28x28 | Settler |
+| `unit/worker` | 28x28 | Worker (in the field) |
+| `unit/wolf_pack` | 28x28 | Wolf pack (team color: the animals' brown) |
+| `unit/bear` | 28x28 | Bear (team color: the animals' brown) |
+| `building/city` | 32x32 | A city; the game writes its population over the middle |
+| `building/barracks` | 28x28 | Barracks |
+| `building/mill` | 28x28 | Mill |
+| `building/workshop` | 28x28 | Workshop |
+| `building/canoe_house` | 28x28 | Canoe House |
+| `building/forge` | 28x28 | Forge |
+| `building/stable` | 28x28 | Stable |
+| `building/watchpost` | 28x28 | Watchpost |
+| `building/field_hospital` | 28x28 | Field Hospital |
+| `building/cannery` | 28x28 | Cannery |
+| `building/work_camp` | 28x28 | Work Camp |
+| `building/smelter` | 28x28 | Smelter |
+| `building/railhead` | 28x28 | Railhead |
+| `building/harbor` | 28x28 | Harbor |
+| `building/coastal_battery` | 28x28 | Coastal Battery |
+| `icon/horse_head` | 16x16 | Horses (resource) |
+| `icon/ingot` | 16x16 | Iron (resource) |
+| `icon/wheat` | 16x16 | Farm |
+| `icon/ore_cart` | 16x16 | Mine |
+| `icon/fence` | 16x16 | Pasture |
+| `icon/logs` | 16x16 | Lumber mill |
+| `icon/ruins` | 16x16 | Ruins (drawn 1.3 times as big) |
+| `icon/fruit_tree` | 16x16 | Orchard (special tile, drawn 1.3 times as big) |
+| `icon/stone_blocks` | 16x16 | Quarry (special tile, drawn 1.3 times as big) |
+| `icon/paw` | 16x16 | Animal den (drawn 1.3 times as big) |
+| `icon/food` | 16x16 | Food, in text (prices, stockpiles, yields) |
+| `icon/wood` | 16x16 | Wood, in text |
+| `icon/metal` | 16x16 | Metal, in text |
+| `icon/clock` | 16x16 | Turns, in text |
+| `ui/move` | 16x16 | Move order button |
+| `ui/attack` | 16x16 | Attack order button |
+| `ui/swap` | 16x16 | Swap order button |
+| `ui/shield_wall` | 16x16 | Shield Wall ability button |
+| `ui/volley` | 16x16 | Volley ability button |
+| `ui/charge` | 16x16 | Charge ability button |
+| `ui/deploy` | 16x16 | Deploy and Pack Up ability button |
+| `ui/lookout` | 16x16 | Lookout ability button |
+| `ui/hold` | 16x16 | Hold order button |
+| `ui/guard` | 16x16 | Guard order button |
+| `ui/alert` | 16x16 | Alert order button |
+| `ui/clear` | 16x16 | Clear Orders button |
+| `ui/disband` | 16x16 | Disband button |
+| `ui/settle` | 16x16 | Found City (settle) button |
+| `cloud/tile_1` | 64x56 | Cloud cover over an unexplored hex (Clouds test setting: Tiles), one of four picked per hex |
+| `cloud/tile_2` | 64x56 | Cloud cover, the second |
+| `cloud/tile_3` | 64x56 | Cloud cover, the third |
+| `cloud/tile_4` | 64x56 | Cloud cover, the fourth |
+| `cloud/puff_small` | 48x32 | A drifting cloud puff (Clouds test setting: Puffs), the smallest |
+| `cloud/puff_medium` | 80x56 | A cloud puff, middle-sized |
+| `cloud/puff_large` | 112x80 | A cloud puff, the largest |
 
 The tests check that this table lists every tag at its size (`pixel_art.rs`), and that every
 shipped file is a tag at its size.

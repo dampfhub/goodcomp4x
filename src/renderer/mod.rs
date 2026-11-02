@@ -161,6 +161,8 @@ pub struct Renderer {
     texture: Texture,
     sprites: Texture,
     pixels: Texture,
+    /// The pixel-art atlas as an ImGui texture.
+    pixel_art_texture: imgui::TextureId,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
@@ -297,7 +299,7 @@ impl Renderer {
         let render_pass = unsafe {
             pipeline::create_render_pass(&logical_device, swapchain_data.format, samples)
         }?;
-        let imgui_renderer = ImGuiRenderer::with_default_allocator(
+        let mut imgui_renderer = ImGuiRenderer::with_default_allocator(
             &vk_instance,
             physical_device,
             logical_device.clone(),
@@ -311,6 +313,9 @@ impl Renderer {
                 ..ImGuiOptions::default()
             }),
         )?;
+        // ImGui draws the pixel art from the same descriptor set: its layout
+        // (one combined image sampler, fragment stage) matches ImGui's.
+        let pixel_art_texture = imgui_renderer.textures().insert(pixels.set);
         let (pipeline_layout, gfx_pipeline) = unsafe {
             pipeline::create_graphics_pipeline(
                 &logical_device,
@@ -365,6 +370,7 @@ impl Renderer {
             texture,
             sprites,
             pixels,
+            pixel_art_texture,
             vertex_buffers,
             vertex_limit: usize::MAX,
             vertices_trimmed: false,
@@ -384,6 +390,12 @@ impl Renderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.window_size = (width, height);
         self.framebuffer_resized = true;
+    }
+
+    /// The pixel-art atlas (`Renderer::new`'s `pixels`) as an ImGui texture,
+    /// for images drawn from it.
+    pub fn pixel_art_texture(&self) -> imgui::TextureId {
+        self.pixel_art_texture
     }
 
     pub fn window_size(&self) -> (u32, u32) {

@@ -64,8 +64,8 @@ use strings::text;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{
-    ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, selection_box, style_imgui,
-    ui_projection,
+    ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, selection_box, set_pixel_texture,
+    style_imgui, ui_projection,
 };
 pub use unit::Team;
 use unit::{Unit, UnitType};

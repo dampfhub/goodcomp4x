@@ -11,6 +11,7 @@ use glam::Vec2;
 use super::fast_hash::HashMap;
 use super::hex::HEX_SIZE;
 use super::mesh;
+use super::pixel_art::{self, Sprite};
 use super::terrain::{Resource, Special};
 use crate::renderer::Vertex;
 
@@ -151,17 +152,32 @@ pub(in crate::game) fn inline_icon(ch: char) -> Option<MapIcon> {
     }
 }
 
-/// Draws the icon `ch` stands for in UI space (pixels, Y up), `height`
-/// pixels tall, centered on `center`. `dim` darkens it to sit in disabled
-/// text.
+/// Draws the icon `ch` stands for, about `height` tall, centered on
+/// `center`: in UI space (pixels, Y up) when `ui`, else in world units.
+/// `dim` darkens it to sit in disabled text. In pixel art
+/// (`pixel_art::active`) it's the icon's sprite: in the UI a whole number of
+/// pixels a texel, so it can come out a little taller than `height`.
 pub(in crate::game) fn push_inline_icon(
     center: Vec2,
     height: f32,
     ch: char,
     dim: bool,
+    ui: bool,
     out: &mut Vec<Vertex>,
 ) {
     let Some(icon) = inline_icon(ch) else { return };
+    if pixel_art::active() {
+        let sprite = Sprite::Icon(icon);
+        let alpha = if dim { 0.4 } else { 1.0 };
+        let drawn = if ui {
+            pixel_art::push_ui(sprite, center, height, None, alpha, out)
+        } else {
+            pixel_art::push_sized(sprite, center, height, [1.0, 1.0, 1.0, alpha], out)
+        };
+        if drawn {
+            return;
+        }
+    }
     let start = out.len();
     // The chip icons are laid out about 20 design units tall.
     push_map_icon_scaled(center, icon, height * 5.0 / HEX_SIZE, out);

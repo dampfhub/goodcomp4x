@@ -114,7 +114,7 @@ impl Face {
             if map_icons::inline_icon(ch).is_some() {
                 let advance = self.icon_advance();
                 let center = origin + Vec2::new(pen + advance / 2.0, self.cap_height / 2.0);
-                map_icons::push_inline_icon(center, self.icon_height(), ch, dim, out);
+                map_icons::push_inline_icon(center, self.icon_height(), ch, dim, true, out);
                 pen += advance;
                 continue;
             }
@@ -181,7 +181,14 @@ pub fn push_text(origin: Vec2, cap_height: f32, text: &str, color: Color, out: &
         if map_icons::inline_icon(ch).is_some() {
             let advance = face.icon_advance();
             let center = origin + Vec2::new(pen + advance / 2.0, face.cap_height / 2.0) * scale;
-            map_icons::push_inline_icon(center, world_icon_height(cap_height), ch, false, out);
+            map_icons::push_inline_icon(
+                center,
+                world_icon_height(cap_height),
+                ch,
+                false,
+                false,
+                out,
+            );
             pen += advance;
             continue;
         }
