@@ -6,14 +6,15 @@ can be read and changed without touching Rust. The files are built into the exec
 
 This is being done in stages (#341). So far the settings menu and its Multiplayer page
 (`text/menus.ini`), the status bar, top bar, Debug panel, view controls and window titles
-(`text/ui.ini`), and the units (`text/units.ini`) read their text from here; everything else
-is still written in the code, and moves over area by area.
+(`text/ui.ini`), the units (`text/units.ini`), and research (`text/research.ini`) read their
+text from here; everything else is still written in the code, and moves over area by area.
 
 | File | What it holds |
 |---|---|
 | `text/menus.ini` | The settings menu (its title, headings, each setting's name, tooltip and values, its buttons and their tooltips, and the notice when a setting changes) and its Multiplayer page (its rows, fields, buttons, tooltips and what it says when a field isn't filled in) |
 | `text/ui.ini` | The screen's frame: the status bar (ImGui) and top bar (classic) with the turn, supply, Menu and End Turn in all its forms and its tooltip; the Debug panel's buttons, scenarios and tooltips; ImGui's view controls; and the panels' window titles |
 | `text/units.ini` | The units: their names, the unit and group trays, each order's button, hint, tooltip and why it's off, the abilities, and what the game says as orders are given (arming, queueing, disbanding, a queue that stops) |
+| `text/research.ini` | Research: the techs' names (what each costs, needs and unlocks is the tree in `src/game/research.rs`), what a locked card says, the research view and its queue, the top bar's research, and what the game says as research is queued and done |
 
 ## An entry
 

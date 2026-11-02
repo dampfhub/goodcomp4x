@@ -13,6 +13,7 @@ use super::{Build, BuildUnit, GATHER_YIELD};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
+use crate::game::research::ResearchForecast;
 use crate::game::unit::Team;
 use crate::game::workers::MINE_METAL;
 
@@ -382,12 +383,14 @@ impl GameState {
     }
 
     /// Tests: a stockpile and supply (`city/supply.rs`) big enough for
-    /// anything a test queues. A test of the supply limit sets
-    /// `extra_supply` back to 0.
+    /// anything a test queues, and every tech (`research.rs`). A test of
+    /// the supply limit sets `extra_supply` back to 0; one of research
+    /// clears the side's `research`.
     #[cfg(test)]
     pub(in crate::game) fn fund(&mut self, team: Team) {
         *self.stock_mut(team) = Stock::whole(999, 999, 999);
         self.extra_supply[team.index()] = 999;
+        self.research_all(team);
     }
 
     /// Adds `build` to the end of `city`'s queue, unpaid, whatever the
@@ -529,6 +532,18 @@ impl GameState {
         if let Some(price) = price {
             *self.stock_mut(team) -= price;
         }
+        // Tests: anything started that its side hadn't unlocked, which the
+        // simulation checks never happens.
+        #[cfg(test)]
+        if price.is_some() {
+            let build = self.lane_build(city, lane, index);
+            if let Some(lock) = self.build_tech_lock(team, build) {
+                self.lock_breaks.push(format!(
+                    "{team:?} started a {} it lacks: {lock}",
+                    build.name()
+                ));
+            }
+        }
         let needed = self.lane_item(city, lane, index).2;
         let c = &mut self.cities[city];
         match lane {
@@ -565,6 +580,13 @@ impl GameState {
     /// changing nothing.
     pub(in crate::game) fn forecast(&self, team: Team) -> QueueForecast {
         let mut stock = self.expected_stock(team);
+        // Research pays first (`work_research`).
+        if let ResearchForecast::Works {
+            price: Some(price), ..
+        } = self.research_with(team, stock)
+        {
+            stock -= price;
+        }
         let mut supply = self.supply_room(team);
         let mut lanes = Vec::new();
         for city in (0..self.cities.len()).filter(|&i| self.cities[i].team == team) {

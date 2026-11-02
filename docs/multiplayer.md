@@ -68,7 +68,7 @@ Every machine runs the whole game (`src/game/multiplayer.rs`). Turns are simulta
 player's planning stays on their machine until they end it. Then their side's **plan**
 (`TeamPlan`) goes to the host: their units' orders and queues, their cities' queues, citizens
 and priority order, their placed jobs and recalled workers, their troops' orders inside city interiors,
-and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
+their research queue, and their stockpile; a unit missing from it was disbanded, and a city new since the turn began
 was founded by the settler that stood there. A city founded too near one another side's plan
 founded earlier in side order (each was checked only against the turn's start) isn't founded,
 and its settler stays. Once the host has every human side's plan, it
@@ -169,13 +169,15 @@ can watch or change what's sent. What's in place:
   `Resolve` the same way, and that it carries a plan the guest sent for its own side, and the
   seat and scenario in its `Welcome`.
 - **Cheats the checks catch**: spending is accounted exactly (the stockpile plus every paid
-  queue item and placed job must be worth what it was when the turn began, so nothing is free);
+  queue item, paid tech and placed job must be worth what it was when the turn began, so nothing is free);
   planning pays for no queued item, since a build is paid as the turn's economy starts work on
   it, the same on every machine (`work_queues`), so a plan's queues hold unpaid items with no
   work and the paid items the city had, each once, with the work it had (no item marked paid,
   none copied, none refunded without being taken off); the work kept on a worker job can't be
-  added (or copied onto another job), only kept or cleared; a city queues only what it can train (no Cavalry
-  or Armored, ships only with a Harbor, no growing past the cap, one Scout at a time, and no new
+  added (or copied onto another job), only kept or cleared; a side queues and places only what
+  it has researched, and researches only techs of the tree, each once, none it has, each after
+  what it needs (its research queue kept paid as a city's is); a city queues only what it can
+  train (no Cavalry or Armored, ships only with a Harbor, no growing past the cap, one Scout at a time, and no new
   Settler below population 3), and founds only where the founding rules allow (open land, no
   ruins, 6 hexes from every city, those it founds that turn included), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city

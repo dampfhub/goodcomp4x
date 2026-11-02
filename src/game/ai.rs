@@ -16,6 +16,7 @@ use super::combat;
 use super::fast_hash::{HashMap, HashSet};
 use super::fog::{Fog, Sighting};
 use super::hex::Hex;
+use super::research::{Tech, Unlock};
 use super::settings::ANIMALS_MANY;
 use super::unit::{Team, Unit, UnitType};
 use super::workers::{FARM_FOOD, JobKind, PASTURE_FOOD, WorkerJob};
@@ -308,6 +309,15 @@ const AI_SITE_STEP_COST: i32 = 2;
 const AI_REFUSED_RADIUS: i32 = 2;
 /// How far around a site its land counts toward its value.
 const AI_SITE_RADIUS: i32 = 2;
+/// The troops the AI researches first, in order: those it trains
+/// (`plan_ai_cities`), Ranged and Cavalry before the Pikeman, which it
+/// trains only against Cavalry it sees.
+const AI_RESEARCH: [BuildUnit; 4] = [
+    BuildUnit::Ranged,
+    BuildUnit::Cavalry,
+    BuildUnit::Pikeman,
+    BuildUnit::Armored,
+];
 
 impl GameState {
     /// The teams the AI plays: every team but the player's that still has a
@@ -321,6 +331,33 @@ impl GameState {
                     || self.cities.iter().any(|c| c.team == team)
             })
             .collect()
+    }
+
+    /// What `team` researches: with a city and nothing queued, the tech for
+    /// the next troop of `AI_RESEARCH` it lacks (and what that needs first).
+    /// It researches nothing else: it builds nothing else that a tech
+    /// unlocks, and research costs food its cities would grow on. A tech that waits for
+    /// the stockpile stays queued: research pays first, so the cities spend
+    /// only what it leaves once the stockpile can pay for it.
+    fn plan_ai_research(&mut self, team: Team) {
+        // Not before its first troop: the opening's food goes to it and to
+        // growth.
+        let troops = self.units.iter().any(|u| {
+            u.team == team && u.unit_type != UnitType::Scout && !self.settlers.contains(&u.id)
+        });
+        if !self.research(team).queue.is_empty()
+            || !troops
+            || !self.cities.iter().any(|c| c.team == team)
+        {
+            return;
+        }
+        let wanted = AI_RESEARCH
+            .into_iter()
+            .filter_map(|unit| Tech::unlocking(Unlock::Unit(unit)))
+            .find(|&tech| !self.researched(team, tech));
+        if let Some(tech) = wanted {
+            self.queue_research(team, tech);
+        }
     }
 
     /// What `team`'s cities and Barracks queue: one item in each empty
@@ -758,6 +795,9 @@ impl GameState {
         // Settlers found their cities, or head for a site, before the cities
         // plan: a city founded now plans its first build this turn.
         self.plan_ai_settlers(team, &known, &mut floods);
+        // Research first: it pays first, and the cities plan on what it
+        // leaves (`plan_ai_cities`).
+        self.plan_ai_research(team);
         self.plan_ai_cities(team, &known);
         self.plan_ai_workers(team, |hex| {
             known.in_den_territory(hex) || known.in_danger(hex)

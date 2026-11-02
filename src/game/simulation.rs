@@ -23,11 +23,13 @@ use super::city::{
 };
 use super::fast_hash::{HashMap, HashSet};
 use super::hex::Hex;
+use super::research::{Unlock, queue_issue};
 use super::ruins::RUIN_HOLD_TURNS;
 use super::scenario::Scenario;
 use super::settings::{ANIMALS_MANY, Settings};
 use super::terrain::{Resource, Terrain};
 use super::unit::Team;
+use super::workers::JobKind;
 use super::{GameState, PLAYER_TEAM};
 
 const TURNS: u32 = 40;
@@ -309,6 +311,59 @@ fn check_invariants(game: &GameState, context: &str) {
         "{context}: training started past the side's supply: {:?}",
         game.supply_overruns
     );
+    // Research (`research.rs`): nothing a side hasn't unlocked is ever
+    // started or built, or even queued or placed for its workers; its
+    // research queue holds only what it can research, in an order it can.
+    assert!(
+        game.lock_breaks.is_empty(),
+        "{context}: built what its side lacked: {:?}",
+        game.lock_breaks
+    );
+    for city in &game.cities {
+        let builds = city
+            .queue
+            .iter()
+            .map(|q| q.build)
+            .chain(city.barracks_queue.iter().map(|q| Build::Unit(q.build)));
+        for build in builds {
+            assert!(
+                game.build_unlocked(city.team, build),
+                "{context}: {:?} city {} queued a {} it lacks",
+                city.team,
+                city.id + 1,
+                build.name()
+            );
+        }
+    }
+    let jobs = game
+        .cities
+        .iter()
+        .flat_map(|c| c.worker_jobs.iter().map(move |j| (c.team, j.kind)))
+        .chain(
+            game.field_workers
+                .iter()
+                .filter_map(|w| w.job.map(|j| (w.team, j.kind))),
+        );
+    for (team, kind) in jobs {
+        if let JobKind::Build(building) = kind {
+            assert!(
+                game.unlocked(team, Unlock::Building(building)),
+                "{context}: {team:?} placed a {} it lacks",
+                building.name()
+            );
+        }
+    }
+    for team in Team::ALL {
+        let research = game.research(team);
+        assert_eq!(
+            queue_issue(&research.done, &research.queue),
+            None,
+            "{context}: {team:?}'s research queue"
+        );
+        if let Some(head) = research.queue.first() {
+            assert!(head.progress <= head.build.work() && (head.paid || head.progress == 0));
+        }
+    }
     let mut ids = HashSet::default();
     let mut occupants: HashMap<_, Vec<Team>> = HashMap::default();
     for (idx, unit) in game.units.iter().enumerate() {
@@ -900,6 +955,10 @@ fn ai_against_ai_keeps_the_board_consistent_in_every_scenario() {
             assert!(economy.trained > 0, "{name}: no city trained a unit");
             assert!(economy.grew, "{name}: no city grew in {TURNS} turns");
             assert!(economy.barracks, "{name}: no side built a Barracks");
+            assert!(
+                game.research.iter().any(|r| !r.done.is_empty()),
+                "{name}: no side researched a tech"
+            );
         }
         // The Cities map puts Horses and Iron beside both cities: their Barracks use them.
         if scenario == Scenario::Cities {

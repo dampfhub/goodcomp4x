@@ -31,6 +31,7 @@ behavior.
 | `city/supply.rs` | the military supply limit: what a side's cities give (`supply_from_cities`, with `SUPPLY_PER_CITY`, `SUPPLY_PER_CITIZEN` for the first `FULL_SUPPLY_CITIZENS` and 1 per `CITIZENS_PER_SUPPLY_PAST_CLUSTER` past them: the one formula), what each unit uses (`unit_type_supply`, the table; settlers and workers none), what counts against it (units alive and every queued item, `supply_used`) and what starting an item needs room in (units and paid items, `supply_started`, `supply_room`, which `work_queues` keeps new work within), and why a card is locked (`supply_lock`) |
 | `city/builds.rs` | `Building`, `Build`, `BuildUnit`; city and Barracks queues (clearing one takes each item off through `take_queue_item` / `take_barracks_item`), Harbor naval spawning, the rules of a building's site (`ai_site_issue`), resource support from Forge/Stable, prices and turns of every build, the Grow build, the city-queue-only Settler and Scout (`city_build_issue`: population 3, one Scout at a time, and supply for any troop, ship or Scout; `waits_for_citizens`), `complete_builds` (buildings with a site are built by workers, `workers.rs`) |
 | `city/founding.rs` | settlers founding cities: the founding rules (`founding_issue`, `MIN_CITY_DISTANCE`) and a new city (`found_city`, a worker only for a side's first) |
+| `research.rs` | research (#392): the tech tree as one table (`TECHS`: each tech's id, name from `text/research.ini`, price, turns, prerequisites and unlocks; what no tech unlocks is free), each side's `Research` (its techs and its queue of `Queued<Tech>`), queuing a tech with what it needs first (`research_path`), taking one off with what needs it, reordering only in an order it can be researched (`queue_issue`), paying for and working the first tech before every city queue (`work_research`) and finishing it (`complete_research`), and the locks (`unlocked`, `tech_lock`, `build_tech_lock`) |
 | `workers.rs` | workers: each city's pool and job list (everything the city places on the map, buildings with a site included: `JobKind`, placed from the open city's production list with `arm_worker_job`, paid when placed with `try_queue_job` and refunded if taken off or dropped), the Workshop speedup (`job_turns`), Work Camp bases, improvements (`improvement`) and cutting a forest (`JobKind::CutForest`, the one job that changes the ground: `complete_job`), the AI's worker jobs (`plan_ai_workers`), the workers' last step of the turn (walking, working, going home), capture and death; structures (walls and gates on hex edges, outposts and forts on tiles) and the passability they add (`can_step`, `can_cross`) |
 | `city/view.rs` | opening and leaving the city and Barracks views, map clicks while one is open (`city_click_at`: a click on one of the player's unit tokens, hit as `draw.rs` draws it (`unit_token_contains`), selects the unit and closes the view; anywhere else is `city_click`, where one of the player's cities or Barracks opens its view, from any view), stopping placing (`stop_placing`), the yields toggle, `end_planning` |
 | `city/interior.rs` | city tactical grid, projecting adjacent troops, independent interior orders, command-post capture (pushing units of other sides off the center: `push_off_city_center`) |
@@ -59,6 +60,7 @@ behavior.
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, idle queues, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`; `classic_tooltip_at` picks classic's); number and text formatting (`quantity`, `ability_text`, `wrap`) |
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
+| `ui/research.rs` | the research view (T): the tree by tier in the Selection panel (`research_tray`, a card and a line per tech), the research queue in the queue panel (`research_queue_panel`, `QueueKind::Research`), the top bar's research (`research_spans`); opening and closing it (`toggle_research`, `research_view`: it shows only with nothing else selected, and closes behind anything opened over it) |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `sprites.rs` | world icon and terrain sprite atlas, baked once from vector artwork; padded premultiplied RGBA mipmaps and one quad per placement |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
@@ -112,6 +114,13 @@ behavior.
   price. `simulation.rs` checks that no stockpile goes negative, that an unpaid item has no
   work, and that no item has more work than it needs. In a network game planning can't pay:
   `check_plan` refuses a plan with a paid item or work the turn didn't start with.
+- **Research** (`research.rs`): anything that queues a troop or ship or places a building
+  checks `tech_lock` (through `city_build_issue`, `barracks_lock` or `job_kind_unavailable`);
+  what no tech in `TECHS` unlocks is free. Tests' `fund` also gives a side every tech
+  (`research_all`); a test of research clears its `research`. `simulation.rs` checks nothing a
+  side lacks is ever queued, placed, started or built (`lock_breaks`) and that each research
+  queue is in an order it can be researched; `check_plan` refuses a plan that queues or places
+  what its side lacks, or a research queue out of order.
 - **Supply** (`city/supply.rs`): anything that queues a troop, ship or Scout checks
   `supply_lock` (through `city_build_issue` or `barracks_lock`), and `work_queues` starts one
   only with room (`supply_room`). Tests' `fund` also lifts a side's supply (`extra_supply`);
@@ -145,7 +154,7 @@ behavior.
 ## Recipes
 
 - **Text:** an area whose text has moved to `text/` (so far the menus, the status and top
-  bars, the Debug panel, the window titles and the units) takes new words as entries there,
+  bars, the Debug panel, the window titles, the units and research) takes new words as entries there,
   asked for with `text!("tag")` or `tooltip!("tag", name = value)` (`strings.rs`,
   `docs/text.md`), the tag always a literal. The tests check each tag used exists with its
   placeholders and each entry is used. A key is never spelled out in a file: the entry has a

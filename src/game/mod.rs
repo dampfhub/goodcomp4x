@@ -24,6 +24,7 @@ mod order_queue;
 mod orders;
 #[cfg(test)]
 mod perf;
+mod research;
 mod ruins;
 mod scenario;
 mod settings;
@@ -90,6 +91,11 @@ pub struct GameState {
     /// Each side's food, wood and metal, indexed by `Team::index`
     /// (`city/economy.rs`).
     stockpiles: [city::Stock; Team::ALL.len()],
+    /// Each side's research: its techs and its research queue, by
+    /// `Team::index` (`research.rs`).
+    research: [research::Research; Team::ALL.len()],
+    /// Whether the research view is open (`research_view`, `ui/research.rs`).
+    research_open: bool,
     /// Debug setting: a city's production speeds its builds on top of the
     /// fixed time (`work_rate`). Kept across scenario switches and loads.
     production_speedup: bool,
@@ -105,6 +111,10 @@ pub struct GameState {
     /// (`city/supply.rs`), which `simulation.rs` checks never happens.
     #[cfg(test)]
     supply_overruns: Vec<String>,
+    /// Tests: each time something its side hadn't unlocked was started or
+    /// built (`research.rs`), which `simulation.rs` checks never happens.
+    #[cfg(test)]
+    lock_breaks: Vec<String>,
     /// Tests: the cities that gathered by themselves in the last economy,
     /// their queues working nothing (`auto_gather`), which `simulation.rs`
     /// checks against what their queues did.
@@ -154,6 +164,7 @@ pub struct GameState {
     hovered_job: Option<(Hex, Option<Hex>)>,
     city_queue_scroll: usize,
     barracks_queue_scroll: usize,
+    research_queue_scroll: usize,
     queue_drag: Option<ui::QueueDrag>,
     notice: String,
     grid: HexGrid,
@@ -296,11 +307,15 @@ impl GameState {
         let mut game = Self {
             cities: Vec::new(),
             stockpiles: [city::STARTING_STOCK; Team::ALL.len()],
+            research: Default::default(),
+            research_open: false,
             production_speedup: false,
             special_trained: [[0; 2]; Team::ALL.len()],
             lifetime_special_cap: false,
             #[cfg(test)]
             supply_overruns: Vec::new(),
+            #[cfg(test)]
+            lock_breaks: Vec::new(),
             #[cfg(test)]
             auto_gathered: Vec::new(),
             #[cfg(test)]
@@ -326,6 +341,7 @@ impl GameState {
             hovered_job: None,
             city_queue_scroll: 0,
             barracks_queue_scroll: 0,
+            research_queue_scroll: 0,
             queue_drag: None,
             notice: String::new(),
             grid: HexGrid::new(GRID_RADIUS, terrain),
@@ -469,6 +485,11 @@ impl GameState {
                 game.next_unit_id += 1;
                 game.units.push(Unit::new(id, pos, team, kind));
             }
+        }
+        // A test of ships: both sides have every tech, ships and shore
+        // batteries among them.
+        for team in [Team::Blue, Team::Red] {
+            game.research_all(team);
         }
         for city in 0..game.cities.len() {
             game.auto_assign_city(city);

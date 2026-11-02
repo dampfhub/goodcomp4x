@@ -217,11 +217,12 @@ impl GameState {
     }
 
     /// What the top bar shows beside the turn number, in both
-    /// presentations: the stockpile (`stockpile_line`), then the supply
-    /// (`supply_line`).
+    /// presentations: the stockpile (`stockpile_line`), the supply
+    /// (`supply_line`), then the research (`research_spans`).
     pub(super) fn status_line(&self) -> Line {
         let mut line = self.stockpile_line();
         line.extend(self.supply_line());
+        line.extend(self.research_spans());
         line
     }
 
@@ -230,6 +231,7 @@ impl GameState {
     pub(super) fn brief_status_line(&self) -> Line {
         let mut line = stock_spans(self.stock(self.local_team), None);
         line.extend(self.supply_line());
+        line.extend(self.research_spans());
         line
     }
 

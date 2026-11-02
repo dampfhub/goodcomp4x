@@ -560,6 +560,7 @@ impl App {
             Command::QueueHeadDown => game.move_selected_city_queue_head(false),
             Command::Scenario(scenario) => game.switch_scenario(scenario),
             Command::Yields => game.toggle_yields(),
+            Command::Research => game.toggle_research(),
             Command::Guard => game.toggle_guard(),
             Command::Alert => game.toggle_alert(),
             Command::Save => game.save_state(),

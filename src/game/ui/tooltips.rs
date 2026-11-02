@@ -591,10 +591,28 @@ impl GameState {
                     "REFUNDED IF PAID (WORK STARTED). ITS WORK IS LOST.".into(),
                     None,
                 ),
-                Target::ClearCityQueue | Target::ClearBarracksQueue => (
+                Target::ClearCityQueue
+                | Target::ClearBarracksQueue
+                | Target::ClearResearchQueue => (
                     "CLEAR QUEUE".into(),
                     "CLICK".into(),
                     "REMOVES EVERY ITEM, EACH REFUNDED IF PAID. THEIR WORK IS LOST.".into(),
+                    None,
+                ),
+                Target::OpenResearch => (
+                    text!("research_button").into(),
+                    Command::Research.key(),
+                    tooltip!("research_button").into(),
+                    None,
+                ),
+                Target::Research(tech) => {
+                    let (description, shortcut, caution) = self.tech_tooltip(tech);
+                    (tech.name().into(), shortcut, description, caution)
+                }
+                Target::ResearchQueueRemove(_) => (
+                    text!("research_remove").into(),
+                    "CLICK".into(),
+                    tooltip!("research_remove").into(),
                     None,
                 ),
                 Target::WorkerJobRemove(_) => {

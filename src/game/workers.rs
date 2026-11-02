@@ -22,6 +22,7 @@ use super::GameState;
 use super::city::{BuildUnit, Building, Site, Stock, stock_icons};
 use super::fast_hash::HashMap;
 use super::hex::{Hex, edge};
+use super::research::Unlock;
 use super::terrain::{Feature, Terrain};
 use super::unit::{Team, Unit};
 
@@ -663,6 +664,9 @@ impl GameState {
             if self.building_job_queued(city, building) {
                 return Some(format!("{} PLACED ALREADY", building.name()));
             }
+            if let Some(lock) = self.tech_lock(c.team, Unlock::Building(building)) {
+                return Some(lock);
+            }
             if matches!(building, Building::Harbor | Building::CoastalBattery)
                 && !self.city_is_coastal(city)
             {
@@ -1199,6 +1203,15 @@ impl GameState {
         let hex = job.hex;
         match job.kind {
             JobKind::Build(building) => {
+                // Tests: a building its side hadn't unlocked, which the
+                // simulation checks is never built.
+                #[cfg(test)]
+                if let Some(lock) = self.tech_lock(team, Unlock::Building(building)) {
+                    self.lock_breaks.push(format!(
+                        "{team:?} built a {} it lacks: {lock}",
+                        building.name()
+                    ));
+                }
                 let c = &mut self.cities[city];
                 c.set_placed_site(building, hex);
                 if building == Building::CoastalBattery {

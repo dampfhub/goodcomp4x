@@ -504,6 +504,7 @@ fn builds_are_paid_when_work_starts_and_refunded_only_if_paid() {
 #[test]
 fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
     let mut g = GameState::city_scenario();
+    g.research_all(Team::Blue);
     g.units.clear();
     g.selected_city = Some(0);
     // Food and metal for a Melee but no wood for the Siege ahead of it.
@@ -1242,6 +1243,7 @@ fn a_workshop_halves_an_adjacent_buildings_work() {
 #[test]
 fn placed_buildings_cannot_share_a_site() {
     let mut g = GameState::city_scenario();
+    g.research_all(Team::Blue);
     g.explore();
     let site = Hex::new(-2, 0);
     g.cities[0].mill = Some(site);
@@ -1309,6 +1311,7 @@ fn barracks_queue_is_independent_and_completes_in_order() {
 #[test]
 fn resource_units_require_a_barracks_on_the_matching_resource() {
     let mut g = GameState::city_scenario();
+    g.research_all(Team::Blue);
     g.selected_city = Some(0);
     g.cities[0].barracks = Some(Hex::new(-2, 0));
     assert!(g.barracks_can_train(0, BuildUnit::Cavalry));

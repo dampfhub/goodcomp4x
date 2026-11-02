@@ -121,6 +121,7 @@ impl GameState {
                     self.cities[city].worker_scroll = offset;
                 }
             }
+            QueueKind::Research => self.research_queue_scroll = offset,
             QueueKind::Priority => {}
         }
     }
@@ -171,6 +172,7 @@ impl GameState {
             QueueKind::Workers => self
                 .worker_list_city()
                 .map_or(0, |city| self.cities[city].worker_scroll),
+            QueueKind::Research => self.research_queue_scroll,
             QueueKind::Priority => 0,
         }
         // Kept past the end (by removing rows), it steps back from the end.
@@ -267,6 +269,10 @@ impl GameState {
         if source == target || self.is_playing_out() {
             return;
         }
+        if kind == QueueKind::Research {
+            self.reorder_research(source, target);
+            return;
+        }
         let city = match kind {
             QueueKind::Workers => self.worker_list_city(),
             _ => self.selected_city.or(self.selected_barracks),
@@ -305,6 +311,8 @@ impl GameState {
                     self.set_selected_city_priorities(priorities);
                 }
             }
+            // Reordered above: it belongs to no city.
+            QueueKind::Research => {}
         }
     }
 
@@ -315,7 +323,7 @@ impl GameState {
     /// A queue panel's title, with its Clear button (`clear`) at the end of
     /// the line: every item off, refunded. Dimmed while a turn plays out,
     /// when the queue can't change.
-    fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
+    pub(super) fn queue_title(&self, title: &str, clear: Target, panel: &mut PanelBuilder) {
         panel.title_with_button(
             vec![(title.into(), LABEL_TEXT)],
             ButtonSpec::new(clear, "CLEAR", "").unavailable(

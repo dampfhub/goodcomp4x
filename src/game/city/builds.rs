@@ -367,7 +367,7 @@ impl BuildUnit {
 }
 
 /// What taking one item off a queue gave back, for its notice.
-fn refund_word(paid: bool) -> &'static str {
+pub(in crate::game) fn refund_word(paid: bool) -> &'static str {
     if paid {
         "REFUNDED"
     } else {
@@ -377,7 +377,7 @@ fn refund_word(paid: bool) -> &'static str {
 
 /// What clearing a queue of `count` items, `paid` of them paid for, gave
 /// back, for its notice.
-fn cleared_words(count: usize, paid: usize) -> String {
+pub(in crate::game) fn cleared_words(count: usize, paid: usize) -> String {
     match paid {
         0 => format!("{count} UNPAID, NOTHING TO REFUND"),
         _ if paid == count => format!("{count} REFUNDED"),
@@ -543,12 +543,15 @@ impl GameState {
         self.queue_in_city(city, build);
     }
 
-    /// Why `city` can't queue `build` now: a Settler needs
-    /// `SETTLER_MIN_POPULATION` citizens, a city queues one Scout at a time,
-    /// and a troop, ship or Scout needs room in its side's supply
-    /// (`supply_lock`).
+    /// Why `city` can't queue `build` now: its side hasn't researched it
+    /// (`tech_lock`), a Settler needs `SETTLER_MIN_POPULATION` citizens, a
+    /// city queues one Scout at a time, and a troop, ship or Scout needs room
+    /// in its side's supply (`supply_lock`).
     pub(in crate::game) fn city_build_issue(&self, city: usize, build: Build) -> Option<String> {
         let c = &self.cities[city];
+        if let Some(lock) = self.build_tech_lock(c.team, build) {
+            return Some(lock);
+        }
         match build {
             Build::Settler if c.population < SETTLER_MIN_POPULATION => {
                 Some(format!("NEEDS POPULATION {SETTLER_MIN_POPULATION}"))
@@ -765,6 +768,10 @@ impl GameState {
             return;
         }
         if self.is_resolving() {
+            return;
+        }
+        if self.research_view() {
+            self.debug_complete_research();
             return;
         }
         let (city, lane) = match (self.selected_barracks, self.selected_city) {

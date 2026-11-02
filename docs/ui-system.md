@@ -153,6 +153,12 @@ clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes (its name, tooltip and
 values are entries in `text/menus.ini`), and both presentations show it
 with its control.
+**The research view** (`ui/research.rs`, T) is a kind of selection (`SelectionKind::Research`,
+in the City / Building view): its tree (`research_tray`) fills the Selection slot and the
+research queue (`research_queue_panel`, rows of `QueueKind::Research`, dragged and removed as a
+city's are) the queue slot, in both presentations, so it needs no slot of its own. It shows
+only while nothing else is selected (`research_view`), and anything opened over it closes it
+(`close_research_behind`, each frame). It has no captured (boxed) form.
 **Text files.** The menus' words come from `text/menus.ini`, and the status and
 top bars', the Debug panel's and the window titles' from `text/ui.ini`, and the
 units' (trays, orders, abilities) from `text/units.ini`, through

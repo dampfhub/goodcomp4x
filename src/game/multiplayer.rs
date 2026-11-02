@@ -25,17 +25,18 @@ use super::city::{
     grow_price, in_interior, managers_for, queues_supply, supply_from_cities,
 };
 use super::hex::Hex;
+use super::research::{TECHS, Tech, Unlock, queue_issue};
 use super::settings::{ANIMALS_MANY, Settings};
 use super::strings::text;
 use super::terrain::{Feature, Resource};
 use super::unit::{Team, TurnOrder};
-use super::workers::WorkerJob;
+use super::workers::{JobKind, WorkerJob};
 
 /// Bumped whenever a message or a plan changes shape, or the rules a turn
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 40;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -142,6 +143,9 @@ pub struct TeamPlan {
     pub workers: Vec<WorkerPlan>,
     /// Orders to its troops inside city interiors.
     pub fighters: Vec<FighterPlan>,
+    /// Its research queue (`research.rs`), each tech with whether it's paid
+    /// for and its work, as a city's queue.
+    pub research: Vec<Queued<Tech>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -230,14 +234,19 @@ type CityBooks<'a> = (
 );
 
 /// What a side has paid for and not yet got: every paid item in its cities'
-/// queues and Barracks' queues and every job it has placed, at the price it
-/// paid. Its city's paid Grows were priced a citizen apart, from its
-/// population up (`GameState::item_price`). Unpaid items cost nothing yet.
+/// queues, Barracks' queues and research queue, and every job it has
+/// placed, at the price it paid. Its city's paid Grows were priced a citizen
+/// apart, from its population up (`GameState::item_price`). Unpaid items
+/// cost nothing yet.
 fn committed<'a>(
     cities: impl Iterator<Item = CityBooks<'a>>,
     field_jobs: impl Iterator<Item = WorkerJob>,
+    research: &[Queued<Tech>],
 ) -> Stock {
     let mut total = Stock::default();
+    for item in research.iter().filter(|q| q.paid) {
+        total += item.build.price();
+    }
     for (population, queue, barracks, jobs) in cities {
         let mut grows = 0;
         for item in queue.iter().filter(|q| q.paid) {
@@ -1153,6 +1162,13 @@ impl GameState {
                 return bad(format!("CITY AT ({}, {})", city.pos.q, city.pos.r));
             }
             let at = format!("CITY AT ({}, {})", city.pos.q, city.pos.r);
+            // Its workers build only what its side has researched.
+            if city.worker_jobs.iter().any(|j| match j.kind {
+                JobKind::Build(building) => !start.unlocked(team, Unlock::Building(building)),
+                _ => false,
+            }) {
+                return bad(format!("{at}: A BUILDING IT HASN'T RESEARCHED"));
+            }
             if !city.priorities.is_order() {
                 return bad(format!(
                     "{at}: A PRIORITY ORDER THAT ISN'T FOOD, WOOD AND METAL"
@@ -1178,16 +1194,21 @@ impl GameState {
             if city.held_workers > before.map_or(0, |c| c.held_workers) {
                 return bad(format!("{at}: WORKERS IT DIDN'T HOLD"));
             }
-            // Its queue holds what a city trains: no Cavalry or Armored,
-            // ships only with a Harbor, no growing past the cap, one Scout
-            // at a time, and no new Settler below the population it needs
-            // (one it had queued may wait for citizens).
+            // Its queue holds what a city trains: only what its side has
+            // researched, no Cavalry or Armored, ships only with a Harbor, no
+            // growing past the cap, one Scout at a time, and no new Settler
+            // below the population it needs (one it had queued may wait for
+            // citizens). Its Barracks', only troops its side has researched.
             let harbor = before.is_some_and(|c| c.placed_site(Building::Harbor).is_some());
-            let trainable = |item: &Queued<Build>| match item.build {
-                Build::Unit(unit) => {
-                    unit.required_resource().is_none() && (!unit.unit_type().is_naval() || harbor)
-                }
-                _ => true,
+            let trainable = |item: &Queued<Build>| {
+                start.build_unlocked(team, item.build)
+                    && match item.build {
+                        Build::Unit(unit) => {
+                            unit.required_resource().is_none()
+                                && (!unit.unit_type().is_naval() || harbor)
+                        }
+                        _ => true,
+                    }
             };
             let count = |queue: &[Queued<Build>], build: Build| {
                 queue.iter().filter(|q| q.build == build).count()
@@ -1204,10 +1225,10 @@ impl GameState {
             let barracks = before.is_some_and(|c| c.barracks.is_some());
             if !city.barracks_queue.is_empty()
                 && (!barracks
-                    || city
-                        .barracks_queue
-                        .iter()
-                        .any(|q| q.build.unit_type().is_naval()))
+                    || city.barracks_queue.iter().any(|q| {
+                        q.build.unit_type().is_naval()
+                            || !start.build_unlocked(team, Build::Unit(q.build))
+                    }))
             {
                 return bad(format!("{at}: A BARRACKS BUILD IT CAN'T MAKE"));
             }
@@ -1301,6 +1322,19 @@ impl GameState {
                 "MORE TROOPS THAN ITS SUPPLY ALLOWS ({}/{cap})",
                 units + queued_now
             ));
+        }
+        // Research (`research.rs`): techs of the tree, each once, none it
+        // has, each after what it needs; paid, as a city's queue, only for
+        // what it had paid for, with the work it had.
+        let research = start.research(team);
+        if plan.research.len() > TECHS.len() {
+            return bad("RESEARCH: TOO LONG".into());
+        }
+        if let Some(why) = queue_issue(&research.done, &plan.research) {
+            return bad(format!("RESEARCH: {why}"));
+        }
+        if !keeps_what_was_paid(&research.queue, &plan.research) {
+            return bad("RESEARCH: PAYMENT OR PROGRESS IT DIDN'T MAKE".into());
         }
         // Workers out on the map: its own, with jobs on the map.
         for worker in &plan.workers {
@@ -1408,6 +1442,7 @@ impl GameState {
                     .iter()
                     .filter(|w| w.team == team)
                     .filter_map(|w| w.job),
+                &start.research(team).queue,
             );
         let after = plan.stock
             + committed(
@@ -1420,6 +1455,7 @@ impl GameState {
                     )
                 }),
                 plan.workers.iter().filter_map(|w| w.job),
+                &plan.research,
             );
         let stock = plan.stock;
         if stock.food < 0 || stock.wood < 0 || stock.metal < 0 || after != before {
@@ -1621,6 +1657,7 @@ impl GameState {
             cities,
             workers,
             fighters,
+            research: self.research(team).queue.clone(),
         }
     }
 
@@ -1629,6 +1666,7 @@ impl GameState {
     pub(super) fn apply_plan(&mut self, plan: &TeamPlan) {
         let team = plan.team;
         *self.stock_mut(team) = plan.stock;
+        self.research[team.index()].queue = plan.research.clone();
         // A city founded this turn too close to one another side's plan
         // founded before it (`check_plan` saw only the turn's start) isn't
         // founded, and its settler stays.
@@ -1729,8 +1767,9 @@ impl GameState {
 
     /// A fingerprint of the game's state, the same on every machine that
     /// resolved the same turns the same way: units, cities, the stockpiles,
-    /// workers, what's built on the map, the animals' dens and how much of
-    /// it each side's own memory holds (`side_fog`, which the AI plans on).
+    /// each side's research, workers, what's built on the map, the animals'
+    /// dens and how much of it each side's own memory holds (`side_fog`,
+    /// which the AI plans on).
     /// Views (camera, the player's fog memory, panels) aren't in it.
     pub fn checksum(&self) -> u64 {
         let mut h = DefaultHasher::new();
@@ -1766,6 +1805,12 @@ impl GameState {
         }
         for stock in &self.stockpiles {
             (stock.food, stock.wood, stock.metal).hash(&mut h);
+        }
+        for research in &self.research {
+            research.done.iter().collect::<Vec<_>>().hash(&mut h);
+            for q in &research.queue {
+                (q.build, q.paid, q.progress).hash(&mut h);
+            }
         }
         let mut workers: Vec<_> = self.field_workers.iter().collect();
         workers.sort_by_key(|w| w.id);
@@ -3065,6 +3110,9 @@ mod tests {
             .find(|h| guest.grid.is_passable(*h) && !c.works(*h))
             .unwrap();
         let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        // A Siege and a Ranged, which take research.
+        guest.research_all(GUEST_SEAT);
+        start.research_all(GUEST_SEAT);
         for c in [&mut guest.cities[city], &mut start.cities[city]] {
             c.barracks = Some(barracks);
             c.queue = vec![
@@ -3115,7 +3163,7 @@ mod tests {
         start.cities[city].queue = plan.cities[0].queue.clone();
         start.cities[city]
             .queue
-            .push(Queued::new(Build::Unit(BuildUnit::Ranged)));
+            .push(Queued::new(Build::Unit(BuildUnit::Melee)));
         let mut kept = plan.clone();
         kept.cities[0].queue = start.cities[city].queue.clone();
         assert_eq!(host.check_plan(&kept), Ok(()));
@@ -3591,6 +3639,35 @@ mod tests {
         let mut plan = good.clone();
         plan.turn = 7;
         refused(&mut host, plan);
+        // Research: a tech not in the tree, one twice, one ahead of what it
+        // needs, one paid for as it's queued, and builds its side hasn't
+        // researched, a troop and a building.
+        let tech = |id: &str| Tech::all().find(|t| TECHS[t.0 as usize].id == id).unwrap();
+        for research in [
+            vec![Queued::new(Tech(200))],
+            vec![Queued::new(tech("I-A")), Queued::new(tech("I-A"))],
+            vec![Queued::new(tech("II-A"))],
+            vec![Queued::prepaid(tech("I-A"))],
+            vec![Queued::new(tech("I-A")); TECHS.len() + 1],
+        ] {
+            let mut plan = good.clone();
+            plan.research = research;
+            let why = refused(&mut host, plan);
+            assert!(why.contains("RESEARCH"), "{why}");
+        }
+        let mut plan = good.clone();
+        plan.cities[0]
+            .queue
+            .push(Queued::new(Build::Unit(BuildUnit::Ranged)));
+        refused(&mut host, plan);
+        let mut plan = good.clone();
+        let site = plan.cities[0].pos.neighbors()[0];
+        plan.cities[0]
+            .worker_jobs
+            .push(WorkerJob::on_tile(site, JobKind::Build(Building::Mill)));
+        plan.stock -= JobKind::Build(Building::Mill).price();
+        let why = refused(&mut host, plan);
+        assert!(why.contains("RESEARCHED"), "{why}");
         // Nothing reached the game, and a sound plan still does.
         assert_eq!(host.checksum(), before);
         assert!(host.lockstep.as_ref().unwrap().plans.is_empty());
@@ -3729,6 +3806,7 @@ mod tests {
                     )
                 }),
                 plan.workers.iter().filter_map(|w| w.job),
+                &plan.research,
             );
             let had = good.stock
                 + committed(
@@ -3741,6 +3819,7 @@ mod tests {
                         )
                     }),
                     good.workers.iter().filter_map(|w| w.job),
+                    &good.research,
                 );
             plan.stock = had - spent;
             if host.check_plan(&plan).is_err() {
@@ -3841,6 +3920,22 @@ mod tests {
         assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
         // Nobody joins a game under way.
         assert!(host.has_started());
+    }
+
+    #[test]
+    fn research_a_guest_queues_is_researched_on_every_machine() {
+        let (mut host, mut guests) = table(1);
+        let tech = Tech::all().next().unwrap();
+        let team = guests[0].local_team;
+        guests[0].queue_selected_research(tech);
+        assert_eq!(guests[0].research(team).queue.len(), 1);
+        for _ in 0..tech.turns() + 1 {
+            play_turn(&mut host, &mut guests);
+            assert_eq!(guests[0].checksum(), host.checksum(), "turn {}", host.turn);
+        }
+        assert!(host.researched(team, tech), "{:?}", host.research(team));
+        assert!(guests[0].researched(team, tech));
+        assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
     }
 
     #[test]

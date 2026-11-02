@@ -755,6 +755,9 @@ only).
 - **Stockpile** (`city/economy.rs`): each side has one store of food, wood and metal (top bar,
   with its change a turn), not one per city. Every city's delivered goods go into it at the
   turn's economy. A side starts with 10 food, 10 wood and 4 metal.
+- **Research** (`research.rs`): see Research, below. What a side hasn't researched can't be
+  queued or placed: its card is dimmed and names the tech that unlocks it (NEEDS TECH I-A),
+  and its tooltip says so too.
 - **Food and upkeep:** each citizen eats 2 food a turn from the stockpile, so one city's farms can
   feed another. If the stockpile can't feed all of a side's citizens, its food empties and the
   side's largest city (the first on ties) loses a citizen (see Losing a citizen; never below 1).
@@ -780,8 +783,8 @@ only).
   turns in the city queue like any build. Nothing grows by itself, and no Grow goes past the
   cap of 28, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
-  limits stay: a Harbor for ships, a deposit for Cavalry and Armored, the population cap for
-  Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time, and
+  limits stay: research for every troop and ship but the Melee, a Harbor for ships, a deposit
+  for Cavalry and Armored, the population cap for Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time, and
   supply for troops, ships and Scouts). A build is paid in full from the stockpile when work on it
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
@@ -933,6 +936,54 @@ only).
   turn's work on each queue (paying for the item it starts, see Paying and the queue), then
   finished builds.
 
+## Research (`research.rs`)
+
+- **The tree** is one table, `TECHS` in `src/game/research.rs` (a tech's id, name, price,
+  turns, the techs it needs and what it unlocks); the names are entries in
+  `text/research.ini`. Names, prices and order are placeholders, to be redesigned. A tech's
+  **tier** is one past the highest tier of the techs it needs (tier I needs none).
+
+  | Tech | Needs | Price (food / wood / metal) | Turns | Unlocks |
+  | --- | --- | --- | --- | --- |
+  | I-A | | 3 / 3 / 0 | 3 | Ranged, Watchpost |
+  | I-B | | 4 / 2 / 0 | 3 | Pikeman, Mill |
+  | I-C | | 3 / 3 / 0 | 3 | Work Camp, Canoe House |
+  | II-A | I-A | 6 / 4 / 0 | 4 | Cavalry, Stable |
+  | II-B | I-A | 4 / 6 / 0 | 4 | Siege, Workshop, Smelter |
+  | II-C | I-B | 6 / 3 / 0 | 4 | Cannery, Field Hospital |
+  | II-D | I-C | 4 / 6 / 0 | 4 | Patrol Galley, Harbor |
+  | III-A | II-A | 8 / 6 / 2 | 5 | Armored, Forge |
+  | III-B | II-D | 6 / 8 / 2 | 5 | Landing Craft, Bombard Ship, Coastal Battery |
+  | III-C | II-B, II-C | 8 / 8 / 4 | 5 | Railhead |
+
+- **Free from the start**, as no tech unlocks them: founding cities, and a city's Worker,
+  Settler, Scout, Grow and Gather; the Melee; the Barracks; and every work for the workers
+  (roads, improvements, cutting a forest, walls, gates, outposts, forts). Everything else
+  needs its tech: a city or Barracks card, or a building's, is dimmed and names the tech
+  (NEEDS TECH I-A), and so does its tooltip. Nothing a side lacks can be queued or placed.
+  The Naval test scenario gives both sides every tech.
+- **Researching** is side-wide: each side has one research queue, apart from its cities'
+  queues, so research never takes a city's turn. Only its first tech is worked, one at a
+  time. It is paid like a build: queued unpaid, paid in full when its research starts, and it
+  **waits** in place, unpaid, while the stockpile is short (the view and the top bar say what
+  it's short of); then it takes its turns, and is researched at the end of the turn's economy
+  that finishes it. The economy pays for research **first**, before any city's queue, so a
+  tech never waits behind the cities' builds; its price is mostly food and wood, so it seldom
+  takes the metal a troop needs.
+- **Queuing** a tech queues the techs it needs that aren't researched or queued first, in
+  order (clicking III-C with nothing researched queues I-A, II-B, I-B, II-C, III-C). A tech
+  never stands ahead of one it needs: dragging it there is refused, saying which. Taking a
+  tech off (its row's X) also takes off every queued tech that needs it, and refunds each that
+  was paid, its work lost; Clear empties the queue the same way. A researched tech stays
+  researched; taking a city doesn't give its owner's techs.
+- **The research view** (T, or a city's Research button): the tree, tier by tier, each tech's
+  card (its price and turns; QUEUED and its place; its turns left; WAITS; RESEARCHED, dimmed)
+  over a line of what it unlocks and the techs it needs that aren't researched yet, and what
+  is researched now with its progress. The research queue shows in the queue panel. T again,
+  Escape or Space closes it, and opening a city, Barracks or unit closes it. The top bar shows
+  the tech researched now and its turns left (red, WAITS, while it waits), or NO RESEARCH.
+- In a network game the research queue is part of a side's plan (`docs/multiplayer.md`).
+
 ## Workers (`workers.rs`)
 
 - **Pool:** each city keeps its workers at home, off the map, where nothing can touch them. A new
@@ -1029,8 +1080,8 @@ only).
 - Panels dock in four corner zones and never overlap (`docs/ui-system.md`).
 - **Top bar:** turn number, your stockpile (food, wood and metal, by icon, each with its change a turn:
   every city's delivery, less the citizens' food), your supply (SUPPLY used/available, red
-  once it's all used), the latest notice, and the End Turn button, whose label names what is
-  still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
+  once it's all used), your research (the tech and its turns left, or NO RESEARCH), the
+  latest notice, and the End Turn button, whose label names what is still waiting ("3 UNITS NEED ORDERS", "CHOOSE PRODUCTION") until it turns gold and reads END
   TURN, or END TURN · 2 WAITING while queues sit idle (its tooltip lists them).
 - **Command tray** (bottom-left): with a city open, it shows population (n / 28), its citizens working and its managers, with several clusters a line per cluster (its manager's mark, workers and what they deliver), what the city delivers net
   of the food its citizens eat (a cluster whose manager is picked up counts for nothing until it's
@@ -1068,8 +1119,8 @@ only).
   delivery percentages too. A tile a building stands
   on shows neither (a city center keeps its yields); a job's name on a tile showing a percentage
   sits just under it.
-- Escape closes the settings menu, or else an open city or barracks view, or else lets go of the
-  selected unit or group (something being placed for a city's workers stops first);
+- Escape closes the settings menu, or else the research view or an open city or barracks
+  view, or else lets go of the selected unit or group (something being placed for a city's workers stops first);
   with none of those open, it opens the
   settings menu, whose Quit button closes the game. F5 toggles borderless fullscreen.
 
@@ -1125,7 +1176,12 @@ within 2. Its queue otherwise grows the city. A city without a Barracks (built o
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
 pay. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted troops
 (Cavalry) than it has Pikemen alive and queued; else Cavalry or Armored when its deposits allow and the side can pay,
-else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one). An AI city with a worker at home and an empty list places one job it can
+else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one), of
+what its side has researched. **Research:** once its side has a troop (scouts and settlers aside)
+and a city, an AI side with nothing queued researches the tech for Ranged, then Cavalry, then the
+Pikeman, then Armored (each with what it needs first), and nothing else: it builds nothing else a
+tech unlocks, and research costs the food its cities grow on. A tech that waits for the stockpile
+stays queued; research pays first, so its cities spend what it leaves. An AI city with a worker at home and an empty list places one job it can
 pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
 ground); while its side has less wood than a Ranged costs, cutting the nearest forest within
 workers' reach that no city works; an improvement on a tile it works, the one that adds most

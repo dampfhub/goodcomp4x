@@ -61,8 +61,9 @@ file holds.
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
 - **Text files.** The menus' text is in `text/menus.ini`, and the status and top bars', the
   Debug panel's, the view controls' and the window titles' in `text/ui.ini`, and the units'
-  (the unit and group trays, orders, abilities and order notices) in `text/units.ini`, asked
-  for by tag (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an
+  (the unit and group trays, orders, abilities and order notices) in `text/units.ini`, and
+  research's (the research view, its queue, locked cards and the top bar's research) in
+  `text/research.ini`, asked for by tag (`text!`, `tooltip!`: `game/strings.rs`, `docs/text.md`); new text there is an
   entry, not a literal. A button whose label is an entry takes its hover text too,
   `.hover_text(hover_text!("tag"))`, which both presentations draw while it's hovered (the
   shipped files set none). An ImGui window's title is its ID: name a slot's window with
