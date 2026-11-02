@@ -31,6 +31,7 @@ pub use network_menu::{NetMenu, NetRequest};
 mod paint;
 mod panels;
 mod queue;
+mod research;
 mod roster;
 pub(in crate::game) use roster::RosterKey;
 mod settings_menu;
@@ -44,6 +45,7 @@ use super::city::{BuildUnit, Building, Good};
 use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
+use super::research::Tech;
 use super::scenario::Scenario;
 use super::settings::Setting;
 use super::workers::JobKind;
@@ -273,6 +275,13 @@ enum Target {
     /// on the local network, on the clipboard.
     CopyJoinCode,
     CopyHostAddress,
+    /// Opens the research view (T), or closes it.
+    OpenResearch,
+    /// A tech's card in the research view: queues it, and what it needs.
+    Research(Tech),
+    /// The X on a research queue row, and its Clear button.
+    ResearchQueueRemove(usize),
+    ClearResearchQueue,
 }
 
 /// An order for the selected unit.
@@ -435,6 +444,8 @@ pub(super) enum QueueKind {
     /// The open city's priority order: its food, wood and metal chips
     /// (`Row::Reorder`), which never scroll or come off.
     Priority,
+    /// The player's research queue (`ui/research.rs`).
+    Research,
 }
 
 impl QueueKind {
@@ -444,6 +455,7 @@ impl QueueKind {
             QueueKind::City => Target::CityQueueRemove(index),
             QueueKind::Barracks => Target::BarracksQueueRemove(index),
             QueueKind::Workers => Target::WorkerJobRemove(index),
+            QueueKind::Research => Target::ResearchQueueRemove(index),
             QueueKind::Priority => unreachable!("priority chips have no X"),
         }
     }
@@ -792,6 +804,10 @@ impl GameState {
             | Target::LeaveGame
             | Target::CopyJoinCode
             | Target::CopyHostAddress => self.activate_network_target(target),
+            Target::OpenResearch => self.toggle_research(),
+            Target::Research(tech) => self.queue_selected_research(tech),
+            Target::ResearchQueueRemove(index) => self.remove_selected_research(index),
+            Target::ClearResearchQueue => self.clear_selected_research(),
         }
     }
 
@@ -871,6 +887,8 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
+        } else if self.research_view() {
+            self.research_tray(&mut tray);
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);
@@ -893,6 +911,12 @@ impl GameState {
         } else if let Some(city) = self.selected_barracks {
             let mut queue = PanelBuilder::default();
             self.barracks_queue_panel(city, queue_visible, &mut queue);
+            if !queue.rows.is_empty() {
+                layout.dock_panel(queue, Zone::BottomLeft);
+            }
+        } else if self.research_view() {
+            let mut queue = PanelBuilder::default();
+            self.research_queue_panel(queue_visible, &mut queue);
             if !queue.rows.is_empty() {
                 layout.dock_panel(queue, Zone::BottomLeft);
             }

@@ -7,7 +7,9 @@ use super::*;
 use crate::game::strings::text;
 
 use crate::game::PLAYER_TEAM;
-use crate::game::city::{Build, GATHER_YIELD, Good, Priorities, Queued, Stock, stock_icons};
+use crate::game::city::{
+    Build, GATHER_YIELD, Good, Priorities, Queued, Stock, stock_icons, turns_icon,
+};
 use crate::game::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 use crate::game::orders::ClickMode;
 use crate::game::unit::{Team, Unit, UnitType};
@@ -345,6 +347,7 @@ fn debug_panel_saves_loads_and_switches_scenarios() {
 #[test]
 fn build_card_queues_its_unit() {
     let mut game = GameState::city_scenario();
+    game.research_all(Team::Blue);
     game.select_city();
     let siege = Target::Build(BuildUnit::Siege);
     game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
@@ -5020,7 +5023,15 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         game.activate_target(Target::OpenMultiplayer);
         game
     };
-    let panels: [(&str, &str, &dyn Fn() -> GameState); 9] = [
+    let research = || {
+        let mut game = city_view();
+        game.research[0] = Default::default();
+        game.toggle_research();
+        let last = crate::game::research::Tech::all().last().unwrap();
+        game.activate_target(Target::Research(last));
+        game
+    };
+    let panels: [(&str, &str, &dyn Fn() -> GameState); 11] = [
         ("city", "Selection", &city),
         ("city queue", "Production Queue", &city),
         ("barracks", "Selection", &barracks),
@@ -5030,6 +5041,8 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         ("debug", "Debug", &unit),
         ("settings", "Settings", &settings),
         ("multiplayer", "Settings", &multiplayer),
+        ("research", "Selection", &research),
+        ("research queue", "Production Queue", &research),
     ];
     let mut screen = ImGuiScreen::styled(size);
     for (name, window, make) in panels {
@@ -5185,10 +5198,7 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
     assert!(used < cap);
     // The top bar: the shared line, which the classic bar draws.
     let status: String = game.status_line().into_iter().map(|(t, _)| t).collect();
-    assert!(
-        status.ends_with(&format!("SUPPLY {used}/{cap}")),
-        "{status}"
-    );
+    assert!(status.contains(&format!("SUPPLY {used}/{cap}")), "{status}");
     let count = format!("{used}/{cap}");
     let drawn = |game: &GameState, count: &str| {
         game.layout(SCREEN)
@@ -5752,6 +5762,12 @@ fn every_view(game: &GameState) -> Vec<(String, GameState)> {
         }
         views.push(view(format!("interior {i}"), &|v| v.open_city_interior(i)));
     }
+    views.push(view("research".into(), &|v| v.toggle_research()));
+    views.push(view("research, a tech queued".into(), &|v| {
+        v.toggle_research();
+        let last = crate::game::research::Tech::all().last().unwrap();
+        v.activate_target(Target::Research(last));
+    }));
     views.push(view("settings".into(), &|v| v.settings_open = true));
     views.push(view("multiplayer".into(), &|v| {
         v.settings_open = true;
@@ -5971,4 +5987,165 @@ fn pikeman_cards_queue_it_in_both_presentations() {
     let idx = game.units.len() - 1;
     let tray = panel_strings(|panel| game.unit_info(idx, panel));
     assert_shows(&tray, "+12 ATTACK AND DEFENSE AGAINST CAVALRY");
+}
+
+/// The research view (T) on the Cities map, nothing researched.
+fn research_view() -> GameState {
+    let mut game = GameState::city_scenario();
+    game.research[0] = Default::default();
+    game.toggle_research();
+    assert!(game.research_view());
+    game
+}
+
+#[test]
+fn the_research_view_docks_its_tree_and_queues_a_tech_in_both_presentations() {
+    use crate::game::research::Tech;
+    let techs: Vec<Tech> = Tech::all().collect();
+    for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
+        let mut game = research_view();
+        game.activate_target(Target::Research(techs[techs.len() - 1]));
+        let layout = game.layout(screen);
+        let tray = panel_with(&layout, Target::Research(techs[0]))
+            .unwrap_or_else(|| panic!("the tree docks at {screen}"));
+        assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{screen}");
+        assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{screen}");
+        for &(min, max) in &layout.panels {
+            let other = Rect { min, max };
+            assert!(min == tray.min || !tray.overlaps(other, 0.0), "{screen}");
+        }
+        // Every tech's card is in it and takes its click; the queue panel
+        // holds a row for each tech queued.
+        for &tech in &techs {
+            assert!(
+                clickable_in(&layout, tray, Target::Research(tech)),
+                "{tech:?} at {screen}"
+            );
+        }
+        let rows = layout
+            .queue_items
+            .iter()
+            .filter(|i| i.kind == QueueKind::Research)
+            .count();
+        assert!(rows >= 1, "{rows} rows at {screen}");
+    }
+    // Classic: a card queues its tech; the row's X takes it off.
+    let mut game = research_view();
+    let first = techs[0];
+    game.handle_click(
+        button_cursor(&game, Target::Research(first)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert_eq!(game.research(Team::Blue).queue, [Queued::new(first)]);
+    let card = find_button(&game, Target::Research(first));
+    assert!(card.queued);
+    game.handle_click(
+        button_cursor(&game, Target::ResearchQueueRemove(0)),
+        SCREEN,
+        ClickMode::Normal,
+    );
+    assert!(
+        game.research(Team::Blue).queue.is_empty(),
+        "{}",
+        game.notice
+    );
+    // ImGui: the same card, and the queue's Clear.
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::Research(first));
+    assert_eq!(game.research(Team::Blue).queue, [Queued::new(first)]);
+    // The queue panel has just shown: let it settle where the dock puts it.
+    screen.settle(&mut game);
+    screen.click(&mut game, Target::ClearResearchQueue);
+    assert!(
+        game.research(Team::Blue).queue.is_empty(),
+        "{}",
+        game.notice
+    );
+    // A researched tech's card is off, and says so.
+    game.research[0].done.insert(first);
+    let card = find_button(&game, Target::Research(first));
+    assert_eq!(card.state(), ButtonState::Disabled);
+    assert_eq!(
+        card.unavailable.as_deref(),
+        Some(text!("research_card_done"))
+    );
+    // Escape closes it; T opens it again, and opening a city closes it.
+    game.press_escape();
+    assert!(!game.research_view());
+    game.toggle_research();
+    assert!(game.research_view());
+    game.open_city(0);
+    game.update(0.0);
+    game.leave_city_view();
+    assert!(
+        !game.research_view(),
+        "it doesn't come back behind the city"
+    );
+}
+
+#[test]
+fn a_locked_card_names_the_tech_that_unlocks_it_in_both_presentations() {
+    use crate::game::research::{Tech, Unlock};
+    let mut game = GameState::city_scenario();
+    game.units.clear();
+    game.cities[0].barracks = Some(Hex::new(-2, 0));
+    game.cities[0].built.push(Building::Barracks);
+    game.cities[0].workers = 1;
+    game.research[0] = Default::default();
+    game.open_city(0);
+    let ranged = Tech::unlocking(Unlock::Unit(BuildUnit::Ranged)).unwrap();
+    let needs = text!("research_lock", tech = ranged.name());
+    let mill = Tech::unlocking(Unlock::Building(Building::Mill)).unwrap();
+    let needs_mill = text!("research_lock", tech = mill.name());
+    for (target, needs) in [
+        (Target::Build(BuildUnit::Ranged), &needs),
+        (Target::Building(Building::Mill), &needs_mill),
+    ] {
+        catalog_cursor(&mut game, target);
+        let card = find_button(&game, target);
+        assert_eq!(card.state(), ButtonState::Disabled, "{target:?}");
+        assert_eq!(&card.hint, needs, "{target:?}");
+        let tip = line_strings(game.tooltip_lines(&card).into_iter().map(|(_, l)| l));
+        assert_eq!(tip.last(), Some(needs), "{target:?}: {tip:?}");
+    }
+    // ImGui draws it off, so a click there queues nothing.
+    game.cities[0].building_scroll = 0;
+    let mut screen = ImGuiScreen::new();
+    let before = game.cities[0].queue.clone();
+    screen.click(&mut game, Target::Build(BuildUnit::Ranged));
+    assert_eq!(game.cities[0].queue, before);
+    // The Barracks' card too.
+    game.open_barracks(0);
+    let card = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
+    assert_eq!(card.hint, needs);
+    assert_eq!(card.unavailable.as_deref(), Some(needs.as_str()));
+    // Researched, it's there.
+    game.research[0].done.insert(ranged);
+    let card = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
+    assert_eq!(card.state(), ButtonState::Ready);
+}
+
+#[test]
+fn the_top_bar_names_the_research_and_its_turns() {
+    use crate::game::research::Tech;
+    let mut game = research_view();
+    let status =
+        |game: &GameState| -> String { game.status_line().into_iter().map(|(t, _)| t).collect() };
+    assert!(
+        status(&game).ends_with(text!("status_research_none")),
+        "{}",
+        status(&game)
+    );
+    let tech = Tech::all().next().unwrap();
+    game.activate_target(Target::Research(tech));
+    let expected = format!("{} {}", tech.name(), turns_icon(tech.turns()));
+    assert!(status(&game).ends_with(&expected), "{}", status(&game));
+    *game.stock_mut(Team::Blue) = Stock::default();
+    game.cities.iter_mut().for_each(|c| c.clusters.clear());
+    assert!(
+        status(&game).ends_with(&text!("status_research_waits", tech = tech.name())),
+        "{}",
+        status(&game)
+    );
 }

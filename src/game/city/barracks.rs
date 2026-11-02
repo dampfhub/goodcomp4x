@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 
 use super::supply::troop_supply;
-use super::{BuildUnit, Building};
+use super::{Build, BuildUnit, Building};
 use crate::game::GameState;
 use crate::game::hex::Hex;
 use crate::game::terrain::Resource;
@@ -95,13 +95,16 @@ impl GameState {
     }
 
     /// Why city `city`'s Barracks can't queue `build` now, if it can't: no
-    /// Barracks, no deposit for it, the side's cap for it is used up, or
-    /// its supply is (`supply_lock`).
+    /// Barracks, its side hasn't researched it (`tech_lock`), no deposit for
+    /// it, the side's cap for it is used up, or its supply is (`supply_lock`).
     pub(in crate::game) fn barracks_lock(&self, city: usize, build: BuildUnit) -> Option<String> {
         if self.cities[city].barracks.is_none() {
             return Some("BUILD A BARRACKS FIRST".into());
         }
         let team = self.cities[city].team;
+        if let Some(lock) = self.build_tech_lock(team, Build::Unit(build)) {
+            return Some(lock);
+        }
         self.deposit_lock(city, build)
             .or_else(|| self.supply_lock(team, troop_supply(build)))
     }

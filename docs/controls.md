@@ -146,7 +146,7 @@ and stands (`multiplayer.md`).
 | 9 / Grow card | Queue one more citizen, paid in food when work on it starts (the city doesn't grow on its own) |
 | 0 / Gather card | Spend a turn gathering: free, and 1 food, 1 wood and half a metal come in when it's done |
 | A build card the stockpile can't pay for yet (red rim and red price) | Queue it all the same: it waits, unpaid, and the city works the next item it can pay for; its tooltip says what the side is short of this turn. A waiting row is tinted red with what it waits for, and the building (the city's tower, or its Barracks) shows a tag on the map with the item and each missing resource's icon and amount. Prices show as resource icons and amounts, turns after a clock |
-| A dimmed build card | It can't be queued: (a troop, ship or Scout) your supply is all used, saying SUPPLY FULL (the top bar shows SUPPLY used/available), (Cavalry, Armored) the barracks has no deposit or its cap is used up, (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
+| A dimmed build card | It can't be queued: (any troop or ship but the Melee) your side hasn't researched it, saying NEEDS and the tech, (a troop, ship or Scout) your supply is all used, saying SUPPLY FULL (the top bar shows SUPPLY used/available), (Cavalry, Armored) the barracks has no deposit or its cap is used up, (Grow) the city is full, (Settler) the city is below population 3, or (Scout) one is already queued; its tooltip says why |
 | Drag a queue row onto another | Reorder the queue; work stays with each build, and a paused build with work shows SAVED on its row |
 | Click a row's X | Remove it, refunding its price if it was paid for (work on it started); its work is lost |
 | Clear (beside a queue's title, city or barracks) | Empty that queue: every item comes off, refunded as its X would refund it (their work is lost) |
@@ -172,6 +172,25 @@ on a city or barracks opens it, and any other map click leaves the view open. Ot
 view's. While something is being placed for the city's workers, or the manager is picked up,
 every click is theirs, on a token, a city or a barracks alike. Clicking the open city's own
 center enters the interior map; its clicks control only the interior copies.
+
+## Research
+
+| Control | Action |
+| --- | --- |
+| T / Research (city tray) | Open the research view: the tech tree in the Selection panel, the research queue in the queue panel; T again closes it |
+| Click a tech's card | Queue it, with the techs it needs that aren't researched or queued first (its tooltip names them). Paid from the stockpile when its research starts, before any city's build; it waits while the stockpile is short |
+| Drag a research queue row onto another | Reorder the research queue; a tech can't go ahead of one it needs (the notice says which) |
+| Click a research row's X | Take that tech off, and every queued tech that needs it, each refunded if paid |
+| Clear (beside the research queue's title) | Empty the research queue, refunded the same way |
+| F9 in the research view | Debug: research the first queued tech now, paid if the stockpile can |
+| Escape / Space | Close the research view (so does opening a city, Barracks or unit) |
+
+A card names its tech's price and turns, or where it stands: QUEUED and its place, the turns
+left for the one researched now, WAITS while the stockpile is short, or RESEARCHED (dimmed).
+Under each tier's cards a line per tech names what it unlocks and the techs it still needs.
+A city, Barracks or building card your side hasn't researched is dimmed and names the tech
+(NEEDS TECH I-A). The top bar shows the tech researched now and its turns left, red with WAITS
+while it waits, or NO RESEARCH.
 
 ## Camera, game and testing
 

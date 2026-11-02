@@ -142,12 +142,13 @@ to millions of vertices.
    resolves their separate tactical orders and any command-post capture. Then `resolve_economy`
    (`city/citizens.rs`) adds every city's food, wood and metal (`income`, including local
    Cannery and Smelter collection, `city/logistics.rs`) to its side's stockpile
-   (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, has each queue pay
+   (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, pays for and works each
+   side's first tech (`work_research`, `research.rs`: research pays first), has each queue pay
    for the item it starts and gives it a turn's work (`work_queues`: the first item paid for or
    affordable, city by city in order, each city's queue before its Barracks'; `work_rate`; a
    city whose own queue works nothing gathers by itself, `auto_gather`) and
-   completes builds, growth included; builds were queued unpaid (`queue_build`), by the
-   player's clicks or the AI's `plan_ai_cities`; each
+   completes builds, growth included, and research (`complete_research`); builds were queued unpaid (`queue_build`), by the
+   player's clicks or the AI's `plan_ai_cities` (`plan_ai_research` queues its research); each
    unit's `end_turn` starts or ticks its ability cooldown, finishes a siege setup or pack-up,
    sets or clears Lookout, and clears its orders; `advance_queues` (`order_queue.rs`) gives each
    unit with a queue its next turn's orders, dropping queues that no longer fit; then selection
@@ -155,6 +156,19 @@ to millions of vertices.
    (`select_next_needing_attention`). Last, the turn cue starts (`start_transition`, see A frame).
 
 The rules each step applies are in `game-rules.md`.
+
+## Research
+
+`src/game/research.rs` holds the tech tree as one table (`TECHS`: each tech's id, name, price,
+turns, prerequisites and unlocks; anything no tech unlocks is free), each side's research
+(`GameState::research`: the techs it has and its queue of `Queued<Tech>`, paid like a build),
+and the locks every queue and placement checks (`tech_lock`, through `city_build_issue`,
+`barracks_lock` and `job_kind_unavailable`). The economy pays for and works research before the
+cities' queues (`work_research`, `forecast` counts it). The view is `ui/research.rs`: the tree
+in the Selection panel and the queue in the queue panel, in both presentations. A network
+plan carries the research queue (`TeamPlan::research`, checked by `check_plan`), and the
+checksum and savestates include it. A later research resource (#393) would go beside a
+tech's `price`.
 
 ## Player settings
 
@@ -169,7 +183,7 @@ entry in that one file, and its words in `text/menus.ini`; both UI presentations
 ## Game text (`text/`)
 
 The game's words are moving out of the code into tagged entries in `text/*.ini` (#341; so far
-the menus, the status and top bars, the Debug panel, the window titles and the units).
+the menus, the status and top bars, the Debug panel, the window titles, the units and research).
 `src/game/strings.rs` embeds the files, reads them once on first use, and gives an entry's text, tooltip or hover text by tag (`text!`,
 `tooltip!`, `hover_text!`), filling named placeholders. Its tests check the files against every
 macro call in `src/`, so a missing, unused or mismatched entry fails `cargo test`, not the

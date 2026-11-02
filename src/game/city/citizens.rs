@@ -387,11 +387,14 @@ impl GameState {
             *self.stock_mut(team) += goods;
         }
         self.feed_citizens();
+        // Research pays first, then each queue, in city order (`research.rs`).
+        self.work_research();
         // Each queue pays for what it starts and works it. A Barracks trains
         // whatever its managers do; with production speeding builds, each
         // manager beside it adds its cluster's work.
         self.work_queues(&rates);
         self.complete_builds();
+        self.complete_research();
         self.heal_at_hospitals();
         for i in 0..self.cities.len() {
             self.reconcile_citizens(i);

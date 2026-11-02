@@ -154,6 +154,8 @@ enum SelectionKind {
     Barracks,
     Unit,
     Group,
+    /// The research view (`ui/research.rs`).
+    Research,
 }
 
 impl SelectionKind {
@@ -166,6 +168,7 @@ impl SelectionKind {
             Self::Barracks => "barracks",
             Self::Unit => "unit",
             Self::Group => "group",
+            Self::Research => "research",
         }
     }
 
@@ -173,7 +176,7 @@ impl SelectionKind {
     /// its Debug docking.
     fn view(self) -> ViewScope {
         match self {
-            Self::Interior | Self::City | Self::Barracks => ViewScope::City,
+            Self::Interior | Self::City | Self::Barracks | Self::Research => ViewScope::City,
             Self::Unit | Self::Group => ViewScope::Troop,
         }
     }
@@ -4093,6 +4096,8 @@ impl GameState {
             (SelectionKind::Unit, Some(self.units[unit].id as usize))
         } else if !self.group.is_empty() {
             (SelectionKind::Group, None)
+        } else if self.research_view() {
+            (SelectionKind::Research, None)
         } else {
             return None;
         };
@@ -4880,6 +4885,7 @@ impl GameState {
                             QueueKind::Barracks => "barracks-queue",
                             QueueKind::Workers => "worker-jobs",
                             QueueKind::Priority => "priority",
+                            QueueKind::Research => "research-queue",
                         };
                         let name = format!("{name}-{:?}", scope);
                         if let Some(source) =
@@ -5174,6 +5180,8 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
+        } else if self.research_view() {
+            self.research_tray(&mut tray);
         }
         // A pinned structure's own window has its controls, not Selection.
         let selection = self.selection_kind().filter(|_| !selection_is_pinned);
@@ -5187,6 +5195,8 @@ impl GameState {
             self.city_queue_panel(city, usize::MAX, &mut queue);
         } else if let Some(city) = self.selected_barracks {
             self.barracks_queue_panel(city, usize::MAX, &mut queue);
+        } else if self.research_view() {
+            self.research_queue_panel(usize::MAX, &mut queue);
         }
         let debug = self.debug_panel_content();
         let mut hover = PanelBuilder::default();

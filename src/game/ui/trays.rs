@@ -17,6 +17,7 @@ use crate::game::city::{
 };
 use crate::game::keys::Command;
 use crate::game::orders::ClickMode;
+use crate::game::research::Unlock;
 use crate::game::strings::text;
 use crate::game::terrain::Resource;
 use crate::game::workers::JobKind;
@@ -750,11 +751,14 @@ impl GameState {
                 first == Some(Build::Worker),
             )])
             .collect();
-        panel.buttons(vec![ButtonSpec::new(
-            Target::OpenInterior,
-            "CITY INTERIOR",
-            "V",
-        )]);
+        panel.buttons(vec![
+            ButtonSpec::new(Target::OpenInterior, "CITY INTERIOR", "V"),
+            ButtonSpec::new(
+                Target::OpenResearch,
+                text!("research_button"),
+                Command::Research.key(),
+            ),
+        ]);
         panel.gap(GAP);
         // While placing, map clicks and Escape are placing's: its own lines
         // (below) take this one's place.
@@ -782,8 +786,11 @@ impl GameState {
                 let kind = JobKind::Build(building);
                 let placed = self.building_job_queued(i, building);
                 // The price alone, which the row lines up on the right; the
-                // key is in the tooltip.
-                let hint = cost_hint(building.price(), building.turns());
+                // key is in the tooltip. One its side hasn't researched names
+                // the tech instead.
+                let hint = self
+                    .tech_lock(city.team, Unlock::Building(building))
+                    .unwrap_or_else(|| cost_hint(building.price(), building.turns()));
                 ButtonSpec::new(Target::Building(building), building.name(), hint)
                     .queued(placed || self.placing_job == Some(kind))
                     .unavailable(
@@ -1061,8 +1068,12 @@ impl GameState {
                     // One the side can't pay for yet can be queued, and
                     // waits.
                     let lock = self.barracks_lock(i, build);
-                    let supply_full = lock.is_some() && self.deposit_lock(i, build).is_none();
-                    let hint = if supply_full {
+                    let tech = self.build_tech_lock(city.team, Build::Unit(build));
+                    let supply_full =
+                        lock.is_some() && tech.is_none() && self.deposit_lock(i, build).is_none();
+                    let hint = if let Some(tech) = tech {
+                        tech
+                    } else if supply_full {
                         SUPPLY_FULL_HINT.into()
                     } else {
                         cost_hint(build.price(), build.turns())

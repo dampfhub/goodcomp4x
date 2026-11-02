@@ -30,8 +30,9 @@ use super::map_icons::{FOOD_ICON, METAL_ICON, TIME_ICON, WOOD_ICON};
 
 /// The text files, by name, embedded in the executable. A new file is a
 /// line here.
-const FILES: [(&str, &str); 3] = [
+const FILES: [(&str, &str); 4] = [
     ("menus.ini", include_str!("../../text/menus.ini")),
+    ("research.ini", include_str!("../../text/research.ini")),
     ("ui.ini", include_str!("../../text/ui.ini")),
     ("units.ini", include_str!("../../text/units.ini")),
 ];
