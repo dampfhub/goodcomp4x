@@ -16,6 +16,7 @@ use super::map_icons::{
     self, IMPROVEMENT_SPOT, LANDMARK_SCALE, LANDMARK_SPOT, MapIcon, RESOURCE_SPOT,
 };
 use super::orders::ClickMode;
+use super::pixel_art::{self, Sprite};
 use super::ruins::RUIN_HOLD_TURNS;
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
@@ -29,7 +30,7 @@ use super::mesh::Color;
 
 const BORDER_COLOR: Color = [0.10, 0.10, 0.13, 1.0];
 /// Each hex's fill as a share of its size; the rest is the border between hexes.
-const HEX_FILL_SCALE: f32 = 0.92;
+pub(super) const HEX_FILL_SCALE: f32 = 0.92;
 /// How far an explored hex's border reaches: past its own edge by as much as
 /// a neighbor's border reaches in, so facing a never-seen hex or the map's
 /// edge it is as wide as the whole gap between two hexes.
@@ -462,17 +463,23 @@ impl GameState {
         for &hex in &explored {
             let center = hex.to_world();
             let fill = self.hex_fill(hex, selection.as_ref(), &fog);
-            mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
-            super::sprites::push_tile(center, self.grid.tile(hex), &mut out);
+            let tile = self.grid.tile(hex);
+            // A highlight (a selection, a move or attack) tints pixel art,
+            // where it replaces the vector art's ground color.
+            let tint = (fill != tile_color(tile)).then(|| with_alpha(fill, PIXEL_TINT_ALPHA));
+            if !(self.settings.pixel_art && push_pixel_tile(center, tile, tint, &mut out)) {
+                mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, fill, &mut out);
+                super::sprites::push_tile(center, tile, &mut out);
+            }
             if let Some(resource) = self.grid.resource(hex) {
                 let icon = MapIcon::resource(resource);
-                super::sprites::push_icon(center + RESOURCE_SPOT, icon, 1.0, &mut out);
+                self.push_map_icon(center + RESOURCE_SPOT, icon, 1.0, &mut out);
             }
             if let Some(special) = self.grid.special(hex) {
                 push_landmark_rim(center, SPECIAL_RIM_COLOR, &mut out);
                 let icon = MapIcon::special(special);
                 let spot = center + LANDMARK_SPOT;
-                super::sprites::push_icon(spot, icon, LANDMARK_SCALE, &mut out);
+                self.push_map_icon(spot, icon, LANDMARK_SCALE, &mut out);
             }
             self.push_known_ruin(hex, &fog, &mut out);
             self.push_known_den(hex, &fog, &mut out);
@@ -529,7 +536,7 @@ impl GameState {
             };
             push_status_rings(center, unit, scale, &mut out);
             let look = self.unit_look(unit);
-            push_unit_icon(center, look, icon_scale, color, &mut out);
+            self.push_unit_art(center, look, icon_scale, color, &mut out);
             if self.show_details {
                 push_order_badges(center, unit, look, scale, &mut out);
             }
@@ -770,7 +777,7 @@ impl GameState {
         };
         push_landmark_rim(hex.to_world(), RUIN_RIM_COLOR, out);
         let spot = hex.to_world() + LANDMARK_SPOT;
-        super::sprites::push_icon(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
+        self.push_map_icon(spot, MapIcon::Ruins, LANDMARK_SCALE, out);
         let Some(ruin) = ruin else { return };
         let color = ruin.holder.map_or(BORDER_COLOR, Team::color);
         for i in 0..RUIN_HOLD_TURNS {
@@ -792,7 +799,7 @@ impl GameState {
         if known {
             push_landmark_rim(hex.to_world(), DEN_RIM_COLOR, out);
             let spot = hex.to_world() + LANDMARK_SPOT;
-            super::sprites::push_icon(spot, MapIcon::Paw, LANDMARK_SCALE, out);
+            self.push_map_icon(spot, MapIcon::Paw, LANDMARK_SCALE, out);
         }
     }
 
@@ -1156,7 +1163,7 @@ impl GameState {
             for (i, unit) in movers.iter().enumerate() {
                 let pos = fan_position(hex.to_world(), i, movers.len(), GHOST_FAN_RADIUS);
                 let color = with_alpha(unit.team.color(), GHOST_ALPHA);
-                push_unit_icon(pos, self.unit_look(unit), 1.0, color, out);
+                self.push_unit_art(pos, self.unit_look(unit), 1.0, color, out);
                 ghosts.insert(unit.id, pos);
             }
         }
@@ -1198,7 +1205,7 @@ impl GameState {
             .filter(|&i| self.units[i].plans_later_turns() && self.is_player_controlled(i))
             .map(|i| (&self.units[i], self.unit_look(&self.units[i])))
             .collect();
-        push_queue_plans(&plans, out);
+        push_queue_plans(&plans, self.settings.pixel_art, out);
         // A click waiting to be repeated to replace the selection's queue.
         if let Some(hex) = self.queue_replace_hex() {
             let rim = HEX_SIZE * QUEUE_REPLACE_OUTLINE_RADIUS;
@@ -1464,7 +1471,7 @@ impl GameState {
         for &(h, label) in &view.sites {
             let center = h.to_world() + IMPROVEMENT_SPOT;
             match MapIcon::improvement(label) {
-                Some(icon) => super::sprites::push_icon(center, icon, 1.0, out),
+                Some(icon) => self.push_map_icon(center, icon, 1.0, out),
                 None => {
                     let letter = label.chars().next().unwrap_or('?');
                     font::push_glyph(center, 0.2, letter, ICON_OUTLINE_COLOR, out);
@@ -1472,7 +1479,12 @@ impl GameState {
             }
         }
         for (hex, barracks) in &view.barracks {
-            push_barracks_marker(hex.to_world(), barracks.team.color(), out);
+            push_barracks_marker(
+                hex.to_world(),
+                barracks.team.color(),
+                self.settings.pixel_art,
+                out,
+            );
             push_health_bar(hex.to_world(), barracks.health, BARRACKS_BAR_SCALE, out);
         }
         for city in &self.cities {
@@ -1486,9 +1498,15 @@ impl GameState {
                 if city.team != self.local_team && !fog.sees(hex) {
                     continue;
                 }
-                let (badge, color) = building_badge(building);
-                mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
-                font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                let sprite = Sprite::Building(building);
+                let team = city.team.color();
+                if !(self.settings.pixel_art
+                    && pixel_art::push(sprite, hex.to_world(), 1.0, team, out))
+                {
+                    let (badge, color) = building_badge(building);
+                    mesh::regular_polygon(hex.to_world(), 0.31, 4, FRAC_PI_4, color, out);
+                    font::push_glyph(hex.to_world(), 0.30, badge, LABEL_COLOR, out);
+                }
                 if building == super::city::Building::CoastalBattery {
                     let health = city.coastal_battery_hp / COASTAL_BATTERY_MAX_HP;
                     push_health_bar(hex.to_world(), health, BATTERY_BAR_SCALE, out);
@@ -1496,7 +1514,7 @@ impl GameState {
             }
         }
         for (hex, city) in &view.cities {
-            push_city_marker(hex.to_world(), city, out);
+            push_city_marker(hex.to_world(), city, self.settings.pixel_art, out);
         }
         for city in self.cities.iter().filter(|c| c.team == self.local_team) {
             push_worker_count(city.pos.to_world(), city.workers, out);
@@ -1754,7 +1772,7 @@ impl GameState {
             } else {
                 worker.team.color()
             };
-            push_unit_icon(center, look, scale, color, out);
+            self.push_unit_art(center, look, scale, color, out);
         }
     }
 
@@ -2396,13 +2414,13 @@ fn queue_plans(units: &[(&Unit, UnitLook)]) -> QueuePlans {
 /// several units' plans stop on one hex, each unit's stop is fanned out
 /// around it (as ghosts are), so a number never belongs to two units. A hex
 /// or arrow one unit uses on several turns lists them ("2,4").
-fn push_queue_plans(units: &[(&Unit, UnitLook)], out: &mut Vec<Vertex>) {
+fn push_queue_plans(units: &[(&Unit, UnitLook)], pixel: bool, out: &mut Vec<Vertex>) {
     let plans = queue_plans(units);
     for (from, to, color) in plans.lines {
         mesh::segment(from, to, QUEUE_LINE_WIDTH, color, out);
     }
     for (at, look, color) in plans.ghosts {
-        push_unit_icon(at, look, 1.0, color, out);
+        push_unit_art(pixel, at, look, 1.0, color, out);
     }
     for points in plans.arrows {
         push_arrow(&points, ATTACK_ARC_COLOR, ATTACK_ARC_OUTLINE_COLOR, out);
@@ -2518,6 +2536,65 @@ fn token_shape(look: UnitLook) -> (u32, f32, f32) {
     }
 }
 
+/// How strongly a highlight's color (`hex_fill`) tints a pixel-art tile.
+const PIXEL_TINT_ALPHA: f32 = 0.5;
+
+/// `tile` as pixel art: its ground, then its feature if it has one, then
+/// `tint` over both. Draws nothing and returns false if one of its sprites
+/// has no file, so the tile is drawn in vector art whole.
+fn push_pixel_tile(center: Vec2, tile: Tile, tint: Option<Color>, out: &mut Vec<Vertex>) -> bool {
+    let ground = Sprite::Ground(tile.terrain, tile.hills);
+    let feature = tile.feature.map(Sprite::Feature);
+    if !pixel_art::has(ground) || feature.is_some_and(|f| !pixel_art::has(f)) {
+        return false;
+    }
+    for sprite in [Some(ground), feature].into_iter().flatten() {
+        pixel_art::push(sprite, center, 1.0, [1.0; 4], out);
+    }
+    if let Some(tint) = tint {
+        mesh::regular_polygon(center, HEX_SIZE * HEX_FILL_SCALE, 6, 0.0, tint, out);
+    }
+    true
+}
+
+/// A unit's token: with `pixel`, its sprite (`color`'s RGB on its team
+/// pixels) if it has one, else the vector token.
+fn push_unit_art(
+    pixel: bool,
+    center: Vec2,
+    look: UnitLook,
+    scale: f32,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
+    if !(pixel && pixel_art::push(Sprite::Unit(look.icon), center, scale, color, out)) {
+        push_unit_icon(center, look, scale, color, out);
+    }
+}
+
+impl GameState {
+    /// `push_unit_art` in the art the player chose.
+    fn push_unit_art(
+        &self,
+        center: Vec2,
+        look: UnitLook,
+        scale: f32,
+        color: Color,
+        out: &mut Vec<Vertex>,
+    ) {
+        push_unit_art(self.settings.pixel_art, center, look, scale, color, out);
+    }
+
+    /// A map icon in the art the player chose: its pixel sprite if it has
+    /// one, else the vector icon.
+    fn push_map_icon(&self, center: Vec2, icon: MapIcon, scale: f32, out: &mut Vec<Vertex>) {
+        let pixel = self.settings.pixel_art;
+        if !(pixel && pixel_art::push(Sprite::Icon(icon), center, scale, [1.0; 4], out)) {
+            super::sprites::push_icon(center, icon, scale, out);
+        }
+    }
+}
+
 /// The unit's token in its team color with a dark outline, so it reads on
 /// any terrain, and its pictogram on top. Military units stand on a disc;
 /// civilians on a hollow pointy-top hexagon (a pale center inside a
@@ -2565,9 +2642,12 @@ fn push_outlined_rects(rects: &[(Vec2, Vec2)], scale: f32, color: Color, out: &m
 }
 
 /// A city: a crenellated tower in its team's color with its population on
-/// it.
-fn push_city_marker(pos: Vec2, city: &SeenBuilding, out: &mut Vec<Vertex>) {
-    push_city_tower(pos, 1.0, city.team.color(), out);
+/// it; with `pixel`, its sprite if it has one.
+fn push_city_marker(pos: Vec2, city: &SeenBuilding, pixel: bool, out: &mut Vec<Vertex>) {
+    let team = city.team.color();
+    if !(pixel && pixel_art::push(Sprite::City, pos, 1.0, team, out)) {
+        push_city_tower(pos, 1.0, team, out);
+    }
     // Centered in the tower's body, below the merlons.
     font::push_text_centered(
         pos + Vec2::new(0.0, -0.08),
@@ -2795,8 +2875,11 @@ fn push_structure(center: Vec2, kind: StructureKind, team: Color, out: &mut Vec<
 }
 
 /// A barracks: a small house (walls and a pitched roof) in `color`, its
-/// team's, marked B.
-fn push_barracks_marker(pos: Vec2, color: Color, out: &mut Vec<Vertex>) {
+/// team's, marked B; with `pixel`, its sprite if it has one.
+fn push_barracks_marker(pos: Vec2, color: Color, pixel: bool, out: &mut Vec<Vertex>) {
+    if pixel && pixel_art::push(Sprite::Building(Building::Barracks), pos, 1.0, color, out) {
+        return;
+    }
     let alpha = color[3];
     push_barracks_house(pos, 1.0, color, out);
     font::push_glyph(
@@ -3056,6 +3139,67 @@ fn with_alpha([r, g, b, _]: Color, a: f32) -> Color {
 mod tests {
     use super::*;
 
+    /// The texels a frame draws in pixel art: vertices whose `u` marks the
+    /// pixel atlas (`mesh.frag`), and their colors.
+    fn pixel_vertices(game: &GameState) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        game.build_vertices_into(&mut out);
+        out.retain(|v| (pixel_art::PIXEL_U..pixel_art::PIXEL_U + 1.0).contains(&v.uv[0]));
+        out
+    }
+
+    #[test]
+    fn the_art_setting_draws_the_map_in_pixel_sprites() {
+        let mut game = GameState::city_scenario();
+        game.fog_of_war = false;
+        assert!(!game.settings.pixel_art, "vector by default");
+        assert!(pixel_vertices(&game).is_empty());
+        let vector = game.build_vertices().len();
+
+        game.settings.pixel_art = true;
+        let pixels = pixel_vertices(&game);
+        // A quad a hex at least, and each unit and city in its side's color.
+        assert!(pixels.len() >= 6 * game.grid.all_hexes().count());
+        for color in game.units.iter().map(|u| u.team.color()) {
+            assert!(pixels.iter().any(|v| v.color == color), "{color:?}");
+        }
+        for city in &game.cities {
+            assert!(pixels.iter().any(|v| v.color == city.team.color()));
+        }
+        assert!(
+            game.build_vertices().len() < vector,
+            "quads cost less than shapes"
+        );
+    }
+
+    #[test]
+    fn a_highlighted_pixel_tile_is_tinted_and_one_without_sprites_is_vector() {
+        let tile = Tile {
+            terrain: Terrain::Plains,
+            hills: true,
+            feature: Some(Feature::Forest),
+        };
+        let mut out = Vec::new();
+        assert!(push_pixel_tile(Vec2::ZERO, tile, None, &mut out));
+        assert_eq!(out.len(), 12, "ground and forest");
+        let tint = with_alpha(MOVE_RANGE_COLOR, PIXEL_TINT_ALPHA);
+        assert!(push_pixel_tile(Vec2::ZERO, tile, Some(tint), &mut out));
+        assert!(
+            out[24..]
+                .iter()
+                .all(|v| v.color == tint && v.uv == crate::renderer::SOLID_UV)
+        );
+        // Hills under water have no sprite: nothing is drawn, for the
+        // vector art to draw the tile.
+        let len = out.len();
+        let sunk = Tile {
+            terrain: Terrain::Ocean,
+            hills: true,
+            feature: None,
+        };
+        assert!(!push_pixel_tile(Vec2::ZERO, sunk, None, &mut out));
+        assert_eq!(out.len(), len);
+    }
     #[test]
     fn repeated_yield_rows_and_revealed_world_have_small_geometry_budgets() {
         let mut row = Vec::new();

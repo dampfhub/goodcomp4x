@@ -24,6 +24,7 @@ mod order_queue;
 mod orders;
 #[cfg(test)]
 mod perf;
+mod pixel_art;
 mod ruins;
 mod scenario;
 mod settings;
@@ -54,6 +55,7 @@ pub use multiplayer::{
     DEFAULT_PORT, HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION,
 };
 pub use orders::ClickMode;
+pub use pixel_art::atlas as pixel_atlas;
 pub use scenario::Scenario;
 pub use settings::Settings;
 pub use sprites::atlas as sprite_atlas;

@@ -7,6 +7,7 @@
 | [controls.md](controls.md) | Every key and mouse action, for players | current; update with every input change |
 | [ui-system.md](ui-system.md) | How screen-space panels are built, docked and hit-tested | current; read before adding UI |
 | [text.md](text.md) | The game's text files (`text/`): the format, placeholders and icons, and the tests that check them | current; stages 1-4 of #341 (the menus; the status bar, top bar, Debug panel and window titles; the units) |
+| [sprites.md](sprites.md) | The pixel-art sprites: every tag, its size and anchor, how to add one, and how they are drawn | current; dev art only so far (#391) |
 | [city-system.md](city-system.md) | The design direction for cities | proposal; parts are implemented, see game-rules.md |
 | [multiplayer.md](multiplayer.md) | Network play: hosting and joining, lockstep, the transport, and its security | first cut; 2-7 players on a generated world, AI on the rest |
 | [rts-economy.md](rts-economy.md) | The stockpile economy experiment: model, numbers, findings, next tests | experiment; built on `claude/rts-economy`, rules in game-rules.md |

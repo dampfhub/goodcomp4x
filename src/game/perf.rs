@@ -179,7 +179,8 @@ fn a_frame_stays_within_its_vertex_budget() {
     game.selected = game.units.iter().position(|u| u.team == PLAYER_TEAM);
     game.placing_job = Some(workers::JobKind::Road);
     game.set_details(true);
-    for fog in [true, false] {
+    for (pixel_art, fog) in [(false, true), (false, false), (true, true), (true, false)] {
+        game.settings.pixel_art = pixel_art;
         game.fog_of_war = fog;
         for half_height in [6.0, 9.0, 12.0, 18.0, 27.0, super::camera::MAX_HALF_HEIGHT] {
             game.camera.half_height = half_height;
@@ -188,7 +189,7 @@ fn a_frame_stays_within_its_vertex_budget() {
             let total = world + game.build_ui(SCREEN, None).len();
             assert!(
                 total <= VERTEX_BUDGET,
-                "{total} vertices with fog {fog}, zoomed to {half_height}: {stages:?}"
+                "{total} vertices with fog {fog}, pixel art {pixel_art}, zoomed to {half_height}: {stages:?}"
             );
         }
     }

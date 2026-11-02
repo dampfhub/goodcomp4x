@@ -52,6 +52,9 @@ pub struct Settings {
     /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw.rs`)
     /// rather than a flat grey.
     pub cloud_fog: bool,
+    /// Draw the map with the pixel-art sprites (`pixel_art.rs`) rather than
+    /// the vector art. Presentation only.
+    pub pixel_art: bool,
     /// AI players in the next world (F4, `setup_world`): 1 to 6, or 0 for
     /// 4 to 6 picked by the map's seed.
     pub world_ai: usize,
@@ -80,6 +83,7 @@ impl Default for Settings {
             turn_transition: true,
             max_queued_turns: 6,
             cloud_fog: true,
+            pixel_art: false,
             world_ai: WORLD_AI_BY_SEED,
             world_start_city: true,
             world_animals: ANIMALS_FEW,
@@ -105,6 +109,7 @@ pub enum Setting {
     TurnTransition,
     MaxQueuedTurns,
     FogStyle,
+    Art,
     WorldAi,
     WorldStart,
     WorldAnimals,
@@ -130,11 +135,12 @@ impl Control {
 impl Setting {
     /// Every setting, in the order the menu lists them. Settings of one
     /// `group` are listed together, under its heading.
-    pub const ALL: [Setting; 7] = [
+    pub const ALL: [Setting; 8] = [
         Setting::TurnPlayback,
         Setting::TurnTransition,
         Setting::MaxQueuedTurns,
         Setting::FogStyle,
+        Setting::Art,
         Setting::WorldAi,
         Setting::WorldStart,
         Setting::WorldAnimals,
@@ -148,6 +154,7 @@ impl Setting {
             Setting::TurnTransition => "turn_transition",
             Setting::MaxQueuedTurns => "queue_limit",
             Setting::FogStyle => "fog",
+            Setting::Art => "art",
             Setting::WorldAi => "world_ai",
             Setting::WorldStart => "world_start",
             Setting::WorldAnimals => "world_animals",
@@ -161,6 +168,7 @@ impl Setting {
             Setting::TurnTransition => text!("setting_turn_transition"),
             Setting::MaxQueuedTurns => text!("setting_queue_limit"),
             Setting::FogStyle => text!("setting_fog"),
+            Setting::Art => text!("setting_art"),
             Setting::WorldAi => text!("setting_world_ai"),
             Setting::WorldStart => text!("setting_world_start"),
             Setting::WorldAnimals => text!("setting_world_animals"),
@@ -173,7 +181,7 @@ impl Setting {
             Setting::TurnPlayback | Setting::TurnTransition | Setting::MaxQueuedTurns => {
                 text!("settings_group_turns").into()
             }
-            Setting::FogStyle => text!("settings_group_map").into(),
+            Setting::FogStyle | Setting::Art => text!("settings_group_map").into(),
             Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
                 text!("settings_group_next_world", world_key = NEXT_WORLD.key())
             }
@@ -185,9 +193,11 @@ impl Setting {
         match self {
             Setting::TurnPlayback | Setting::TurnTransition => Control::Toggle,
             Setting::MaxQueuedTurns => Control::Slider,
-            Setting::FogStyle | Setting::WorldAi | Setting::WorldStart | Setting::WorldAnimals => {
-                Control::Choice
-            }
+            Setting::FogStyle
+            | Setting::Art
+            | Setting::WorldAi
+            | Setting::WorldStart
+            | Setting::WorldAnimals => Control::Choice,
         }
     }
 
@@ -201,6 +211,7 @@ impl Setting {
             Setting::TurnTransition => tooltip!("setting_turn_transition").into(),
             Setting::MaxQueuedTurns => tooltip!("setting_queue_limit").into(),
             Setting::FogStyle => tooltip!("setting_fog").into(),
+            Setting::Art => tooltip!("setting_art").into(),
             Setting::WorldAi => tooltip!("setting_world_ai", world_key = world_key),
             Setting::WorldStart => tooltip!("setting_world_start", world_key = world_key),
             Setting::WorldAnimals => tooltip!("setting_world_animals", world_key = world_key),
@@ -214,6 +225,7 @@ impl Setting {
             Setting::TurnTransition => 0..=1,
             Setting::MaxQueuedTurns => 1..=20,
             Setting::FogStyle => 0..=1,
+            Setting::Art => 0..=1,
             Setting::WorldAi => 0..=6,
             Setting::WorldStart => 0..=1,
             Setting::WorldAnimals => ANIMALS_OFF as i32..=ANIMALS_MANY as i32,
@@ -235,6 +247,12 @@ impl Setting {
                 text!("setting_fog_clouds")
             } else {
                 text!("setting_fog_grey")
+            }
+            .into(),
+            Setting::Art => if value == 1 {
+                text!("setting_art_pixel")
+            } else {
+                text!("setting_art_vector")
             }
             .into(),
             Setting::WorldAi if value == WORLD_AI_BY_SEED as i32 => {
@@ -265,6 +283,7 @@ impl Settings {
             Setting::TurnTransition => self.turn_transition as i32,
             Setting::MaxQueuedTurns => self.max_queued_turns as i32,
             Setting::FogStyle => self.cloud_fog as i32,
+            Setting::Art => self.pixel_art as i32,
             Setting::WorldAi => self.world_ai as i32,
             Setting::WorldStart => self.world_start_city as i32,
             Setting::WorldAnimals => self.world_animals as i32,
@@ -278,6 +297,7 @@ impl Settings {
             Setting::TurnTransition => self.turn_transition = value == 1,
             Setting::MaxQueuedTurns => self.max_queued_turns = value as usize,
             Setting::FogStyle => self.cloud_fog = value == 1,
+            Setting::Art => self.pixel_art = value == 1,
             Setting::WorldAi => self.world_ai = value as usize,
             Setting::WorldStart => self.world_start_city = value == 1,
             Setting::WorldAnimals => self.world_animals = value as usize,

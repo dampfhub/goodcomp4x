@@ -19,6 +19,8 @@ Options:
                        to FILE as a PNG, and exit
   --world-overlay     with --screenshot: disable fog, show resource yields,
                        and zoom all the way out (F10 + Alt + zoom out)
+  --art <STYLE>        draw the map in vector (the default) or pixel art, as
+                       the Art setting does
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900); at least 640x480 at 100%
                        display scaling, and more at higher scaling
@@ -41,6 +43,8 @@ pub struct Options {
     /// Screenshot mode: where to write the PNG.
     pub screenshot: Option<PathBuf>,
     pub world_overlay: bool,
+    /// `--art`: whether to draw the map in pixel art, if given.
+    pub pixel_art: Option<bool>,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
     /// A multiplayer game to host or join.
@@ -64,6 +68,7 @@ impl Default for Options {
             seed: None,
             screenshot: None,
             world_overlay: false,
+            pixel_art: None,
             size: None,
             network: None,
             help: false,
@@ -103,6 +108,13 @@ impl Options {
                 }
                 "--screenshot" => options.screenshot = Some(value()?.into()),
                 "--world-overlay" => options.world_overlay = true,
+                "--art" => {
+                    options.pixel_art = Some(match value()?.as_str() {
+                        "vector" => false,
+                        "pixel" => true,
+                        other => bail!("--art wants vector or pixel, not {other:?}"),
+                    });
+                }
                 "--size" => options.size = Some(parse_size(&value()?)?),
                 "--host" => host = true,
                 "--port" => {
@@ -256,5 +268,8 @@ mod tests {
             "the default scenario has no seed"
         );
         assert!(parse(&["--help"]).unwrap().help);
+        assert_eq!(parse(&["--art", "pixel"]).unwrap().pixel_art, Some(true));
+        assert_eq!(parse(&["--art", "vector"]).unwrap().pixel_art, Some(false));
+        assert!(parse(&["--art", "crayon"]).is_err());
     }
 }

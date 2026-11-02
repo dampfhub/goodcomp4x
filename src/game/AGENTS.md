@@ -61,6 +61,7 @@ behavior.
 | `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `sprites.rs` | world icon and terrain sprite atlas, baked once from vector artwork; padded premultiplied RGBA mipmaps and one quad per placement |
+| `pixel_art.rs` | the pixel-art sprites (`docs/sprites.md`): `Sprite` and its tags and sizes, loading PNGs from `assets/sprites/` (or the copies `build.rs` embeds) into their own atlas, and one quad per sprite (`push`); `draw.rs` falls back to the vector art for any tag without a file (`push_pixel_tile`, `push_unit_art`, `push_map_icon`) |
 | `mesh.rs`, `font.rs` | shape helpers (`polygon` ear-clips concave outlines); TrueType text and the glyph atlas |
 
 ## Invariants
@@ -160,6 +161,10 @@ behavior.
 - **Stat or tuning change:** `unit.rs` or `ability.rs`, then every place that states the number
   to players: the text files (`text/units.ini`: the abilities' and upgrades' descriptions) and
   the tables in `docs/game-rules.md`. Grep for the old value.
+- **New thing drawn on the map:** if it should have pixel art, a `Sprite` for it (`pixel_art.rs`:
+  its variant, its tag in `tag`, its size, and `all`), a row in `docs/sprites.md` (a test checks
+  every tag is listed there), dev art in `tools/sprites/dev-art.mjs`, and drawing through
+  `pixel_art::push` with the vector art as the fallback when it returns false.
 - **New player setting:** `settings.rs`: a field in `Settings` (and its default), a
   `Setting` variant in `Setting::ALL`, and its arms in the `Setting` and `Settings` matches (the
   module comment lists them); its name, tooltip and values are entries in `text/menus.ini`. The settings menu shows it in both presentations with no UI

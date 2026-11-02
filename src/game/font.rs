@@ -338,6 +338,7 @@ fn build() -> Font {
             width: width as u32,
             height: height as u32,
             levels: mip_chain(pixels, width, height),
+            pixel_art: false,
         },
     }
 }

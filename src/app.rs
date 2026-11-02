@@ -266,8 +266,11 @@ impl App {
         let screenshot = options.screenshot.map(Screenshot::new);
         let remember = screenshot.is_none();
         let load = |name| if remember { read(name) } else { None };
-        let settings =
+        let mut settings =
             load(SETTINGS_FILE).map_or_else(Settings::default, |text| Settings::from_text(&text));
+        if let Some(pixel) = options.pixel_art {
+            settings.pixel_art = pixel;
+        }
         let layout = load(LAYOUT_FILE).unwrap_or_default();
         let saved = SavedWindow::from_text(&layout);
         let explicit_size = options.size.is_some();
@@ -856,6 +859,7 @@ impl ApplicationHandler for App {
                 &window,
                 font_atlas(),
                 crate::game::sprite_atlas(),
+                crate::game::pixel_atlas(),
                 &mut imgui,
             )
         } {

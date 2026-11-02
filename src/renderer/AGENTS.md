@@ -3,7 +3,7 @@
 A general-purpose 2D Vulkan renderer. It knows nothing about the game: keep game types, rules and
 constants out of this directory. Its whole interface:
 
-- `Renderer::new(window, font_atlas, sprite_atlas, imgui)` (unsafe: the window must outlive it), `resize`, `window_size`,
+- `Renderer::new(window, font_atlas, sprite_atlas, pixel_atlas, imgui)` (unsafe: the window must outlive it), `resize`, `window_size`,
   `wait_idle`.
 - `draw_frame(&[DrawBatch], Option<&DrawData>)`: each batch is a triangle list
   (`Vertex { pos, color, uv }`) with its own view-projection matrix. Optional ImGui data is
@@ -22,6 +22,11 @@ constants out of this directory. Its whole interface:
   filtering, then converted to straight alpha in the shader to match the pipeline. A `u` of
   -2 or less (`soft_disc_uv`) marks a soft disc instead: `(u + 3, v)` is the place on a disc of
   radius 1, drawn solid to 0.45 and fading out at the rim (the fog's clouds use it).
+  Pixel art uses a third atlas at set 2 (`Atlas::pixel_art`: sRGB RGBA, straight alpha, one
+  level), with `u` shifted by 4: the shader reads it with `texelFetch`, so nothing filters it,
+  and blends two texels only within one screen pixel of the edge between them (a
+  derivative-sized ramp, like the glyphs'). A texel of pure magenta in any shade (red equal
+  to blue, no green) takes the vertex RGB scaled by its red; every texel takes the vertex alpha.
 
 ## Files
 
@@ -33,7 +38,7 @@ constants out of this directory. Its whole interface:
 | `swapchain.rs` | swapchain, image views, and per-image render-finished semaphores |
 | `pipeline.rs` | render pass (MSAA target resolved into the swapchain image), the pipeline, shader modules |
 | `msaa.rs` | multisampled color target, rebuilt with the swapchain; `pick_samples` |
-| `texture.rs` | coverage (R8) and sprite (linear RGBA8) atlases with mips, uploaded once |
+| `texture.rs` | coverage (R8), sprite (linear RGBA8, with mips) and pixel-art (sRGB RGBA8, nearest, no mips) atlases, uploaded once |
 | `buffer.rs` | buffer and memory allocation |
 | `sync.rs` | per-frame acquire semaphores and fences (`MAX_FRAMES_IN_FLIGHT` = 2) |
 | `readback.rs` | copying a frame's swapchain image to a host buffer, `Frame` |
@@ -61,8 +66,9 @@ remembers the largest worth trying), and a frame too big for the buffer draws wh
 
 - Copy SPIR-V from `include_bytes!` into a `Vec<u32>` (`create_shader_module` does). The bytes
   have no alignment guarantee; reinterpreting them in place once broke release builds only.
-- `mesh.frag` samples both atlases outside the solid-geometry branch so mip selection and `fwidth`
-  always have valid derivatives. Keep the samples unconditional.
+- `mesh.frag` samples the coverage and sprite atlases, and takes the pixel art's `fwidth`, outside
+  the branches so mip selection and `fwidth` always have valid derivatives. Keep them
+  unconditional (the pixel art's `texelFetch` needs no derivatives, so it is in its branch).
 - The swapchain format is sRGB and vertex colors are linear, so colors display much lighter than
   their values suggest (dark UI panels need values around 0.01-0.05).
 - Readback copies the swapchain image itself, after the render pass and before presenting, in

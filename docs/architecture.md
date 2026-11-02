@@ -22,19 +22,20 @@ AGENTS.md            agent instructions for the whole repo (nested ones under sr
 README.md            what this is and how to run it
 Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
 src/main.rs          logger, command line, event loop
-src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
+src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --art, --host/--join)
 src/net/             a network game's link: TCP, sealed with a key from the join code (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS; 30 unfocused), F5 fullscreen
 src/clipboard.rs     system clipboard text (Win32 via windows-sys; a stub elsewhere), for App and ImGui
 src/screenshot.rs    screenshot mode: settle, read a frame back, write a PNG, quit
 src/icon.rs          window/taskbar icon (pixels from src/icon_art.rs)
 src/icon_art.rs      the icon drawn in code; build.rs also embeds it in the Windows exe
-src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, coverage atlas
+src/renderer/        Vulkan setup, swapchain, MSAA, the single pipeline, its three atlases
 src/game/            GameState and everything game-specific
-shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage or distance field)
+shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage, distance field, sprite or pixel art)
 assets/fonts/        IBM Plex Mono SemiBold, embedded by font.rs (OFL)
+assets/sprites/      pixel-art sprites by tag (docs/sprites.md); read at startup, and embedded by build.rs
 docs/                architecture, rules, controls, design proposals, history (docs/README.md)
-tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
+tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs, sprites/dev-art.mjs (the placeholder sprites)
 .agents/skills/      agent skills, read by Codex (canonical)
 .claude/skills/      pointers to those skills, read by Claude Code
 .github/             CI workflow, PR template
@@ -84,6 +85,15 @@ their existing vector path. The raster uses 2x2 supersampling, 224 pixels across
 16-pixel cell gutters and five mip levels. Colors stay premultiplied through rasterization,
 mip generation and filtering; the shader converts back to straight alpha for blending.
 The renderer accepts one-channel font and four-channel sprite atlases without game knowledge.
+
+## Pixel art
+
+The Art setting (`Settings::pixel_art`) draws the map with pixel-art sprites instead:
+`game/pixel_art.rs` loads PNGs by tag (`docs/sprites.md`) once, packs them into a third atlas,
+sRGB and without mips, and draws each as one quad in place of the vector shape it stands for.
+A tag with no file keeps its vector art. `mesh.frag` reads that atlas texel by texel
+(`texelFetch`), blending two texels only within a screen pixel of the edge between them, and
+paints magenta texels in the vertex color, the side's.
 
 Yield-row layouts and their small meshes are cached by the food/wood/metal tuple and zoom
 detail mode, bounded to

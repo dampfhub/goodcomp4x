@@ -1,4 +1,4 @@
-//! A coverage or linear RGBA atlas every draw can sample,
+//! A coverage, linear RGBA or pixel-art atlas every draw can sample,
 //! uploaded once at startup and bound for every world/UI batch.
 
 use anyhow::{Result, ensure};
@@ -12,6 +12,9 @@ pub struct Atlas {
     pub width: u32,
     pub height: u32,
     pub levels: Vec<Vec<u8>>,
+    /// Pixel art: four sRGB-encoded channels (straight alpha) and one level,
+    /// read texel by texel (`texelFetch`), so nothing filters or blurs it.
+    pub pixel_art: bool,
 }
 
 pub struct Texture {
@@ -37,7 +40,9 @@ impl Texture {
         validate_atlas(atlas)?;
         let mip_levels = atlas.levels.len() as u32;
 
-        let format = if atlas.channels == 4 {
+        let format = if atlas.pixel_art {
+            vk::Format::R8G8B8A8_SRGB
+        } else if atlas.channels == 4 {
             vk::Format::R8G8B8A8_UNORM
         } else {
             vk::Format::R8_UNORM
@@ -96,10 +101,15 @@ impl Texture {
             .subresource_range(subresource);
         let view = unsafe { device.create_image_view(&view_info, None) }?;
 
+        let (filter, mipmap_mode) = if atlas.pixel_art {
+            (vk::Filter::NEAREST, vk::SamplerMipmapMode::NEAREST)
+        } else {
+            (vk::Filter::LINEAR, vk::SamplerMipmapMode::LINEAR)
+        };
         let sampler_info = vk::SamplerCreateInfo::default()
-            .mag_filter(vk::Filter::LINEAR)
-            .min_filter(vk::Filter::LINEAR)
-            .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
+            .mag_filter(filter)
+            .min_filter(filter)
+            .mipmap_mode(mipmap_mode)
             .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
             .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
@@ -280,6 +290,10 @@ fn validate_atlas(atlas: &Atlas) -> Result<()> {
         "atlas dimensions must be nonzero"
     );
     ensure!(!atlas.levels.is_empty(), "atlas has no image data");
+    ensure!(
+        !atlas.pixel_art || (atlas.channels == 4 && atlas.levels.len() == 1),
+        "a pixel-art atlas has four channels and one level"
+    );
     let max_levels = atlas.width.max(atlas.height).ilog2() as usize + 1;
     ensure!(
         atlas.levels.len() <= max_levels,
@@ -335,6 +349,7 @@ mod tests {
             width: 2,
             height: 2,
             levels: vec![vec![0; 16], vec![0; 4]],
+            pixel_art: false,
         };
         validate_atlas(&atlas).unwrap();
         let (regions, total) = atlas_regions(&atlas);
@@ -356,6 +371,7 @@ mod tests {
             width: 8,
             height: 2,
             levels: vec![vec![0; 16], vec![0; 4], vec![0; 2], vec![0; 1]],
+            pixel_art: false,
         };
         validate_atlas(&atlas).unwrap();
         let (regions, total) = atlas_regions(&atlas);
@@ -385,30 +401,50 @@ mod tests {
                 width: 0,
                 height: 1,
                 levels: vec![vec![]],
+                pixel_art: false,
             },
             Atlas {
                 channels: 1,
                 width: 1,
                 height: 0,
                 levels: vec![vec![]],
+                pixel_art: false,
             },
             Atlas {
                 channels: 1,
                 width: 1,
                 height: 1,
                 levels: vec![],
+                pixel_art: false,
             },
             Atlas {
                 channels: 1,
                 width: 1,
                 height: 1,
                 levels: vec![vec![0], vec![]],
+                pixel_art: false,
             },
             Atlas {
                 channels: 1,
                 width: 2,
                 height: 2,
                 levels: vec![vec![0; 3]],
+                pixel_art: false,
+            },
+            // Pixel art is RGBA with no mips.
+            Atlas {
+                channels: 1,
+                width: 1,
+                height: 1,
+                levels: vec![vec![0]],
+                pixel_art: true,
+            },
+            Atlas {
+                channels: 4,
+                width: 2,
+                height: 2,
+                levels: vec![vec![0; 16], vec![0; 4]],
+                pixel_art: true,
             },
         ] {
             assert!(validate_atlas(&atlas).is_err());
@@ -418,6 +454,7 @@ mod tests {
             width: 1,
             height: 1,
             levels: vec![vec![0]],
+            pixel_art: false,
         })
         .unwrap();
     }

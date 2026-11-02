@@ -19,7 +19,9 @@ pub struct Vertex {
     pub color: [f32; 4],
     /// Where to sample the atlas, or `SOLID_UV`. `1 <= u < 2` marks a
     /// distance-field glyph at `u - 1`; `2 <= u < 3` a color sprite at
-    /// `u - 2`; a `u` of -2 or less, a soft disc (`soft_disc_uv`).
+    /// `u - 2`; `4 <= u < 5` a pixel-art sprite at `u - 4`, whose magenta
+    /// texels take `color`'s RGB; a `u` of -2 or less, a soft disc
+    /// (`soft_disc_uv`).
     pub uv: [f32; 2],
 }
 
