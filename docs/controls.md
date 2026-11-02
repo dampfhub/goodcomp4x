@@ -261,6 +261,8 @@ that end of the range).
 | Turn transition (Turns) | Checkbox | On (the default): as a turn resolves, each unit and worker you could see that moved glides from its old hex to its new one (about a third of a second; with step-by-step playback, as each step plays), and as the next turn begins the map dims for a moment and the turn number in the top bar flashes gold. Only how it looks: input never waits for it. Off: everything snaps into place |
 | Queue limit (Turns) | Slider | 1 to 20 turns (6 by default): the most turns a unit can have queued, this turn included. A Shift-click toward a hex farther away queues the move as far as the limit goes, and once a queue is full, Shift-clicks add nothing to it until turns are played |
 | Fog (Map) | Buttons | Clouds (the default) or solid grey: how unexplored land is hidden under fog of war |
+| Art (Map) | Buttons | Vector (the default) or pixel: the map drawn in shapes or in pixel-art sprites (`sprites.md`), and the UI's cards, chips, order buttons and text icons with them. Only how it looks |
+| Pixel clouds (Map) | Drop-down list | Temporary, for comparing (#391): how pixel art draws the fog's clouds: vector (the default), tiles, puffs, blocks or dither (`sprites.md`, Clouds). No effect in vector art |
 | AI players (Next World) | Drop-down list | 4-6 by map (the default: picked by the map's seed), or 1 to 6: AI sides in the next world (F4) |
 | Start with (Next World) | Buttons | City (the default) or settler: what every side in the next world (F4) starts with, beside its scout |
 | Animals (Next World) | Buttons | Off, few (the default: one animal den a side, each keeping up to two animals) or many (two dens a side, up to three animals each; a full den sends out strays, up to one a side for each den a side): the dens of wolf packs and bears in the next world (F4); see `game-rules.md`, Animals |
@@ -313,6 +315,8 @@ them.
 | `--seed <n>` | With `--scenario world`: generate map number `n` (the seed the debug panel shows) |
 | `--size <W>x<H>` | Open the window at this size in pixels |
 | `--world-overlay` | With `--screenshot`: disable fog, show tile yields and zoom all the way out, for reproducible rendering checks |
+| `--art <style>` | Draw the map in `vector` or `pixel` art, as the Art setting does (screenshots too) |
+| `--clouds <style>` | With pixel art, draw the clouds as `vector`, `tiles`, `puffs`, `blocks` or `dither`, as the Pixel Clouds setting does (temporary) |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
 | `--host` | Host a network game on a new world (you're Blue, the AI plays the sides nobody does) and show its join code (`multiplayer.md`); the settings menu's Multiplayer page does the same |
 | `--players <n>` | With `--host`: how many people play, you included (2-7; 2 unless given) |

@@ -53,6 +53,13 @@ file holds.
   and note what it draws for the test (`note_mark`, `note_text_item`, `note_button_label`;
   `fill_shapes` and `draw_rich` note theirs). `imgui_panels_keep_their_text_and_icons_apart_at_every_width`
   sweeps the panels' widths.
+- **Pixel art.** With the Art setting on Pixel, pictures in the UI are sprites
+  (`docs/sprites.md`, In the UI): draw one with `pixel_art::push_ui` (whole pixels a texel; a
+  team-colored sprite takes a side), falling back to the vector picture when it returns false,
+  and keep its room the same in both looks, or measure it in both (a building card takes an
+  icon's room only in pixel art: `action_icons::card_sprite`). ImGui draws the sprite quads
+  among a shape's vertices as images (`fill_shapes`, `draw_pixel_sprites`). The width-sweep and
+  status-bar tests run in both looks.
 - **Icons in text.** Prices, stockpiles and turns use the icon characters of `map_icons.rs`
   (`stock_icons`, `turns_icon`, `cost_hint` in `text.rs`); both presentations draw them as the
   map's icons: classic in `font::Face`, ImGui through `rich_text` / `rich_button` (`imgui.rs`).

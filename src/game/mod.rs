@@ -24,6 +24,7 @@ mod order_queue;
 mod orders;
 #[cfg(test)]
 mod perf;
+mod pixel_art;
 mod research;
 mod ruins;
 mod scenario;
@@ -55,15 +56,18 @@ pub use multiplayer::{
     DEFAULT_PORT, HOST_SEAT, MAX_PLAYERS, Message as NetMessage, PROTOCOL_VERSION,
 };
 pub use orders::ClickMode;
+pub use pixel_art::atlas as pixel_atlas;
 pub use scenario::Scenario;
-pub use settings::Settings;
+pub use settings::{
+    CLOUDS_BLOCKS, CLOUDS_DITHER, CLOUDS_PUFFS, CLOUDS_TILES, CLOUDS_VECTOR, Settings,
+};
 pub use sprites::atlas as sprite_atlas;
 use strings::text;
 use terrain::Tile;
 use turn::Step;
 pub use ui::{
-    ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, selection_box, style_imgui,
-    ui_projection,
+    ImGuiLayoutState, MIN_WINDOW_SIZE, NetMenu, NetRequest, selection_box, set_pixel_texture,
+    style_imgui, ui_projection,
 };
 pub use unit::Team;
 use unit::{Unit, UnitType};

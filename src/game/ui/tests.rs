@@ -5045,8 +5045,14 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         ("research queue", "Production Queue", &research),
     ];
     let mut screen = ImGuiScreen::styled(size);
-    for (name, window, make) in panels {
+    // In vector art, and in pixel art (#391), whose sprites take their own room.
+    for (pixel, (name, window, make)) in [false, true]
+        .into_iter()
+        .flat_map(|pixel| panels.iter().map(move |panel| (pixel, *panel)))
+    {
+        let name = format!("{name}{}", if pixel { " (pixel art)" } else { "" });
         let mut game = make();
+        game.settings.pixel_art = pixel;
         screen.settle(&mut game);
         // From the least width a panel can be resized to up, closely
         // where the room runs out.
@@ -5114,8 +5120,12 @@ fn imgui_status_bar_keeps_its_parts_apart_at_every_width() {
     let height = 720.0;
     let least = MIN_WINDOW_SIZE[0] as u32;
     let mut screen = ImGuiScreen::styled(Vec2::new(least as f32, height));
-    for (name, make, reset) in bars {
+    for (pixel, (name, make, reset)) in [false, true]
+        .into_iter()
+        .flat_map(|pixel| bars.iter().map(move |bar| (pixel, *bar)))
+    {
         let mut game = make();
+        game.settings.pixel_art = pixel;
         for width in (least..1000).step_by(12).chain((1000..=1600).step_by(100)) {
             let width = width as f32;
             screen.size = Vec2::new(width, height);

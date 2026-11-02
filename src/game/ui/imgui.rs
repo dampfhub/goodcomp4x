@@ -16,7 +16,7 @@ use super::*;
 use crate::game::keys::Command;
 use crate::game::settings::{Control, Setting};
 use crate::game::strings::{hover_text, text, tooltip};
-use crate::game::{font, map_icons};
+use crate::game::{font, map_icons, pixel_art};
 
 /// How many of the punctuation characters game text uses
 /// (`font::UI_PUNCTUATION`) are past Latin-1.
@@ -3252,6 +3252,9 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
     let center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
     for triangle in vertices.as_chunks::<3>().0 {
+        if pixel_art::atlas_uv(&triangle[0]).is_some() {
+            continue;
+        }
         draw.add_triangle(
             at(&triangle[0]),
             at(&triangle[1]),
@@ -3261,6 +3264,7 @@ fn draw_roster_chip(ui: &Ui, min: [f32; 2], max: [f32; 2], chip: &RosterChip, ho
         .filled(true)
         .build();
     }
+    draw_pixel_sprites(&draw, center, &vertices);
     if chip.count > 1 {
         let text = chip.count.to_string();
         let size = ui.calc_text_size(&text);
@@ -3289,7 +3293,14 @@ fn draw_action_icon(
     let draw = ui.get_window_draw_list();
     let mut center = [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
-    action_icons::push_icon(Vec2::ZERO, 14.0, icon, color, &mut vertices);
+    action_icons::push_icon(
+        Vec2::ZERO,
+        14.0,
+        icon,
+        color,
+        cooldown.is_some(),
+        &mut vertices,
+    );
     // The badge in the top-right corner: where it goes, and its text's size.
     let badge = cooldown.map(|turns| {
         let _font = ui.push_font(small_font);
@@ -3333,16 +3344,64 @@ fn draw_action_icon(
     }
 }
 
-fn draw_production_icon(
-    ui: &Ui,
-    min: [f32; 2],
-    max: [f32; 2],
-    icon: crate::game::unit_icons::UnitIcon,
-) {
+/// A catalogue card's picture: what a unit card builds (its pictogram,
+/// or in pixel art its sprite), or in pixel art a building card's
+/// building (`action_icons::card_sprite`).
+fn draw_card_icon(ui: &Ui, min: [f32; 2], max: [f32; 2], target: Target, disabled: bool) {
     let center = [min[0] + CARD_ICON_CENTER, (min[1] + max[1]) / 2.0];
     let mut vertices = Vec::new();
-    crate::game::unit_icons::push_pictogram(Vec2::ZERO, 12.0, icon, TEXT, &mut vertices);
+    let room = 2.0 * CARD_ICON_CENTER - 8.0;
+    if !action_icons::push_card_sprite(target, Vec2::ZERO, room, disabled, &mut vertices) {
+        let Some(icon) = action_icons::production_unit_icon(target) else {
+            return;
+        };
+        crate::game::unit_icons::push_pictogram(Vec2::ZERO, 12.0, icon, TEXT, &mut vertices);
+    }
     fill_shapes(&ui.get_window_draw_list(), center, &vertices);
+}
+
+/// The ImGui texture the renderer registered the pixel-art atlas as
+/// (`set_pixel_texture`); until it's set (tests), texture 0.
+static PIXEL_TEXTURE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Tells the ImGui presentation which texture is the pixel-art atlas
+/// (`Renderer::pixel_art_texture`), for the sprites it draws in pixel art.
+pub fn set_pixel_texture(id: ::imgui::TextureId) {
+    PIXEL_TEXTURE.store(id.id(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Draws the pixel sprites among `vertices` (six each, `pixel_art::push_ui`,
+/// built Y-up around the origin) as images of the atlas, centered on
+/// `center` as `fill_shapes` places shapes, each corner on a whole pixel so
+/// the atlas's nearest sampling keeps every texel the same size. The atlas
+/// holds team-colored sprites already painted (`pixel_art::push_ui`), as
+/// ImGui's shader can't paint them.
+fn draw_pixel_sprites(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
+    let texture = ::imgui::TextureId::new(PIXEL_TEXTURE.load(std::sync::atomic::Ordering::Relaxed));
+    let pixels: Vec<&Vertex> = vertices
+        .iter()
+        .filter(|v| pixel_art::atlas_uv(v).is_some())
+        .collect();
+    for quad in pixels.chunks(6) {
+        let (mut low, mut high) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+        let (mut uv_low, mut uv_high) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for vertex in quad {
+            let at = Vec2::new(vertex.pos[0], vertex.pos[1]);
+            low = low.min(at);
+            high = high.max(at);
+            let uv = pixel_art::atlas_uv(vertex).unwrap_or_default();
+            uv_low = [uv_low[0].min(uv[0]), uv_low[1].min(uv[1])];
+            uv_high = [uv_high[0].max(uv[0]), uv_high[1].max(uv[1])];
+        }
+        // ImGui's Y points down: the top of the box is the image's top row.
+        let min = [(center[0] + low.x).round(), (center[1] - high.y).round()];
+        let max = [min[0] + (high.x - low.x), min[1] + (high.y - low.y)];
+        draw.add_image(texture, min, max)
+            .uv_min(uv_low)
+            .uv_max(uv_high)
+            .col(quad[0].color)
+            .build();
+    }
 }
 
 /// Fills shapes built Y-up around the origin (triangle lists, like the
@@ -3358,6 +3417,9 @@ fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex
     let feathered = ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
     unsafe { (*list).Flags = flags & !feathered };
     for triangle in vertices.as_chunks::<3>().0 {
+        if pixel_art::atlas_uv(&triangle[0]).is_some() {
+            continue;
+        }
         draw.add_triangle(
             at(&triangle[0]),
             at(&triangle[1]),
@@ -3368,6 +3430,7 @@ fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex
         .build();
     }
     unsafe { (*list).Flags = flags };
+    draw_pixel_sprites(draw, center, vertices);
     #[cfg(test)]
     if !vertices.is_empty() {
         let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
@@ -3533,7 +3596,7 @@ fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
         }
         flush(&mut run, &mut x);
         let mut vertices = Vec::new();
-        map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, &mut vertices);
+        map_icons::push_inline_icon(Vec2::ZERO, size * 0.85, ch, false, true, &mut vertices);
         // Centered on the line by what it draws: the wheat stands a little
         // higher than low, and would reach into the line above.
         let (low, high) = vertices
@@ -4821,8 +4884,9 @@ impl GameState {
                                 let _disabled = ui.begin_disabled(spec.unavailable.is_some());
                                 let width = ui.content_region_avail()[0].max(80.0);
                                 let hint = visible_button_hint(&spec.hint, false);
-                                let has_icon =
-                                    action_icons::production_unit_icon(spec.target).is_some();
+                                let has_icon = action_icons::production_unit_icon(spec.target)
+                                    .is_some()
+                                    || action_icons::card_sprite(spec.target).is_some();
                                 let indent = if has_icon { CARD_ICON_ROOM } else { 0.0 };
                                 let id = format!("{:?}", spec.target);
                                 let price = short_price(spec);
@@ -4831,13 +4895,13 @@ impl GameState {
                                     actions.push(Action::Button(scope, spec.target));
                                 }
                                 note_drawn_button(ui, spec.target);
-                                if let Some(icon) = action_icons::production_unit_icon(spec.target)
-                                {
-                                    draw_production_icon(
+                                if has_icon {
+                                    draw_card_icon(
                                         ui,
                                         ui.item_rect_min(),
                                         ui.item_rect_max(),
-                                        icon,
+                                        spec.target,
+                                        spec.unavailable.is_some(),
                                     );
                                 }
                                 self.button_tooltip(ui, spec, subject);
@@ -4936,6 +5000,7 @@ impl GameState {
         fonts: &[FontId; 3],
         layout: &mut ImGuiLayoutState,
     ) {
+        crate::game::pixel_art::set_active(self.settings.pixel_art, self.local_team);
         let viewport = Vec2::from_array(ui.io().display_size);
         let arranging = ui.io().key_ctrl;
         layout.begin_frame(ui, arranging);

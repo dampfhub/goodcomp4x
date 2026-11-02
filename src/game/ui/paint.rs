@@ -11,9 +11,11 @@ use super::{
     WAITING_TEXT,
 };
 use super::{ChipIcon, Target};
+use crate::game::city::Building;
 use crate::game::draw::{push_barracks_house, push_city_tower, push_unit_token};
 use crate::game::font;
 use crate::game::mesh;
+use crate::game::pixel_art::{self, Sprite};
 use crate::renderer::Vertex;
 use glam::Vec2;
 
@@ -118,6 +120,9 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
     }
 }
 
+/// The room a catalogue card's pixel-art picture takes (`push_card_sprite`).
+const CARD_SPRITE_ROOM: f32 = 28.0;
+
 /// How far a chip's count sits in from its bottom-right corner.
 pub(super) const CHIP_COUNT_INSET: f32 = 3.0;
 
@@ -130,6 +135,17 @@ pub(super) fn push_chip_icon(
     color: Color,
     out: &mut Vec<Vertex>,
 ) {
+    if pixel_art::active() {
+        let sprite = match icon {
+            ChipIcon::Unit(look) => Sprite::Unit(look.icon),
+            ChipIcon::City => Sprite::City,
+            ChipIcon::Barracks => Sprite::Building(Building::Barracks),
+        };
+        let team = pixel_art::team_of(color);
+        if pixel_art::push_ui(sprite, center, 2.0 * radius, team, color[3], out) {
+            return;
+        }
+    }
     match icon {
         ChipIcon::Unit(look) => push_unit_token(center, look, radius, color, out),
         // The tower is 0.84 wide at scale 1.
@@ -187,7 +203,14 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
 
     if let Some(icon) = action_icons::for_button(button.target, &button.label) {
         let center = (button.min + button.max) / 2.0;
-        action_icons::push_icon(center, 14.0, icon, text_color, out);
+        action_icons::push_icon(
+            center,
+            14.0,
+            icon,
+            text_color,
+            action_icons::badge(&button.label).is_some(),
+            out,
+        );
         if let Some(badge) = action_icons::badge(&button.label) {
             let face = font::ui(SMALL);
             face.push(
@@ -207,7 +230,10 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
     let label = button.shown_label(hovered);
     if let Some(icon) = action_icons::production_unit_icon(button.target) {
         let center = Vec2::new(button.min.x + 20.0, (button.min.y + button.max.y) / 2.0);
-        crate::game::unit_icons::push_pictogram(center, 10.0, icon, text_color, out);
+        let disabled = button.state() == ButtonState::Disabled;
+        if !action_icons::push_card_sprite(button.target, center, CARD_SPRITE_ROOM, disabled, out) {
+            crate::game::unit_icons::push_pictogram(center, 10.0, icon, text_color, out);
+        }
         let hint = visible_button_hint(&button.hint, button.faded);
         let face = font::ui(SMALL);
         let label_x = button.min.x + 39.0;
@@ -229,12 +255,21 @@ pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>)
         // right, so the rows' prices line up.
         let pad = GAP * 2.0;
         let baseline = center.y - label_face.cap_height / 2.0;
-        label_face.push(
-            Vec2::new(button.min.x + pad, baseline),
-            label,
-            text_color,
+        // In pixel art, the building's picture before its name.
+        let disabled = button.state() == ButtonState::Disabled;
+        let icon_at = Vec2::new(button.min.x + 4.0 + CARD_SPRITE_ROOM / 2.0, center.y);
+        let left = if action_icons::push_card_sprite(
+            button.target,
+            icon_at,
+            CARD_SPRITE_ROOM,
+            disabled,
             out,
-        );
+        ) {
+            button.min.x + CARD_SPRITE_ROOM + GAP
+        } else {
+            button.min.x + pad
+        };
+        label_face.push(Vec2::new(left, baseline), label, text_color, out);
         let hint_left = button.max.x - pad - hint_face.width(hint);
         hint_face.push(Vec2::new(hint_left, baseline), hint, hint_color, out);
     } else if height < BUTTON_HEIGHT {

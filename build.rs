@@ -16,6 +16,7 @@ fn main() {
     let shader_dir = Path::new("shaders");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     embed_icon(&out_dir);
+    embed_sprites(&out_dir);
     let glslc = find_glslc();
 
     println!("cargo:rerun-if-changed={}", shader_dir.display());
@@ -45,6 +46,49 @@ fn main() {
             "glslc failed to compile {}",
             path.display()
         );
+    }
+}
+
+/// Lists every PNG under `assets/sprites/` as `(tag, bytes)` in
+/// `OUT_DIR/embedded_sprites.rs`, so the game has the shipped sprites without
+/// the folder (`pixel_art.rs`). A sprite's tag is its path there without
+/// `.png`, with forward slashes.
+fn embed_sprites(out_dir: &Path) {
+    let root = Path::new("assets/sprites");
+    println!("cargo:rerun-if-changed={}", root.display());
+    let mut files = Vec::new();
+    collect_pngs(root, &mut files);
+    files.sort();
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let mut list = String::from("&[\n");
+    for path in files {
+        let tag = path
+            .strip_prefix(root)
+            .unwrap()
+            .with_extension("")
+            .components()
+            .map(|part| part.as_os_str().to_str().expect("sprite paths are UTF-8"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let absolute = manifest.join(&path);
+        list += &format!("    ({tag:?}, include_bytes!({absolute:?})),\n");
+    }
+    list += "]\n";
+    std::fs::write(out_dir.join("embedded_sprites.rs"), list)
+        .expect("failed to write embedded_sprites.rs");
+}
+
+fn collect_pngs(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        let path = entry.expect("failed to read assets/sprites/").path();
+        if path.is_dir() {
+            collect_pngs(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "png") {
+            files.push(path);
+        }
     }
 }
 

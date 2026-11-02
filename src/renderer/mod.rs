@@ -160,6 +160,9 @@ pub struct Renderer {
     framebuffers: Vec<vk::Framebuffer>,
     texture: Texture,
     sprites: Texture,
+    pixels: Texture,
+    /// The pixel-art atlas as an ImGui texture.
+    pixel_art_texture: imgui::TextureId,
 
     /// One vertex buffer per frame in flight, so the CPU can fill one while
     /// the GPU still reads another, each with its capacity in vertices.
@@ -199,6 +202,7 @@ impl Renderer {
         window: &Window,
         atlas: &Atlas,
         sprites: &Atlas,
+        pixels: &Atlas,
         imgui: &mut ImGuiContext,
     ) -> Result<Self> {
         let display_handle = window.display_handle()?.as_raw();
@@ -261,6 +265,17 @@ impl Renderer {
             )
         }?;
 
+        let pixels = unsafe {
+            Texture::new(
+                &vk_instance,
+                &logical_device,
+                physical_device,
+                command_pool,
+                graphics_queue,
+                pixels,
+            )
+        }?;
+
         let sample_cap = msaa::sample_cap();
         let samples = unsafe {
             msaa::pick_samples(
@@ -284,7 +299,7 @@ impl Renderer {
         let render_pass = unsafe {
             pipeline::create_render_pass(&logical_device, swapchain_data.format, samples)
         }?;
-        let imgui_renderer = ImGuiRenderer::with_default_allocator(
+        let mut imgui_renderer = ImGuiRenderer::with_default_allocator(
             &vk_instance,
             physical_device,
             logical_device.clone(),
@@ -298,11 +313,14 @@ impl Renderer {
                 ..ImGuiOptions::default()
             }),
         )?;
+        // ImGui draws the pixel art from the same descriptor set: its layout
+        // (one combined image sampler, fragment stage) matches ImGui's.
+        let pixel_art_texture = imgui_renderer.textures().insert(pixels.set);
         let (pipeline_layout, gfx_pipeline) = unsafe {
             pipeline::create_graphics_pipeline(
                 &logical_device,
                 render_pass,
-                &[texture.set_layout, sprites.set_layout],
+                &[texture.set_layout, sprites.set_layout, pixels.set_layout],
                 samples,
             )
         }?;
@@ -351,6 +369,8 @@ impl Renderer {
             framebuffers,
             texture,
             sprites,
+            pixels,
+            pixel_art_texture,
             vertex_buffers,
             vertex_limit: usize::MAX,
             vertices_trimmed: false,
@@ -370,6 +390,12 @@ impl Renderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.window_size = (width, height);
         self.framebuffer_resized = true;
+    }
+
+    /// The pixel-art atlas (`Renderer::new`'s `pixels`) as an ImGui texture,
+    /// for images drawn from it.
+    pub fn pixel_art_texture(&self) -> imgui::TextureId {
+        self.pixel_art_texture
     }
 
     pub fn window_size(&self) -> (u32, u32) {
@@ -659,7 +685,7 @@ impl Renderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_layout,
                 0,
-                &[self.texture.set, self.sprites.set],
+                &[self.texture.set, self.sprites.set, self.pixels.set],
                 &[],
             );
             // Without a buffer, `fit_ranges` left every range empty.
@@ -766,7 +792,11 @@ impl Renderer {
                 pipeline::create_graphics_pipeline(
                     &self.device,
                     self.render_pass,
-                    &[self.texture.set_layout, self.sprites.set_layout],
+                    &[
+                        self.texture.set_layout,
+                        self.sprites.set_layout,
+                        self.pixels.set_layout,
+                    ],
                     next_samples,
                 )
             }?;
@@ -843,6 +873,7 @@ impl Drop for Renderer {
             }
             self.texture.destroy(&self.device);
             self.sprites.destroy(&self.device);
+            self.pixels.destroy(&self.device);
             self.sync.destroy(&self.device);
             if let Some(readback) = self.readback.take() {
                 readback.destroy(&self.device);
