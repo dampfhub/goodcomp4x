@@ -18,6 +18,7 @@ use super::map_icons::{
 use super::orders::ClickMode;
 use super::pixel_art::{self, Sprite};
 use super::ruins::RUIN_HOLD_TURNS;
+use super::settings::{CLOUDS_BLOCKS, CLOUDS_DITHER, CLOUDS_PUFFS, CLOUDS_TILES, CLOUDS_VECTOR};
 use super::terrain::{Feature, Terrain, Tile};
 use super::turn::{Phase, step_rank};
 use super::unit::{Team, Unit, UnitStats};
@@ -422,20 +423,35 @@ impl GameState {
             let view = self.cloud_view();
             let in_view =
                 |p: Vec2| p.cmpge(view.0 - Vec2::ONE).all() && p.cmple(view.1 + Vec2::ONE).all();
-            for hex in self.grid.all_hexes() {
-                if !self.is_explored(hex) && in_view(hex.to_world()) {
-                    mesh::regular_polygon(
-                        hex.to_world(),
-                        OUTER_BORDER_RADIUS,
-                        6,
-                        0.0,
-                        base,
-                        &mut out,
-                    );
-                }
+            let unexplored: Vec<Hex> = self
+                .grid
+                .all_hexes()
+                .filter(|&hex| !self.is_explored(hex) && in_view(hex.to_world()))
+                .collect();
+            for &hex in &unexplored {
+                mesh::regular_polygon(hex.to_world(), OUTER_BORDER_RADIUS, 6, 0.0, base, &mut out);
             }
-            if cloud {
-                push_cloud_banks(&self.grid, self.cloud_time, view, &mut out);
+            // Pixel art's clouds are on trial (#391): the Pixel Clouds
+            // setting picks how they're drawn.
+            let style = if self.settings.pixel_art {
+                self.settings.pixel_clouds
+            } else {
+                CLOUDS_VECTOR
+            };
+            let (grid, time) = (&self.grid, self.cloud_time);
+            // A cell's least size, for a window about this tall.
+            let world_per_pixel = 2.0 * self.camera.half_height / CLOUD_REFERENCE_HEIGHT;
+            match style {
+                _ if !cloud => {}
+                CLOUDS_TILES => push_cloud_tiles(&unexplored, &mut out),
+                CLOUDS_PUFFS => push_pixel_puffs(grid, time, view, &mut out),
+                CLOUDS_BLOCKS => {
+                    push_cloud_cells(grid, time, view, world_per_pixel, false, &mut out)
+                }
+                CLOUDS_DITHER => {
+                    push_cloud_cells(grid, time, view, world_per_pixel, true, &mut out)
+                }
+                _ => push_cloud_banks(grid, time, view, &mut out),
             }
         }
         stage("fog fill and clouds", out.len());
@@ -965,12 +981,29 @@ fn edge_fade(grid: &HexGrid, point: Vec2) -> f32 {
 /// keeps its lattice point's hash as it drifts, so the pattern moves whole.
 /// The work per puff is constant and cheap: no noise sampling per vertex.
 fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
+    let (shadows, puffs) = cloud_puffs(grid, time, view);
+    out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
+    for (center, alpha) in shadows {
+        let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
+        push_soft_disc(center, Vec2::splat(SHADOW_RADIUS), color, color, out);
+    }
+    for puff in &puffs {
+        push_cloud_puff(puff, out);
+    }
+}
+
+/// The cloud banks' shadows (center, opacity) and puffs that reach into
+/// `view` at `time`, the puffs in painter order (higher first): what
+/// `push_cloud_banks` draws, and what the pixel-art clouds draw their way.
+fn cloud_puffs(grid: &HexGrid, time: f32, view: (Vec2, Vec2)) -> (Vec<(Vec2, f32)>, Vec<Puff>) {
+    let mut shadows = Vec::new();
+    let mut puffs = Vec::new();
     let (min, max) = grid.bounds();
     // A bank reaches about two spacings from its lattice point.
     let reach = Vec2::splat(2.0 * CLOUD_SPACING);
     let (min, max) = (min.max(view.0 - reach), max.min(view.1 + reach));
     if min.cmpgt(max).any() {
-        return;
+        return (shadows, puffs);
     }
     let drift = CLOUD_WIND * time;
     let (min, max) = (min - drift, max - drift);
@@ -978,8 +1011,6 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
     let max_x = (max.x / CLOUD_SPACING).ceil() as i32 + 1;
     let min_y = (min.y / CLOUD_SPACING).floor() as i32 - 1;
     let max_y = (max.y / CLOUD_SPACING).ceil() as i32 + 1;
-    let mut shadows = Vec::new();
-    let mut puffs = Vec::new();
     for y in min_y..=max_y {
         for x in min_x..=max_x {
             let look = cached_bank(x, y);
@@ -1007,13 +1038,149 @@ fn push_cloud_banks(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec
         }
     }
     puffs.sort_unstable_by(|a, b| b.center.y.total_cmp(&a.center.y));
-    out.reserve((shadows.len() + puffs.len()) * CLOUD_PUFF_VERTICES);
-    for (center, alpha) in shadows {
-        let color = with_alpha(CLOUD_SHADOW_COLOR, CLOUD_SHADOW_COLOR[3] * alpha);
-        push_soft_disc(center, Vec2::splat(SHADOW_RADIUS), color, color, out);
-    }
+    (shadows, puffs)
+}
+
+/// Pixel clouds (temporary, #391), "Puffs": the vector clouds' puffs, each
+/// a pixel puff sprite of the nearest size at the map's texel size, on the
+/// texel grid, so they drift a texel at a time. No shadows: the sprites
+/// have dark undersides.
+fn push_pixel_puffs(grid: &HexGrid, time: f32, view: (Vec2, Vec2), out: &mut Vec<Vertex>) {
+    let (_, puffs) = cloud_puffs(grid, time, view);
+    out.reserve(puffs.len() * 6);
     for puff in &puffs {
-        push_cloud_puff(puff, out);
+        let across = 2.0 * puff.radius / pixel_art::TEXEL;
+        let size = (0..pixel_art::CLOUD_PUFFS)
+            .min_by_key(|&i| {
+                let (w, _) = Sprite::CloudPuff(i).size();
+                (across - w as f32).abs() as u32
+            })
+            .unwrap_or(0);
+        let center = (puff.center / pixel_art::TEXEL).round() * pixel_art::TEXEL;
+        let color = [1.0, 1.0, 1.0, puff.alpha];
+        pixel_art::push(Sprite::CloudPuff(size), center, 1.0, color, out);
+    }
+}
+
+/// Pixel clouds (temporary, #391), "Blocks" and "Dither": the vector
+/// clouds worked out on a coarse grid of square cells in world space (whole
+/// texels, at least `CLOUD_CELL_PIXELS` screen pixels across, so a cell is
+/// a big pixel at every zoom), each cell the tone of the puff on top there
+/// in one of the `CLOUD_TONES`, plain or dithered between them. A row's
+/// cells of one tone go in one quad. `world_per_pixel` is the zoom.
+fn push_cloud_cells(
+    grid: &HexGrid,
+    time: f32,
+    view: (Vec2, Vec2),
+    world_per_pixel: f32,
+    dither: bool,
+    out: &mut Vec<Vertex>,
+) {
+    let (_, puffs) = cloud_puffs(grid, time, view);
+    let texels = (CLOUD_CELL_PIXELS * world_per_pixel / pixel_art::TEXEL)
+        .ceil()
+        .max(2.0);
+    let cell = texels * pixel_art::TEXEL;
+    let (bounds_min, bounds_max) = grid.bounds();
+    let reach = Vec2::splat(2.0);
+    let min = (view.0.max(bounds_min - reach) / cell).floor();
+    let max = (view.1.min(bounds_max + reach) / cell).ceil();
+    if min.cmpge(max).any() {
+        return;
+    }
+    let (columns, rows) = ((max.x - min.x) as usize, (max.y - min.y) as usize);
+    // Each cell's light (0 dark to 1 lit) and cover (0 to 1), the last
+    // puff drawn there winning where it's solid, as in painter order.
+    let mut light = vec![0.0f32; columns * rows];
+    let mut cover = vec![0.0f32; columns * rows];
+    for puff in &puffs {
+        let low = ((puff.center - puff.radius) / cell - min)
+            .floor()
+            .max(Vec2::ZERO);
+        let high = ((puff.center + puff.radius) / cell - min)
+            .ceil()
+            .min(Vec2::new(columns as f32, rows as f32));
+        for row in low.y as usize..high.y as usize {
+            for column in low.x as usize..high.x as usize {
+                let at = (min + Vec2::new(column as f32 + 0.5, row as f32 + 0.5)) * cell;
+                let local = (at - puff.center) / puff.radius;
+                let rim = local.length();
+                if rim >= 1.0 {
+                    continue;
+                }
+                // As the shader's soft disc: solid to 0.45, fading to the rim.
+                let t = ((rim - 0.45) / 0.55).clamp(0.0, 1.0);
+                let solid = (1.0 - t * t * (3.0 - 2.0 * t)) * puff.alpha;
+                let index = row * columns + column;
+                if solid > 0.5 || solid > cover[index] {
+                    light[index] = (0.5 + 0.5 * local.dot(Vec2::new(-0.35, 0.94))).clamp(0.0, 1.0);
+                }
+                cover[index] = cover[index].max(solid);
+            }
+        }
+    }
+    let bayer = |column: usize, row: usize| {
+        const MATRIX: [[f32; 4]; 4] = [
+            [0.0, 8.0, 2.0, 10.0],
+            [12.0, 4.0, 14.0, 6.0],
+            [3.0, 11.0, 1.0, 9.0],
+            [15.0, 7.0, 13.0, 5.0],
+        ];
+        (MATRIX[row % 4][column % 4] + 0.5) / 16.0 - 0.5
+    };
+    // 0 is no cloud (the fog's fill shows), then the tones dark to lit.
+    let tone = |column: usize, row: usize| {
+        let index = row * columns + column;
+        let offset = if dither { bayer(column, row) } else { 0.0 };
+        if cover[index] + offset * 0.5 < 0.5 {
+            return 0;
+        }
+        let band = light[index] * CLOUD_TONES.len() as f32 + offset;
+        1 + (band.max(0.0) as usize).min(CLOUD_TONES.len() - 1)
+    };
+    let tones: Vec<usize> = (0..rows * columns)
+        .map(|index| tone(index % columns, index / columns))
+        .collect();
+    for row in 0..rows {
+        let tones = &tones[row * columns..(row + 1) * columns];
+        let mut column = 0;
+        while column < columns {
+            let shade = tones[column];
+            let start = column;
+            while column < columns && tones[column] == shade {
+                column += 1;
+            }
+            if shade > 0 {
+                let low = (min + Vec2::new(start as f32, row as f32)) * cell;
+                let high = (min + Vec2::new(column as f32, row as f32 + 1.0)) * cell;
+                mesh::quad(low, high, CLOUD_TONES[shade - 1], out);
+            }
+        }
+    }
+}
+
+/// The least a "Blocks" or "Dither" cloud cell is across on screen.
+const CLOUD_CELL_PIXELS: f32 = 5.0;
+/// The window height the cells are sized for: the map doesn't know the
+/// window's, and a cell a pixel bigger or smaller makes no difference.
+const CLOUD_REFERENCE_HEIGHT: f32 = 900.0;
+/// Their tones, dark to lit (linear), from the vector clouds' dark to
+/// their light.
+const CLOUD_TONES: [Color; 4] = [
+    [0.085, 0.088, 0.105, 1.0],
+    [0.13, 0.135, 0.155, 1.0],
+    [0.18, 0.187, 0.21, 1.0],
+    [0.25, 0.26, 0.29, 1.0],
+];
+
+/// Pixel clouds (temporary, #391), "Tiles": a cloud tile sprite on each
+/// unexplored hex of `hexes`, one of `pixel_art::CLOUD_TILES` picked by
+/// the hex. They don't move.
+fn push_cloud_tiles(hexes: &[Hex], out: &mut Vec<Vertex>) {
+    for &hex in hexes {
+        let pick = (cloud_hash(hex.q, hex.r, 0x51ED_270B) * pixel_art::CLOUD_TILES as f32) as u8;
+        let tile = Sprite::CloudTile(pick.min(pixel_art::CLOUD_TILES - 1));
+        pixel_art::push(tile, hex.to_world(), 1.0, [1.0; 4], out);
     }
 }
 

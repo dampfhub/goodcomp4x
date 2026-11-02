@@ -271,6 +271,9 @@ impl App {
         if let Some(pixel) = options.pixel_art {
             settings.pixel_art = pixel;
         }
+        if let Some(clouds) = options.pixel_clouds {
+            settings.pixel_clouds = clouds;
+        }
         let layout = load(LAYOUT_FILE).unwrap_or_default();
         let saved = SavedWindow::from_text(&layout);
         let explicit_size = options.size.is_some();

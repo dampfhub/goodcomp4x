@@ -1,7 +1,7 @@
 # Pixel-art sprites
 
-The map can be drawn two ways: the vector art (the default) or pixel-art sprites. The **Art**
-setting (Escape, Map) switches between them in game, and `--art pixel` starts the game in pixel
+The map and the UI can be drawn two ways: the vector art (the default) or pixel-art sprites. The
+**Art** setting (Escape, Map) switches between them in game, and `--art pixel` starts the game in pixel
 art (`--art vector` in vector), screenshots included. Sprites are PNG files named by a tag, so
 they can be drawn and swapped one at a time. Code: `src/game/pixel_art.rs`.
 
@@ -16,7 +16,7 @@ they can be drawn and swapped one at a time. Code: `src/game/pixel_art.rs`.
 
 Where the game looks: an `assets/sprites/` folder in the working directory, then one beside the
 executable. If it finds a folder it uses only that folder; otherwise it uses the copies built in.
-The log says which, and how many sprites it found (`pixel art: 57 of 57 sprites, from ...`). It
+The log says which, and how many sprites it found (`pixel art: 82 of 82 sprites, from ...`). It
 also warns about a PNG it can't read and about a file whose name isn't a tag (likely a typo).
 
 A tag with no file is drawn in vector art, so deleting a file shows its vector art again. A
@@ -28,7 +28,7 @@ whose forest doesn't is drawn in vector art whole.
 - **PNG**, any color type (RGBA, RGB, grey, palette), sRGB. Alpha is straight, not premultiplied;
   fully transparent pixels are empty.
 - **Size.** Each tag has a size in texels (below). All sprites share one texel size on the map:
-  a terrain tile's 32 texels span a hex. A PNG of another size is scaled into its tag's box,
+  a terrain tile's 64 texels span a hex. A PNG of another size is scaled into its tag's box,
   so keep the shape (the log warns if the shape differs, as it would look stretched).
 - **Anchor: the center.** The middle of the image sits on the middle of the hex (terrain,
   features, units, the city, buildings) or of the icon's spot (icons sit in a hex's corners, as
@@ -37,7 +37,8 @@ whose forest doesn't is drawn in vector art whole.
   green: `#FF00FF`, `#B400B4`, `#800080`), is painted in the side's color: `#FF00FF` is the
   side's color itself and darker magentas are darker shades of it. Units, the city and
   buildings use it; on terrain and icons, magenta shows as white. Avoid pure magenta for
-  anything else.
+  anything else. On the map the shader paints it; the UI (ImGui can't paint it) draws a copy of
+  each such sprite the game paints for every side as it loads.
 
 ## How it is drawn
 
@@ -50,8 +51,37 @@ whose forest doesn't is drawn in vector art whole.
 - What goes over the sprites stays as it is: hex borders, the fog's veil over remembered hexes,
   a selected unit's move and attack hexes (a tint over the tile), health bars, status rings,
   the damage preview, the population on a city, labels and yields.
-- Still vector in pixel mode: roads, rivers, walls and structures, the yield chips, the city
-  interior, and all screen UI (panels, the unit tray, the turn strip).
+- Still vector in pixel mode: roads, rivers, walls and structures, the yield chips, and the
+  city interior.
+
+## In the UI
+
+In pixel art both UI presentations (ImGui and classic) draw sprites too: the unit and
+building cards in the city and Barracks views (a building card gets its picture before its
+name), the turn strip's chips, the order and ability buttons (the `ui/` tags), the priority
+chips, and the food, wood, metal and clock icons in any text. A UI sprite is always a whole
+number of screen pixels a texel, its corner on a whole pixel, so it stays crisp: a unit is 28
+pixels on a card or chip, an order button's picture 32 (16 beside a cooldown or rank, which
+needs the corner), a text icon 16. Team-colored sprites take the player's side, or the chip's.
+ImGui draws them as images of the same atlas, which the renderer registers as an ImGui
+texture; its sampling is plain nearest, which is exact at whole-pixel sizes. Everything else
+in the UI stays as it is.
+
+## Clouds (on trial)
+
+The **Pixel Clouds** setting (Escape, Map; `--clouds <style>`) picks how pixel art draws the
+fog's clouds, for comparing. It is temporary: once one is picked, the rest and the setting go.
+
+- **Vector**: the vector clouds, as in vector art.
+- **Tiles**: a cloud tile (`cloud/tile_1` to `_4`, picked by the hex) on each unexplored hex.
+  They don't move, and the hex grid shows under the fog.
+- **Puffs**: the vector clouds' puffs, each a puff sprite (`cloud/puff_*`) of the nearest size,
+  drifting a texel at a time.
+- **Blocks**: the vector clouds worked out on a grid of big square pixels (at least 5 screen
+  pixels, whole texels), in four tones.
+- **Dither**: Blocks, dithered between the tones.
+
+`cargo test --release cloud_report -- --ignored --nocapture` measures them.
 
 ## Tags
 
@@ -146,9 +176,10 @@ shipped file is a tag at its size.
 ## The dev art
 
 The shipped sprites are placeholders drawn by `node tools/sprites/dev-art.mjs` (no
-dependencies): speckled hex tiles, tokens like the vector ones (a team-colored disc, or a hexagon
-for civilians, with a dark pictogram), houses marked with the vector badges' letters, and small
-icons. Running it **overwrites every file it makes**, hand-drawn ones included, so once a tag
+dependencies): mottled hex tiles with their own marks, tokens like the vector ones (a
+team-colored disc, or a hexagon for civilians, with a pictogram), houses marked with the vector
+badges' letters, small icons, light order pictures for the UI, and cloud tiles and puffs
+dithered in four tones. Shapes are filled at pixel centers with a dark outline. Running it **overwrites every file it makes**, hand-drawn ones included, so once a tag
 has real art, take it out of the script. `node tools/sprites/dev-art.mjs --sheet out.png
 [prefix]` writes every sprite (or those whose tag starts with `prefix`, such as `unit/`) blown
-up six times on one sheet, for looking them over, and touches nothing else.
+up four times on one sheet, for looking them over, and touches nothing else.

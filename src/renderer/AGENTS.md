@@ -8,6 +8,7 @@ constants out of this directory. Its whole interface:
 - `draw_frame(&[DrawBatch], Option<&DrawData>)`: each batch is a triangle list
   (`Vertex { pos, color, uv }`) with its own view-projection matrix. Optional ImGui data is
   drawn after those batches in the same render pass.
+- `pixel_art_texture()`: the pixel-art atlas as an ImGui texture, for UI images drawn from it.
 - `capture_next_frame()` then, after the next `draw_frame`, `take_captured_frame()`: that frame
   as a `Frame` (top-down RGBA8, the swapchain's sRGB-encoded bytes, opaque). Screenshots use it.
 - `draw_frame(&[DrawBatch], Option<&DrawData>)`: each batch is a triangle list (`Vertex { pos, color, uv }`) with its

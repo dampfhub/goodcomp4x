@@ -21,6 +21,8 @@ Options:
                        and zoom all the way out (F10 + Alt + zoom out)
   --art <STYLE>        draw the map in vector (the default) or pixel art, as
                        the Art setting does
+  --clouds <STYLE>     with pixel art, draw the clouds as vector, tiles,
+                       puffs, blocks or dither (temporary, for comparing)
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900); at least 640x480 at 100%
                        display scaling, and more at higher scaling
@@ -45,6 +47,8 @@ pub struct Options {
     pub world_overlay: bool,
     /// `--art`: whether to draw the map in pixel art, if given.
     pub pixel_art: Option<bool>,
+    /// `--clouds`: the Pixel Clouds setting, if given (temporary, #391).
+    pub pixel_clouds: Option<usize>,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
     /// A multiplayer game to host or join.
@@ -69,6 +73,7 @@ impl Default for Options {
             screenshot: None,
             world_overlay: false,
             pixel_art: None,
+            pixel_clouds: None,
             size: None,
             network: None,
             help: false,
@@ -113,6 +118,21 @@ impl Options {
                         "vector" => false,
                         "pixel" => true,
                         other => bail!("--art wants vector or pixel, not {other:?}"),
+                    });
+                }
+                "--clouds" => {
+                    use crate::game::{
+                        CLOUDS_BLOCKS, CLOUDS_DITHER, CLOUDS_PUFFS, CLOUDS_TILES, CLOUDS_VECTOR,
+                    };
+                    options.pixel_clouds = Some(match value()?.as_str() {
+                        "vector" => CLOUDS_VECTOR,
+                        "tiles" => CLOUDS_TILES,
+                        "puffs" => CLOUDS_PUFFS,
+                        "blocks" => CLOUDS_BLOCKS,
+                        "dither" => CLOUDS_DITHER,
+                        other => bail!(
+                            "--clouds wants vector, tiles, puffs, blocks or dither, not {other:?}"
+                        ),
                     });
                 }
                 "--size" => options.size = Some(parse_size(&value()?)?),
@@ -271,5 +291,10 @@ mod tests {
         assert_eq!(parse(&["--art", "pixel"]).unwrap().pixel_art, Some(true));
         assert_eq!(parse(&["--art", "vector"]).unwrap().pixel_art, Some(false));
         assert!(parse(&["--art", "crayon"]).is_err());
+        assert_eq!(
+            parse(&["--clouds", "dither"]).unwrap().pixel_clouds,
+            Some(4)
+        );
+        assert!(parse(&["--clouds", "rain"]).is_err());
     }
 }

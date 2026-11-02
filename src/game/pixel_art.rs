@@ -733,7 +733,7 @@ mod tests {
             let (w, h) = a.size();
             let row = docs
                 .lines()
-                .find(|line| line.contains(&format!("`{tag}`")))
+                .find(|line| line.starts_with(&format!("| `{tag}` |")))
                 .unwrap_or_else(|| panic!("docs/sprites.md doesn't list {tag}"));
             assert!(row.contains(&format!("{w}x{h}")), "{tag} is {w}x{h}: {row}");
         }

@@ -58,7 +58,9 @@ pub use multiplayer::{
 pub use orders::ClickMode;
 pub use pixel_art::atlas as pixel_atlas;
 pub use scenario::Scenario;
-pub use settings::Settings;
+pub use settings::{
+    CLOUDS_BLOCKS, CLOUDS_DITHER, CLOUDS_PUFFS, CLOUDS_TILES, CLOUDS_VECTOR, Settings,
+};
 pub use sprites::atlas as sprite_atlas;
 use strings::text;
 use terrain::Tile;

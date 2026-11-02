@@ -179,8 +179,13 @@ fn a_frame_stays_within_its_vertex_budget() {
     game.selected = game.units.iter().position(|u| u.team == PLAYER_TEAM);
     game.placing_job = Some(workers::JobKind::Road);
     game.set_details(true);
-    for (pixel_art, fog) in [(false, true), (false, false), (true, true), (true, false)] {
+    // Vector art, and pixel art with each of its trial clouds (#391).
+    let looks = [(false, true, 0), (false, false, 0), (true, false, 0)]
+        .into_iter()
+        .chain((CLOUDS_VECTOR..=CLOUDS_DITHER).map(|clouds| (true, true, clouds)));
+    for (pixel_art, fog, clouds) in looks {
         game.settings.pixel_art = pixel_art;
+        game.settings.pixel_clouds = clouds;
         game.fog_of_war = fog;
         for half_height in [6.0, 9.0, 12.0, 18.0, 27.0, super::camera::MAX_HALF_HEIGHT] {
             game.camera.half_height = half_height;
@@ -189,7 +194,44 @@ fn a_frame_stays_within_its_vertex_budget() {
             let total = world + game.build_ui(SCREEN, None).len();
             assert!(
                 total <= VERTEX_BUDGET,
-                "{total} vertices with fog {fog}, pixel art {pixel_art}, zoomed to {half_height}: {stages:?}"
+                "{total} vertices with fog {fog}, pixel art {pixel_art} (clouds {clouds}), zoomed to {half_height}: {stages:?}"
+            );
+        }
+    }
+}
+
+/// The fog's clouds in each look (#391, temporary): vector art's, and
+/// each of pixel art's trial clouds, on the biggest world (seven sides)
+/// with the fog on, at home and zoomed all the way out: the clouds' layer's
+/// vertices and the whole map's build time. Run optimized:
+/// `cargo test --release cloud_report -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn cloud_report() {
+    let mut game = busy_world(2, 0);
+    game.fog_of_war = true;
+    game.clear_selection();
+    let home = game.camera.half_height;
+    let looks = [(false, CLOUDS_VECTOR, "vector art")].into_iter().chain([
+        (true, CLOUDS_VECTOR, "pixel, vector clouds"),
+        (true, CLOUDS_TILES, "pixel, tiles"),
+        (true, CLOUDS_PUFFS, "pixel, puffs"),
+        (true, CLOUDS_BLOCKS, "pixel, blocks"),
+        (true, CLOUDS_DITHER, "pixel, dither"),
+    ]);
+    let mut buffer = Vec::new();
+    for (pixel, clouds, name) in looks {
+        game.settings.pixel_art = pixel;
+        game.settings.pixel_clouds = clouds;
+        for (zoom, half_height) in [("home", home), ("out", super::camera::MAX_HALF_HEIGHT)] {
+            game.camera.half_height = half_height;
+            let stages = game.scene_stages();
+            let fog = stages[0].1;
+            let total: usize = stages.iter().map(|(_, n)| n).sum();
+            let took = time(30, || game.build_vertices_into(&mut buffer));
+            println!(
+                "{name:<22} {zoom:<5} clouds {fog:>8} vertices, map {total:>8}, build {:>7.3} ms",
+                took.as_secs_f64() * 1000.0
             );
         }
     }

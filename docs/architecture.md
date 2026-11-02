@@ -95,6 +95,13 @@ A tag with no file keeps its vector art. `mesh.frag` reads that atlas texel by t
 (`texelFetch`), blending two texels only within a screen pixel of the edge between them, and
 paints magenta texels in the vertex color, the side's.
 
+The UI draws the same sprites in pixel art (`pixel_art::push_ui`), a whole number of pixels a
+texel. Classic UI goes through `mesh.frag` like the map; ImGui draws them as images of the same
+atlas, which the renderer registers as an ImGui texture (`Renderer::pixel_art_texture`), and as
+ImGui can't paint team pixels the atlas also holds a copy of each team-colored sprite painted
+for every side. Text deep inside the UI (the icon characters) asks `pixel_art::active`, a
+thread-local the map and both UIs set from the setting as they start.
+
 Yield-row layouts and their small meshes are cached by the food/wood/metal tuple and zoom
 detail mode, bounded to
 256 entries. This caches artwork, not game state: fog memory and current yields are still
