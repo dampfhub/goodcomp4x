@@ -2,7 +2,8 @@
 //! and World scenarios and measures, turn by turn, how the stockpile economy runs
 //! (`docs/rts-economy.md`, Round 6): what each side trains, by type and by turn; how its
 //! cities grow and when each growth step lands; what piles up in the stockpile and what runs
-//! short; when sides first meet and first fight, and how many units die a turn after; how long
+//! short; when sides first meet and first fight, and how many units die a turn after; when it
+//! researches (its first tech, the Cavalry's, every tech); how long
 //! each build takes in practice (queued, paid, worked, out); where the resources go; and how far
 //! apart the sides end up.
 //!
@@ -46,6 +47,7 @@ use super::super::city::{
 };
 use super::super::fast_hash::{HashMap, HashSet};
 use super::super::hex::Hex;
+use super::super::research::{TECHS, Unlock};
 use super::super::unit::{Team, Unit, UnitType};
 use super::super::workers::JobKind;
 use super::super::{PLAYER_TEAM, scenario::Scenario};
@@ -169,6 +171,11 @@ struct SideEvents {
     first_loss: Option<u32>,
     second_city: Option<u32>,
     eliminated: Option<u32>,
+    /// Research (`research.rs`): its first tech, the one for Cavalry, and
+    /// every tech.
+    first_tech: Option<u32>,
+    cavalry_tech: Option<u32>,
+    all_techs: Option<u32>,
 }
 
 /// What each of a side's queues did in the turns of a game.
@@ -686,6 +693,16 @@ impl Observer {
             if cities.len() >= 2 {
                 first(&mut events.second_city, turn);
             }
+            let done = &game.research(team).done;
+            if !done.is_empty() {
+                first(&mut events.first_tech, turn);
+            }
+            if game.unlocked(team, Unlock::Unit(BuildUnit::Cavalry)) {
+                first(&mut events.cavalry_tech, turn);
+            }
+            if done.len() == TECHS.len() {
+                first(&mut events.all_techs, turn);
+            }
             if let Some(&capital) = self.capitals.get(&team)
                 && game.cities[capital].team == team
             {
@@ -990,6 +1007,9 @@ impl KindReport {
         side_event("first loss".into(), &|e| e.first_loss);
         side_event("second city".into(), &|e| e.second_city);
         side_event("eliminated".into(), &|e| e.eliminated);
+        side_event("first tech".into(), &|e| e.first_tech);
+        side_event("Cavalry tech".into(), &|e| e.cavalry_tech);
+        side_event("every tech".into(), &|e| e.all_techs);
         events.push((
             "contact (game)".into(),
             self.games.iter().map(|(_, g)| g.first_contact).collect(),
@@ -1335,7 +1355,7 @@ City queue, share of city-turns: {}",
                 .map_or(f64::NAN, |(_, e)| event_stats(e).median)
         };
         format!(
-            "HEADLINE {}: army@10/20/40/60 {}/{}/{}/{} | trained@20/40/60 {}/{}/{} | pop@10/20/30 {}/{}/{} | pop7 t{:.0} | first troop t{:.0} | stock@40 f/w/m {}/{}/{} | troop fight t{:.0} | deaths/turn/side {:.2}",
+            "HEADLINE {}: army@10/20/40/60 {}/{}/{}/{} | trained@20/40/60 {}/{}/{} | pop@10/20/30 {}/{}/{} | pop7 t{:.0} | first troop t{:.0} | stock@40 f/w/m {}/{}/{} | troop fight t{:.0} | deaths/turn/side {:.2} | cities@20/40/60 {}/{}/{} | Cavalry tech t{:.0}",
             self.kind.name(),
             at(10, &|s| s.army),
             at(20, &|s| s.army),
@@ -1354,6 +1374,10 @@ City queue, share of city-turns: {}",
             at(40, &|s| s.stock[2]),
             median("troop fight (game)"),
             mean(&self.deaths_after_fight()),
+            at(20, &|s| s.cities),
+            at(40, &|s| s.cities),
+            at(60, &|s| s.cities),
+            median("Cavalry tech"),
         )
     }
 

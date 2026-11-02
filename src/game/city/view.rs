@@ -117,11 +117,16 @@ impl GameState {
         self.hovered_job = None;
     }
 
-    /// Escape and Space dismiss city or building management without issuing a
-    /// unit order or opening the settings menu. While something is being
-    /// placed for the city's workers, the first press only stops that and
-    /// keeps the city open (`stop_placing`).
+    /// Escape and Space dismiss the research view, or city or building
+    /// management, without issuing a unit order or opening the settings
+    /// menu. While something is being placed for the city's workers, the
+    /// first press only stops that and keeps the city open (`stop_placing`).
     pub fn exit_structure_menu(&mut self) -> bool {
+        if self.research_view() {
+            self.close_research();
+            self.notice = self.planning_notice().into();
+            return true;
+        }
         if self.interior_view.is_some() {
             self.close_city_interior();
             return true;

@@ -129,6 +129,8 @@ pub enum Command {
     BuildWorker,
     Grow,
     Gather,
+    /// Open the research view, or close it.
+    Research,
     /// In the city interior, clear its orders; else take the open city's
     /// first build off its queue.
     Remove,
@@ -184,6 +186,7 @@ pub const PLAYING: &[(Chord, Command)] = &[
     (Chord::key(Key::Digit('8')), Command::BuildWorker),
     (Chord::key(Key::Digit('9')), Command::Grow),
     (Chord::key(Key::Digit('0')), Command::Gather),
+    (Chord::key(Key::Letter('T')), Command::Research),
     (Chord::key(Key::Backspace), Command::Remove),
     (Chord::key(Key::Delete), Command::Disband),
     (Chord::key(Key::PageDown), Command::QueueHeadDown),

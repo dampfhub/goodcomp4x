@@ -134,6 +134,7 @@ impl GameState {
     /// `STEP_INTERVAL` has passed. Steps where nobody acts are skipped.
     pub fn update(&mut self, dt: f32) {
         self.take_back_on_new_orders();
+        self.close_research_behind();
         self.explore();
         self.camera.update(dt);
         self.age_effects(dt);
