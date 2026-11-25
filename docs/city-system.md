@@ -1,7 +1,8 @@
 # City system: first design draft
 
-Status: proposal for discussion, not implemented. All numbers below are starting
-points for playtesting. Branch: `codex/city-system`.
+Status: historical. This was the first proposal for cities; much of it is now
+built, often differently, and the numbers here were starting points for
+playtesting. The rules as they stand are in [game-rules.md](game-rules.md).
 
 ## Direction
 
@@ -219,6 +220,10 @@ Keep the original combat layout as a separate scenario. Its radius-three map is
 too small to judge distance, alternate routes, or several settlements.
 
 ## Fit with the current code
+
+Historical: this describes the code as it was when the draft was written (no
+cities yet, a single `ui.rs`). See [architecture.md](architecture.md) for the
+code as it is now.
 
 - Add stable city IDs and city state alongside units in `GameState`.
 - Keep terrain, resources, improvements, and transport as separate map layers;

@@ -224,8 +224,8 @@ while it waits, or NO RESEARCH.
 
 Attack arrows appear only when both ends are in sight; damage numbers appear only on visible tiles.
 
-The faded DEBUG panel at the top-left has buttons for F1-F4, F12 and F6-F10 (F9 is FINISH
-BUILD), PROD SPEEDUP, which switches the stockpile economy's variant where a city's production
+The faded DEBUG panel at the top-left has buttons for F1-F4, F12, NAVAL (a coastal test
+scenario with no key) and F6-F10 (F9 is FINISH BUILD), PROD SPEEDUP, which switches the stockpile economy's variant where a city's production
 speeds its builds, and UNIT CAP, which switches the Cavalry and Armored cap between counting
 those alive and every one ever trained (`rts-economy.md`); the current scenario is gold, and a generated map shows its seed. Left clicks act on release, so a drag never issues an
 order.
