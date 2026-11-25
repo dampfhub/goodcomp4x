@@ -18,11 +18,11 @@ use super::builder::PanelBuilder;
 use super::dock::Zone;
 use super::queue::{idle_word, queue_place, wait_text};
 use super::{
-    ChipIcon, LABEL_TEXT, Layout, Line, ROSTER_CHIP_GAP, ROSTER_PER_ROW, RosterChip, SMALL,
-    WAITING_TEXT,
+    Color, LABEL_TEXT, Layout, Line, ROSTER_CHIP_GAP, ROSTER_PER_ROW, SMALL, WAITING_TEXT,
 };
 use crate::game::GameState;
 use crate::game::city::{HeadWait, Lane};
+use crate::game::draw::UnitLook;
 use crate::game::unit::UnitType;
 
 /// What a chip in the turn strip stands for.
@@ -366,4 +366,30 @@ fn push_chip_rows(panel: &mut PanelBuilder, chips: Vec<RosterChip>) {
         }
         panel.roster(chunk.to_vec());
     }
+}
+
+/// A chip in the turn strip: what it stands for, its picture, whether it's
+/// selected (its units, or its city open), and how many units or workers it
+/// counts (shown when more than one).
+#[derive(Clone, Copy)]
+pub(super) struct RosterChip {
+    pub(super) key: RosterKey,
+    pub(super) icon: ChipIcon,
+    pub(super) color: Color,
+    pub(super) selected: bool,
+    pub(super) count: usize,
+    /// Flagged in the waiting red: an idle queue's chip
+    /// (`RosterKey::Waiting`).
+    pub(super) warning: bool,
+}
+
+/// A turn strip chip's picture.
+#[derive(Clone, Copy)]
+pub(super) enum ChipIcon {
+    /// A unit's (or worker's) token, as on the map.
+    Unit(UnitLook),
+    /// A city's tower.
+    City,
+    /// A Barracks, as on the map.
+    Barracks,
 }

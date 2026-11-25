@@ -15,11 +15,11 @@
 
 use glam::Vec2;
 
-use super::builder::ButtonSpec;
+use super::builder::{ButtonSpec, push_text_row};
 use super::text::fit_text;
 use super::{
-    BAR_BG, BODY, BOOSTED_TEXT, BORDER_COLOR, Color, DIM_TEXT, GOLD_TEXT, SHORT_PRICE, SMALL, TEXT,
-    WAITING_TEXT,
+    BAR_BG, BODY, BOOSTED_TEXT, BORDER_COLOR, Color, DIM_TEXT, GOLD_TEXT, Layout, SHORT_PRICE,
+    SMALL, Shape, TEXT, WAITING_TEXT,
 };
 use crate::game::font;
 use crate::game::mesh;
@@ -267,6 +267,42 @@ impl TechTree {
             card_width: (widest + 2.0 * CARD_PAD).ceil(),
             name_line,
             line,
+        }
+    }
+
+    /// Classic: places the tree from `top_left` (UI pixels, Y up), in
+    /// `width`: its headings, its lines, and each card as a button that
+    /// draws itself (`Button::card`).
+    pub(super) fn place_classic(
+        self,
+        layout: &mut Layout,
+        top_left: Vec2,
+        width: f32,
+        faded: bool,
+    ) {
+        let metrics = self.classic_metrics();
+        let placed = self.place(width, &metrics);
+        // The tree's places are Y down from its top left; the UI's Y is up.
+        let at = |p: Vec2| Vec2::new(top_left.x + p.x, top_left.y - p.y);
+        for &(corner, column) in &placed.headings {
+            let middle = at(corner) - Vec2::new(0.0, metrics.line / 2.0);
+            let heading = vec![(self.headings[column].clone(), GOLD_TEXT)];
+            push_text_row(layout, middle, SMALL, heading);
+        }
+        for &(min, max, state) in &placed.wires {
+            let (a, b) = (at(min), at(max));
+            layout.shapes.push(Shape::Fill {
+                min: a.min(b),
+                max: a.max(b),
+                color: state.color(),
+            });
+        }
+        for ((spec, mut card), &(min, max)) in self.cards.into_iter().zip(&placed.cards) {
+            card.names = self.names;
+            let (a, b) = (at(min), at(max));
+            let mut button = spec.place(a.min(b), a.max(b), faded);
+            button.card = Some(Box::new(card));
+            layout.buttons.push(button);
         }
     }
 

@@ -122,55 +122,11 @@ impl ButtonSpec {
     }
 }
 
-/// Keep costs and work times on buttons, but show keyboard shortcuts only
-/// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
-/// is in its tooltip, so hovering doesn't change a button's text (only a
-/// hover text a text file gives does: `ButtonSpec::hover_text`).
-pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
-    if reveal_shortcut {
-        return hint;
-    }
-    for separator in [" · ", " | "] {
-        if let Some((prefix, rest)) = hint.split_once(separator)
-            && is_shortcut(prefix)
-        {
-            return if is_shortcut(rest) { "" } else { rest };
-        }
-    }
-    if is_shortcut(hint) { "" } else { hint }
-}
-
 pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
     !buttons.is_empty()
         && buttons
             .iter()
             .all(|button| action_icons::for_button(button.target, &button.label).is_some())
-}
-
-fn is_shortcut(text: &str) -> bool {
-    let text = text.trim();
-    if let Some((first, second)) = text.split_once(" / ") {
-        return is_shortcut(first) && is_shortcut(second);
-    }
-    if let Some(rest) = text
-        .strip_prefix("CTRL-")
-        .or_else(|| text.strip_prefix("CTRL+"))
-    {
-        return is_shortcut(rest);
-    }
-    if let Some(rest) = text.strip_prefix("SHIFT+") {
-        return is_shortcut(rest);
-    }
-    matches!(
-        text,
-        "CTRL" | "SHIFT" | "ALT" | "SPACE" | "ESC" | "DEL" | "BACKSPACE" | "RMB"
-    ) || (text.len() == 1
-        && text
-            .bytes()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
-        || text
-            .strip_prefix('F')
-            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()))
 }
 
 #[derive(Clone)]
@@ -836,45 +792,10 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 layout.roster_chips.push((min, max, chip.key));
             }
         }
-        Row::TechTree(tree) => place_tech_tree(layout, tree, top_left, inner_width, faded),
+        Row::TechTree(tree) => tree.place_classic(layout, top_left, inner_width, faded),
         Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
             unreachable!("expanded by classic_rows")
         }
-    }
-}
-
-/// Places a tech tree (`tech_tree.rs`) from `top_left`: its headings, its
-/// lines, and each card as a button that draws itself (`Button::card`).
-fn place_tech_tree(
-    layout: &mut Layout,
-    tree: TechTree,
-    top_left: Vec2,
-    inner_width: f32,
-    faded: bool,
-) {
-    let metrics = tree.classic_metrics();
-    let placed = tree.place(inner_width, &metrics);
-    // The tree's places are Y down from its top left; the UI's Y is up.
-    let at = |p: Vec2| Vec2::new(top_left.x + p.x, top_left.y - p.y);
-    for &(corner, column) in &placed.headings {
-        let middle = at(corner) - Vec2::new(0.0, metrics.line / 2.0);
-        let heading = vec![(tree.headings[column].clone(), GOLD_TEXT)];
-        push_text_row(layout, middle, SMALL, heading);
-    }
-    for &(min, max, state) in &placed.wires {
-        let (a, b) = (at(min), at(max));
-        layout.shapes.push(Shape::Fill {
-            min: a.min(b),
-            max: a.max(b),
-            color: state.color(),
-        });
-    }
-    for ((spec, mut card), &(min, max)) in tree.cards.into_iter().zip(&placed.cards) {
-        card.names = tree.names;
-        let (a, b) = (at(min), at(max));
-        let mut button = spec.place(a.min(b), a.max(b), faded);
-        button.card = Some(Box::new(card));
-        layout.buttons.push(button);
     }
 }
 
@@ -1055,28 +976,4 @@ pub(super) fn push_text_row(layout: &mut Layout, left_middle: Vec2, px: u32, lin
 
 pub(super) fn line_width(face: &Face, line: &Line) -> f32 {
     line.iter().map(|(span, _)| face.width(span)).sum()
-}
-
-#[cfg(test)]
-mod hint_tests {
-    use super::visible_button_hint;
-
-    #[test]
-    fn shortcuts_wait_for_hover_but_costs_and_work_times_stay_visible() {
-        for (hint, idle) in [
-            ("SPACE", ""),
-            ("V / ESC", ""),
-            ("CTRL-RMB", ""),
-            ("X · RMB", ""),
-            ("7 · 15 PROD", "15 PROD"),
-            ("8 | 20 PROD", "20 PROD"),
-            ("R · 2T", "2T"),
-            ("HORSES · 16", "HORSES · 16"),
-            ("3T", "3T"),
-            ("SEND IT HOME", "SEND IT HOME"),
-        ] {
-            assert_eq!(visible_button_hint(hint, false), idle, "{hint}");
-            assert_eq!(visible_button_hint(hint, true), hint, "{hint}");
-        }
-    }
 }

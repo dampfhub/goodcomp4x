@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::game::Scenario;
+use crate::game::{GameState, Scenario};
 
 pub const USAGE: &str = "\
 Usage: vulkan_engine [OPTIONS]
@@ -103,6 +103,15 @@ impl Default for Options {
 }
 
 impl Options {
+    /// Readies a new game as asked: the AI plays the turns (`--turns`),
+    /// then the view opens (`--view`), so nothing selected in them closes it.
+    pub fn prepare(&self, game: &mut GameState) {
+        game.play_ai_turns(self.turns);
+        if let Some(View::Research) = self.view {
+            game.toggle_research();
+        }
+    }
+
     /// Parses the arguments after the program name.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut options = Self::default();

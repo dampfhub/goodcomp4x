@@ -8,9 +8,10 @@ use ::imgui::{
 };
 
 use super::action_icons::{self, ICON_BUTTON_SIZE};
-use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row, visible_button_hint};
+use super::builder::{ButtonSpec, CatalogEntry, Row, flat_rows, icon_row};
 use super::network_menu::NetField;
 use super::text::fit_text;
+use super::text::visible_button_hint;
 use super::tooltips::Subject;
 use super::*;
 use crate::game::keys::Command;

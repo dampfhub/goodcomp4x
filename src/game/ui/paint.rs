@@ -1,8 +1,8 @@
 //! Turning laid-out shapes and buttons into vertices.
 
 use super::action_icons;
-use super::builder::visible_button_hint;
 use super::tech_tree::draw_tech_card;
+use super::text::visible_button_hint;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,

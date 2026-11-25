@@ -34,6 +34,7 @@ mod queue;
 mod research;
 mod roster;
 pub(in crate::game) use roster::RosterKey;
+use roster::{ChipIcon, RosterChip};
 mod settings_menu;
 mod tech_tree;
 mod text;
@@ -43,7 +44,6 @@ mod trays;
 use glam::{Mat4, Vec2, Vec3};
 
 use super::city::{BuildUnit, Building, Good};
-use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
 use super::research::Tech;
@@ -417,32 +417,6 @@ enum Shape {
         max: Vec2,
         color: Color,
     },
-}
-
-/// A chip in the turn strip: what it stands for, its picture, whether it's
-/// selected (its units, or its city open), and how many units or workers it
-/// counts (shown when more than one).
-#[derive(Clone, Copy)]
-pub(super) struct RosterChip {
-    pub(super) key: RosterKey,
-    pub(super) icon: ChipIcon,
-    pub(super) color: Color,
-    pub(super) selected: bool,
-    pub(super) count: usize,
-    /// Flagged in the waiting red: an idle queue's chip
-    /// (`RosterKey::Waiting`).
-    pub(super) warning: bool,
-}
-
-/// A turn strip chip's picture.
-#[derive(Clone, Copy)]
-pub(super) enum ChipIcon {
-    /// A unit's (or worker's) token, as on the map.
-    Unit(UnitLook),
-    /// A city's tower.
-    City,
-    /// A Barracks, as on the map.
-    Barracks,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

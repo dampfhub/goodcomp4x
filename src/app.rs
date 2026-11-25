@@ -15,7 +15,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::cli::{Options, View};
+use crate::cli::Options;
 use crate::clipboard;
 use crate::game::Settings;
 use crate::game::keys::{self, Command, Key};
@@ -263,7 +263,7 @@ impl App {
         network: Option<(Session, GameState)>,
         read: impl Fn(&str) -> Option<String>,
     ) -> Self {
-        let screenshot = options.screenshot.map(Screenshot::new);
+        let screenshot = options.screenshot.clone().map(Screenshot::new);
         let remember = screenshot.is_none();
         let load = |name| if remember { read(name) } else { None };
         let settings =
@@ -284,15 +284,11 @@ impl App {
             None => options.scenario.new_game(&settings),
         });
         game.set_settings(settings);
-        game.play_ai_turns(options.turns);
+        options.prepare(&mut game);
         if options.world_overlay {
             game.toggle_fog();
             game.set_details(true);
             game.camera.zoom(-100.0);
-        }
-        // After any turns played, so nothing selected in them closes it.
-        if let Some(View::Research) = options.view {
-            game.toggle_research();
         }
         if let Some(text) = load(NETWORK_FILE) {
             game.set_net_menu(NetMenu::from_text(&text));
