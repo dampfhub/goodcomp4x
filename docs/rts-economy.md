@@ -33,9 +33,9 @@ more citizens and everything else that eats it (troops, workers).
   queued (Harbors, deposits, the population cap and a Barracks still limit what). At each
   turn's economy, after income and upkeep, each queue works the first item that's paid for or
   that the stockpile can pay for then (`work_queues`), paying for it if it isn't; items ahead of
-  it that it can't pay for wait, unpaid, and it goes back to them once it can. Queues pay in city
-  order, each city's queue before its Barracks', so two cities waiting on one stockpile are
-  served the same way on every machine. Taking an item off refunds its price if it was paid,
+  it that it can't pay for wait, unpaid, and it goes back to them once it can. Every Barracks pays
+  first, in city order, then every city's queue, in city order (Round 13, #400), so queues
+  waiting on one stockpile are served the same way on every machine. Taking an item off refunds its price if it was paid,
   and nothing if it wasn't. A captured city's queue and a destroyed Barracks' queue are lost,
   paid items with them. Worker jobs (roads, improvements, buildings on a site) are still paid
   when placed, as before: they reserve a tile and send a worker, so they stay as they are for
@@ -274,7 +274,8 @@ settled:
 - **Refunds:** an item taken off refunds its price only if it was paid. A captured city's
   queues and a destroyed Barracks' are lost, paid items with them, as before.
 - **Several cities on one stockpile:** queues pay in city order, each city's queue before its
-  Barracks', which is deterministic for the simulations and network lockstep.
+  Barracks', which is deterministic for the simulations and network lockstep. (Round 13 changed
+  this: every Barracks pays first.)
 - **Grow's price** is set when it's paid, at the population then plus the Grows already paid
   for in the city. The card prices it counting every Grow queued ahead, which is what it will
   cost once they're done.
@@ -1075,5 +1076,59 @@ The other games, before → after: army at turn 60 7.1 → 7.8 (World with 1 AI 
   hexes, and all those at 3-4), and citizens now stay closer within each: a third of a citizen
   and of a troop more at turn 60.
 
-`PROTOCOL_VERSION` 41. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+## Round 13: the Barracks pays first (#400)
+
+The Round 11 report (section 5) found that a player who queues troops at the city center loses
+a third of the army: every city's queue paid before its Barracks', so a Melee waiting at the
+city center took the metal for a troop that trains in 6 turns there, and the Barracks, which
+trains it in 3, sat idle short of metal. The user chose to have the Barracks pay first.
+
+Queues now pay in `pay_order` (`city/economy.rs`): research first as before, then **every
+Barracks**, in city order, then every city's queue, in city order. The stockpile is the side's,
+so it's every Barracks before every city queue, not only a city's own: a second city's
+Barracks also pays before the first city's queue. `forecast` plays the same order out, and
+still lists its queues in city order for the panels.
+
+### Measured
+
+`economy_report`, 60 turns, seeds 0-23, the default games, on `main` at 81de4d6 (before #401) and
+this change:
+
+```
+SIM_SEEDS=24 REPORT_QUEUE_AHEAD=1 cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side, queueing ahead (`REPORT_QUEUE_AHEAD=1`):
+
+| | before | after |
+|---|---|---|
+| Army at turn 20 / 40 / 60 | 2.7 / 3.4 / 3.4 | 2.9 / 3.5 / 3.7 |
+| Trained by turn 20 / 40 / 60 | 2.6 / 4.3 / 6.2 | 2.9 / 4.5 / 6.5 |
+| Melees trained at the Barracks / city center (all sides, 24 games) | 109 / 492 | 140 / 473 |
+| Mean turns a city-center Melee waits for its price | 1.80 | 2.05 |
+| Barracks idle (at supply / short of metal) | 86% (39% / 61%) | 85% (48% / 52%) |
+| Population at turn 20 / 40 / 60 | 1.9 / 3.5 / 5.0 | 1.9 / 3.6 / 4.9 |
+| Second city (never) | 55 (43%) | 53 (44%) |
+
+World with 1, 5 and 6 AI sides move the same way: trained by turn 60 5.7 → 5.8, 6.1 → 6.4 and
+6.1 → 6.5, Barracks Melees 37 → 53, 117 → 175 and 139 → 199. The Cities scenario doesn't move.
+
+The AI as it plays (no knob) is unchanged within noise in every game: it trains almost nothing
+at the city center (3 Melees in 24 World 4 games), so nothing there competes with its Barracks.
+
+### What it shows
+
+- **The Barracks now gets the metal,** and trains 30% more Melees than before. Of its idle
+  turns, fewer are short of metal (52% against 61%) and more are at supply.
+- **It wins back little of the army:** 3.7 at turn 60 against 3.4, where the AI as it plays has
+  5.7. What queueing ahead still costs isn't the pay order. Its city queue trains a Melee
+  wherever the AI would have gathered, so it gathers less (9 metal by turn 60, against 21 for the
+  AI as it plays), and the city's slow Melees still take supply, which now stops the Barracks
+  more often.
+- **A player who queues ahead still does best with troops at the Barracks** and growth or
+  gathering at the city. The rule only keeps a troop queued at the city center from starving the
+  Barracks.
+
+`PROTOCOL_VERSION` 42. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.

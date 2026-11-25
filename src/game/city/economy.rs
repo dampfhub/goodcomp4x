@@ -134,6 +134,8 @@ pub(in crate::game) struct HeadWait {
 
 /// Every queue of a side, as `GameState::forecast` sees this turn going.
 pub(in crate::game) struct QueueForecast {
+    /// In city order, each city's queue before its Barracks' (the order
+    /// the panels list them in, not the order they pay in: `pay_order`).
     pub lanes: Vec<LaneForecast>,
     /// What the stockpile keeps once every queue has paid for what it
     /// starts: what the side can still spend this turn.
@@ -457,9 +459,21 @@ impl GameState {
         needs == 0 || i64::from(needs) <= supply
     }
 
-    /// The turn's work on every queue, after income and upkeep. City by city
-    /// in order, each city's queue before its Barracks', a queue works the
-    /// item `pick_item` picks: pays for it if it's unpaid, and adds its
+    /// The order a turn's queues pay in (`work_queues`, `forecast`): every
+    /// Barracks first, in city order, then every city's queue, in city
+    /// order. A side has one stockpile, so a Barracks ready to train
+    /// doesn't sit idle while a city queue takes the metal for a troop that
+    /// takes twice as long there (`CITY_TRAINING_SLOWDOWN`, #400).
+    fn pay_order(&self) -> impl Iterator<Item = (usize, Lane)> + use<> {
+        let cities = self.cities.len();
+        [Lane::Barracks, Lane::City]
+            .into_iter()
+            .flat_map(move |lane| (0..cities).map(move |city| (city, lane)))
+    }
+
+    /// The turn's work on every queue, after income and upkeep. In
+    /// `pay_order` (every Barracks, then every city's queue), a queue works
+    /// the item `pick_item` picks: pays for it if it's unpaid, and adds its
     /// city's work for the turn (`rates`, the city's and the Barracks'), up
     /// to what it needs. Items it can't pay for, or that its side's supply
     /// has no room for (`supply_room`), wait in place, unpaid. A city whose
@@ -471,18 +485,21 @@ impl GameState {
         self.auto_gathered.clear();
         let mut supply = Team::ALL.map(|team| self.supply_room(team));
         let mut gathering = Vec::new();
-        for (city, &(rate, barracks_rate)) in rates.iter().enumerate() {
-            for (lane, rate) in [(Lane::City, rate), (Lane::Barracks, barracks_rate)] {
-                let team = self.cities[city].team;
-                let room = supply[team.index()];
-                if let Some((index, price)) = self.pick_item(city, lane, self.stock(team), room) {
-                    if price.is_some() {
-                        supply[team.index()] -= i64::from(self.item_supply(city, lane, index));
-                    }
-                    self.work_item(city, lane, index, price, rate);
-                } else if lane == Lane::City {
-                    gathering.push(city);
+        for (city, lane) in self.pay_order() {
+            let (city_rate, barracks_rate) = rates[city];
+            let rate = match lane {
+                Lane::City => city_rate,
+                Lane::Barracks => barracks_rate,
+            };
+            let team = self.cities[city].team;
+            let room = supply[team.index()];
+            if let Some((index, price)) = self.pick_item(city, lane, self.stock(team), room) {
+                if price.is_some() {
+                    supply[team.index()] -= i64::from(self.item_supply(city, lane, index));
                 }
+                self.work_item(city, lane, index, price, rate);
+            } else if lane == Lane::City {
+                gathering.push(city);
             }
         }
         for city in gathering {
@@ -589,22 +606,25 @@ impl GameState {
         }
         let mut supply = self.supply_room(team);
         let mut lanes = Vec::new();
-        for city in (0..self.cities.len()).filter(|&i| self.cities[i].team == team) {
-            for lane in [Lane::City, Lane::Barracks] {
-                let pick = self.pick_item(city, lane, stock, supply);
-                lanes.push(LaneForecast {
-                    city,
-                    lane,
-                    worked: pick.map(|(index, _)| index),
-                    stock,
-                    supply,
-                });
-                if let Some((index, Some(price))) = pick {
-                    stock -= price;
-                    supply -= i64::from(self.item_supply(city, lane, index));
-                }
+        for (city, lane) in self.pay_order() {
+            if self.cities[city].team != team {
+                continue;
+            }
+            let pick = self.pick_item(city, lane, stock, supply);
+            lanes.push(LaneForecast {
+                city,
+                lane,
+                worked: pick.map(|(index, _)| index),
+                stock,
+                supply,
+            });
+            if let Some((index, Some(price))) = pick {
+                stock -= price;
+                supply -= i64::from(self.item_supply(city, lane, index));
             }
         }
+        // Listed in city order, each city's queue before its Barracks'.
+        lanes.sort_by_key(|l| (l.city, l.lane == Lane::Barracks));
         QueueForecast {
             lanes,
             spare: stock,
