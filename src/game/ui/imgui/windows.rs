@@ -197,37 +197,40 @@ impl GameState {
                     );
                     show_tooltip(ui, &lines);
                 }
-                ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
-                if let Some(view) = &view {
-                    ui.text(view);
-                    note_status_control(ui, view);
-                    ui.same_line();
-                }
-                let (layer_shown, layer_id) = shown(layer, layer_hover, "Layer");
-                if ui.small_button(layer_id) {
-                    frame.actions.push(Action::ToggleLayoutLayer);
-                }
-                note_status_control(ui, layer_shown);
-                if ui.is_item_hovered() {
-                    ui.tooltip_text(layer_tip);
-                }
-                ui.same_line();
-                let (box_shown, box_id) = shown(add_box, hover_text!("view_add_box"), "AddBox");
-                if ui.small_button(box_id) {
-                    frame.actions.push(Action::CreateBox);
-                }
-                note_status_control(ui, box_shown);
-                if reset {
-                    ui.same_line();
-                    let (reset_shown, reset_id) =
-                        shown(reset_label, hover_text!("view_reset"), "Reset");
-                    if ui.small_button(reset_id) {
-                        layout.request_reset_active_view();
+                // The research view hides the panels these arrange.
+                if !self.research_view() {
+                    ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
+                    if let Some(view) = &view {
+                        ui.text(view);
+                        note_status_control(ui, view);
+                        ui.same_line();
                     }
-                    note_status_control(ui, reset_shown);
+                    let (layer_shown, layer_id) = shown(layer, layer_hover, "Layer");
+                    if ui.small_button(layer_id) {
+                        frame.actions.push(Action::ToggleLayoutLayer);
+                    }
+                    note_status_control(ui, layer_shown);
                     if ui.is_item_hovered() {
-                        let key = Command::ResetLayout.key_in_words();
-                        ui.tooltip_text(tooltip!("view_reset", key = key));
+                        ui.tooltip_text(layer_tip);
+                    }
+                    ui.same_line();
+                    let (box_shown, box_id) = shown(add_box, hover_text!("view_add_box"), "AddBox");
+                    if ui.small_button(box_id) {
+                        frame.actions.push(Action::CreateBox);
+                    }
+                    note_status_control(ui, box_shown);
+                    if reset {
+                        ui.same_line();
+                        let (reset_shown, reset_id) =
+                            shown(reset_label, hover_text!("view_reset"), "Reset");
+                        if ui.small_button(reset_id) {
+                            layout.request_reset_active_view();
+                        }
+                        note_status_control(ui, reset_shown);
+                        if ui.is_item_hovered() {
+                            let key = Command::ResetLayout.key_in_words();
+                            ui.tooltip_text(tooltip!("view_reset", key = key));
+                        }
                     }
                 }
                 ui.set_cursor_pos([end_x, 7.0]);

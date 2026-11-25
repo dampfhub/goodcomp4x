@@ -196,6 +196,9 @@ pub(super) struct TechTree {
     /// (classic, when the tree doesn't fit the screen's height:
     /// `PanelBuilder::fit_height`).
     pub(super) names: bool,
+    /// Classic: the width its panel has for it (ImGui lays it out in the
+    /// width its window has).
+    pub(super) room: Option<f32>,
 }
 
 /// The sizes the tree is laid out from, measured in a presentation's fonts
@@ -317,6 +320,19 @@ impl TechTree {
         )
     }
 
+    /// Classic: how wide its row is, its columns side by side, or the room
+    /// it's given (`room`) when that's less, where the tiers stack.
+    pub(super) fn classic_width(&self) -> f32 {
+        let width = self.width(&self.classic_metrics());
+        self.room.map_or(width, |room| width.min(room))
+    }
+
+    /// Classic: how tall its row is, in `classic_width`.
+    pub(super) fn classic_height(&self) -> f32 {
+        let metrics = self.classic_metrics();
+        self.place(self.classic_width(), &metrics).size.y
+    }
+
     /// How many lines of unlocks each card leaves room for.
     fn unlock_lines(&self) -> usize {
         if self.names {
@@ -352,15 +368,26 @@ impl TechTree {
     /// fit, else stacked.
     pub(super) fn place(&self, width: f32, metrics: &TreeMetrics) -> TreePlacement {
         if width + 0.5 >= self.width(metrics) {
-            self.place_columns(metrics)
+            self.place_columns(width, metrics)
         } else {
             self.place_stacked(width, metrics)
         }
     }
 
-    fn place_columns(&self, metrics: &TreeMetrics) -> TreePlacement {
+    /// The columns side by side in `width`: room to spare widens the room
+    /// between them, up to a card's width, and what's left centers them.
+    fn place_columns(&self, width: f32, metrics: &TreeMetrics) -> TreePlacement {
         let (card_width, card_height) = (metrics.card_width, self.card_height(metrics));
-        let column_x = |column: usize| column as f32 * (card_width + COLUMN_GAP);
+        let between = self.columns().saturating_sub(1) as f32;
+        let spare = (width - self.width(metrics)).max(0.0);
+        let gap = if between > 0.0 {
+            (COLUMN_GAP + spare / between).min(card_width.max(COLUMN_GAP))
+        } else {
+            COLUMN_GAP
+        };
+        let used = self.columns() as f32 * card_width + between * gap;
+        let left = ((width - used) / 2.0).max(0.0).floor();
+        let column_x = |column: usize| left + column as f32 * (card_width + gap);
         let top = metrics.line + HEADING_GAP;
         let cards: Vec<(Vec2, Vec2)> = self
             .slots
@@ -385,11 +412,11 @@ impl TechTree {
             // Turning in the room between columns: right after the first
             // card, and, if a column lies between, along the room over the
             // card it goes to, then down in the room just before it.
-            let turn = start.x + COLUMN_GAP / 2.0;
+            let turn = start.x + gap / 2.0;
             let mut points = vec![start, Vec2::new(turn, start.y)];
             if last > first + 1 {
                 let lane = to.0.y - CARD_GAP / 2.0;
-                let before = end.x - COLUMN_GAP / 2.0;
+                let before = end.x - gap / 2.0;
                 points.push(Vec2::new(turn, lane));
                 points.push(Vec2::new(before, lane));
                 points.push(Vec2::new(before, end.y));
@@ -408,7 +435,7 @@ impl TechTree {
         wires.sort_by_key(|&(_, _, state)| state);
         let bottom = cards.iter().map(|&(_, max)| max.y).fold(0.0, f32::max);
         TreePlacement {
-            size: Vec2::new(self.width(metrics), bottom).ceil(),
+            size: Vec2::new(left + used, bottom).ceil(),
             cards,
             headings,
             wires,

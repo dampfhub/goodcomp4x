@@ -177,13 +177,13 @@ center enters the interior map; its clicks control only the interior copies.
 
 | Control | Action |
 | --- | --- |
-| T / Research (city tray) | Open the research view: the tech tree in the Selection panel, the research queue in the queue panel; T again closes it |
+| T / Research (city tray) | Open the research view, which takes the screen below the top bar and hides the other panels: the tech tree, and the research queue at its right; T again closes it, putting the panels back |
 | Click a tech's card | Queue it, with the techs it needs that aren't researched or queued first (its tooltip names them). Paid from the stockpile when its research starts, before any city's build; it waits while the stockpile is short |
 | Drag a research queue row onto another | Reorder the research queue; a tech can't go ahead of one it needs (the notice says which) |
 | Click a research row's X | Take that tech off, and every queued tech that needs it, each refunded if paid |
 | Clear (beside the research queue's title) | Empty the research queue, refunded the same way |
 | F9 in the research view | Debug: research the first queued tech now, paid if the stockpile can |
-| Escape / Space | Close the research view (so does opening a city, Barracks or unit) |
+| Escape / Space | Close the research view (so does opening a city, Barracks, unit or the settings menu) |
 
 The tree has a column per tier, with a line from each tech to the techs that need it. A card
 shows its tech's price and turns and what it unlocks (each unit's or building's icon and name),

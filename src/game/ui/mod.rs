@@ -872,7 +872,9 @@ impl GameState {
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
         } else if self.research_view() {
-            self.research_tray(&mut tray);
+            // It takes the screen, with nothing else over it.
+            self.research_screen(screen_size, &mut layout);
+            return layout;
         } else {
             self.debug_panel(&mut layout);
             self.dock_roster(&mut layout);
@@ -884,14 +886,8 @@ impl GameState {
         tray.fit_height(layout.remaining_height(Zone::BottomLeft, tray.size().x));
         let tray_size = tray.size();
         layout.dock_panel(tray, Zone::BottomLeft);
-        let mut queue_visible =
+        let queue_visible =
             queue_items_that_fit(layout.remaining_height(Zone::BottomLeft, tray_size.x));
-        if self.research_view() && queue_visible < self.research(self.local_team).queue.len() {
-            // The tree is tall: a queue that doesn't fit over it docks
-            // beside it, in a column of its own, leaving room for the rest.
-            let column = layout.remaining_height(Zone::BottomRight, 1.0) / 2.0;
-            queue_visible = queue_visible.max(queue_items_that_fit(column));
-        }
         if let Some(city) = self.selected_city {
             let mut queue = PanelBuilder::default();
             self.city_queue_panel(city, queue_visible, &mut queue);
@@ -901,12 +897,6 @@ impl GameState {
         } else if let Some(city) = self.selected_barracks {
             let mut queue = PanelBuilder::default();
             self.barracks_queue_panel(city, queue_visible, &mut queue);
-            if !queue.rows.is_empty() {
-                layout.dock_panel(queue, Zone::BottomLeft);
-            }
-        } else if self.research_view() {
-            let mut queue = PanelBuilder::default();
-            self.research_queue_panel(queue_visible, &mut queue);
             if !queue.rows.is_empty() {
                 layout.dock_panel(queue, Zone::BottomLeft);
             }

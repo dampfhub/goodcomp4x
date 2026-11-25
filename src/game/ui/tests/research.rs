@@ -12,27 +12,48 @@ fn research_view() -> GameState {
     game
 }
 
+/// The research view with the last tech queued, and with it what it needs.
+fn research_queued() -> GameState {
+    use crate::game::research::Tech;
+    let mut game = research_view();
+    game.activate_target(Target::Research(Tech::all().last().unwrap()));
+    game
+}
+
 #[test]
-fn the_research_view_docks_its_tree_and_queues_a_tech_in_both_presentations() {
+fn the_research_view_takes_the_screen_below_the_top_bar_in_both_presentations() {
     use crate::game::research::Tech;
     let techs: Vec<Tech> = Tech::all().collect();
+    let game = research_queued();
+    let queued = game.research(Team::Blue).queue.len();
     for screen in [SCREEN, Vec2::new(1280.0, 720.0)] {
-        let mut game = research_view();
-        game.activate_target(Target::Research(techs[techs.len() - 1]));
+        // Classic: a ground over everything below the top bar, the tree's
+        // panel from the left and the queue's at the right, as tall as the
+        // room, and nothing else.
         let layout = game.layout(screen);
-        let tray = panel_with(&layout, Target::Research(techs[0]))
-            .unwrap_or_else(|| panic!("the tree docks at {screen}"));
-        assert!(tray.min.cmpge(Vec2::splat(MARGIN)).all(), "{screen}");
-        assert!(tray.max.y <= screen.y - TOP_BAR_HEIGHT, "{screen}");
-        for &(min, max) in &layout.panels {
-            let other = Rect { min, max };
-            assert!(min == tray.min || !tray.overlaps(other, 0.0), "{screen}");
+        let below = screen.y - TOP_BAR_HEIGHT;
+        for corner in [Vec2::splat(1.0), Vec2::new(screen.x - 1.0, below - 1.0)] {
+            assert!(layout.covers(corner), "{corner} at {screen}");
         }
-        // Every tech's card is in it and takes its click; the queue panel
-        // holds a row for each tech queued.
+        let tree = panel_with(&layout, Target::Research(techs[0])).expect("the tree");
+        let queue = panel_with(&layout, Target::ResearchQueueRemove(0)).expect("the queue");
+        assert_eq!(tree.min, Vec2::splat(MARGIN), "{screen}");
+        assert_eq!(queue.max.x, screen.x - MARGIN, "{screen}");
+        assert!(tree.max.x + GAP <= queue.min.x, "{screen}");
+        assert_eq!((tree.min.y, tree.max.y), (queue.min.y, queue.max.y));
+        assert!(tree.max.y > below - 3.0 * MARGIN, "as tall as the room");
+        assert!(layout.roster_chips.is_empty(), "no turn strip");
+        for button in &layout.buttons {
+            let inside = |panel: Rect| contains(panel.min, panel.max, button.min);
+            assert!(
+                inside(tree) || inside(queue) || button.min.y >= below,
+                "{:?} shows at {screen}",
+                button.target
+            );
+        }
         for &tech in &techs {
             assert!(
-                clickable_in(&layout, tray, Target::Research(tech)),
+                clickable_in(&layout, tree, Target::Research(tech)),
                 "{tech:?} at {screen}"
             );
         }
@@ -41,41 +62,111 @@ fn the_research_view_docks_its_tree_and_queues_a_tech_in_both_presentations() {
             .iter()
             .filter(|i| i.kind == QueueKind::Research)
             .count();
-        assert!(rows >= 1, "{rows} rows at {screen}");
+        assert_eq!(rows, queued, "{screen}");
+
+        // ImGui: one window over everything below the status bar, the
+        // tree's columns side by side and the queue at their right, and
+        // nothing else drawn.
+        let mut game = game.clone();
+        let mut imgui = ImGuiScreen::styled(screen);
+        imgui.settle(&mut game);
+        let (at, size, _) = imgui::native_geometry(imgui::RESEARCH_WINDOW).unwrap();
+        assert_eq!(at, Vec2::new(0.0, imgui::STATUS_HEIGHT));
+        assert_eq!(size, Vec2::new(screen.x, screen.y - imgui::STATUS_HEIGHT));
+        let windows: std::collections::BTreeSet<String> = imgui::DRAWN_MARKS
+            .with_borrow(|marks| marks.iter().map(|mark| mark.window.clone()).collect());
+        let expected = ["Status", imgui::RESEARCH_WINDOW].map(String::from);
+        assert_eq!(windows, expected.into(), "{screen}");
+        let at = |target: Target| screen_button(&imgui, target);
+        assert!(at(Target::Research(techs[0])).x < at(Target::Research(techs[3])).x);
+        assert!(at(Target::Research(techs[3])).x < at(Target::Research(techs[7])).x);
+        let remove = at(Target::ResearchQueueRemove(0));
+        for &tech in &techs {
+            let card = imgui.button(Target::Research(tech));
+            assert!(card.is_none_or(|card| card.x < remove.x), "{tech:?}");
+        }
+        let crowded = crowded_marks(imgui::RESEARCH_WINDOW);
+        assert!(crowded.is_empty(), "{screen}: {crowded:#?}");
+        assert!(imgui.captures_mouse_at(&mut game, screen / 2.0), "no map");
     }
-    // Classic: a card queues its tech; the row's X takes it off.
+}
+
+#[test]
+fn the_research_view_queues_reorders_and_clears_in_both_presentations() {
+    use crate::game::research::Tech;
+    let techs: Vec<Tech> = Tech::all().collect();
+    // Two techs that need nothing, so either may go first.
+    let (first, second) = (techs[0], techs[1]);
+    let order = |game: &GameState| -> Vec<Tech> {
+        game.research(Team::Blue)
+            .queue
+            .iter()
+            .map(|q| q.build)
+            .collect()
+    };
+    // Classic: a card's click queues it, a row dragged onto another
+    // reorders, its X takes it off and Clear empties the queue.
     let mut game = research_view();
-    let first = techs[0];
-    game.handle_click(
-        button_cursor(&game, Target::Research(first)),
-        SCREEN,
-        ClickMode::Normal,
-    );
-    assert_eq!(game.research(Team::Blue).queue, [Queued::new(first)]);
-    let card = find_button(&game, Target::Research(first));
-    assert!(card.queued);
+    for tech in [first, second] {
+        game.handle_click(
+            button_cursor(&game, Target::Research(tech)),
+            SCREEN,
+            ClickMode::Normal,
+        );
+    }
+    assert_eq!(order(&game), [first, second]);
+    assert!(find_button(&game, Target::Research(first)).queued);
+    let layout = game.layout(SCREEN);
+    let row = |index| {
+        let row = layout
+            .queue_items
+            .iter()
+            .find(|row| row.kind == QueueKind::Research && row.index == index)
+            .unwrap();
+        let middle = Vec2::new(
+            (row.min.x + row.body_max_x) / 2.0,
+            (row.min.y + row.max.y) / 2.0,
+        );
+        to_ui(middle, SCREEN)
+    };
+    assert!(game.start_queue_drag_at(row(1), SCREEN));
+    game.finish_queue_drag_at(row(0), SCREEN);
+    assert_eq!(order(&game), [second, first], "{}", game.notice);
     game.handle_click(
         button_cursor(&game, Target::ResearchQueueRemove(0)),
         SCREEN,
         ClickMode::Normal,
     );
-    assert!(
-        game.research(Team::Blue).queue.is_empty(),
-        "{}",
-        game.notice
+    assert_eq!(order(&game), [first], "{}", game.notice);
+    game.handle_click(
+        button_cursor(&game, Target::ClearResearchQueue),
+        SCREEN,
+        ClickMode::Normal,
     );
-    // ImGui: the same card, and the queue's Clear.
+    assert!(order(&game).is_empty(), "{}", game.notice);
+
+    // ImGui: the same.
     let mut screen = ImGuiScreen::new();
     screen.click(&mut game, Target::Research(first));
-    assert_eq!(game.research(Team::Blue).queue, [Queued::new(first)]);
-    // The queue panel has just shown: let it settle where the dock puts it.
+    screen.click(&mut game, Target::Research(second));
+    assert_eq!(order(&game), [first, second]);
     screen.settle(&mut game);
+    let row = |i| Target::QueueItem(QueueKind::Research, i);
+    let rows = [0, 1].map(|i| screen_button(&screen, row(i)));
+    screen.drag(&mut game, rows[1], rows[0]);
+    assert_eq!(order(&game), [second, first], "{}", game.notice);
+    screen.click(&mut game, Target::ResearchQueueRemove(0));
+    assert_eq!(order(&game), [first], "{}", game.notice);
     screen.click(&mut game, Target::ClearResearchQueue);
-    assert!(
-        game.research(Team::Blue).queue.is_empty(),
-        "{}",
-        game.notice
-    );
+    assert!(order(&game).is_empty(), "{}", game.notice);
+    // Empty, the queue says so.
+    let empty = text!("research_queue_empty");
+    let says = |shape: &Shape| match shape {
+        Shape::Text { line, .. } => line.iter().any(|(text, _)| text == empty),
+        _ => false,
+    };
+    assert!(game.layout(SCREEN).shapes.iter().any(says));
+
     // A researched tech's card is off, and says so.
     game.research[0].done.insert(first);
     let card = find_button(&game, Target::Research(first));
@@ -84,11 +175,17 @@ fn the_research_view_docks_its_tree_and_queues_a_tech_in_both_presentations() {
         card.unavailable.as_deref(),
         Some(text!("research_card_done"))
     );
-    // Escape closes it; T opens it again, and opening a city closes it.
+    // Escape and Space close it, as does T; opening a city closes it, and
+    // so does the settings menu.
     game.press_escape();
     assert!(!game.research_view());
     game.toggle_research();
-    assert!(game.research_view());
+    assert!(game.exit_structure_menu());
+    assert!(!game.research_view());
+    game.toggle_research();
+    game.toggle_research();
+    assert!(!game.research_view());
+    game.toggle_research();
     game.open_city(0);
     game.update(0.0);
     game.leave_city_view();
@@ -96,6 +193,104 @@ fn the_research_view_docks_its_tree_and_queues_a_tech_in_both_presentations() {
         !game.research_view(),
         "it doesn't come back behind the city"
     );
+    game.toggle_research();
+    game.activate_target(Target::OpenSettings);
+    game.update(0.0);
+    game.press_escape();
+    assert!(!game.research_view(), "nor behind the menu");
+}
+
+/// In ImGui with the game's fonts, the least window wide enough for the
+/// tree's columns and the queue.
+const WHOLE_TREE: f32 = 1100.0;
+
+/// The research view's text and icons that run into each other in ImGui,
+/// or out of what they're drawn in, as `crowded_marks` finds them; but for
+/// those its tree's pane cuts at its edge, when it `scrolls` across.
+fn crowded_research(scrolls: bool) -> Vec<String> {
+    crowded_marks(imgui::RESEARCH_WINDOW)
+        .into_iter()
+        .filter(|crowded| !scrolls || !crowded.contains(" runs out of "))
+        .collect()
+}
+
+#[test]
+fn imgui_research_view_keeps_its_text_and_icons_apart_at_every_width() {
+    let mut game = research_queued();
+    let height = 720.0;
+    let least = MIN_WINDOW_SIZE[0] as u32;
+    let mut screen = ImGuiScreen::styled(Vec2::new(least as f32, height));
+    for width in (least..=1600).step_by(40) {
+        let width = width as f32;
+        screen.size = Vec2::new(width, height);
+        screen.context.io_mut().display_size = [width, height];
+        screen.settle(&mut game);
+        let crowded = crowded_research(width < WHOLE_TREE);
+        assert!(crowded.is_empty(), "at {width}: {crowded:#?}");
+        for target in [Target::ClearResearchQueue, Target::ResearchQueueRemove(0)] {
+            assert!(screen.button(target).is_some(), "{target:?} at {width}");
+        }
+    }
+}
+
+/// #422: the research view hides every other panel, and leaves the
+/// layout as it was, so all are back in their places as it closes: a
+/// panel docked at the game window's edge, one in a box, the turn strip.
+#[test]
+fn closing_the_research_view_puts_every_panel_back_where_it_was() {
+    let mut game = city_view();
+    let mut screen = ImGuiScreen::new();
+    screen.capture_selection(&mut game);
+    game.leave_city_view();
+    screen.dock_to_window_edge(&mut game, "Debug", "left");
+    screen.settle(&mut game);
+    let edge = screen.layout.window_edge("Debug");
+    assert!(edge.is_some(), "Debug docked at the edge");
+    let shown = || -> Vec<(String, Vec2, Vec2)> {
+        let windows: std::collections::BTreeSet<String> = imgui::DRAWN_MARKS
+            .with_borrow(|marks| marks.iter().map(|mark| mark.window.clone()).collect());
+        windows
+            .into_iter()
+            .map(|title| {
+                let (at, size, _) = imgui::native_geometry(&title).unwrap();
+                (title, at, size)
+            })
+            .collect()
+    };
+    let before = shown();
+    let titles: Vec<&str> = before.iter().map(|(title, ..)| title.as_str()).collect();
+    for title in ["Debug", "Units"] {
+        assert!(titles.contains(&title), "{title} in {titles:?}");
+    }
+    assert!(
+        titles.iter().any(|title| title.contains("Pinned")),
+        "the captured panel too: {titles:?}"
+    );
+
+    // Open (T), only it and the status bar show.
+    game.toggle_research();
+    screen.settle(&mut game);
+    let open: Vec<String> = shown().into_iter().map(|(title, ..)| title).collect();
+    assert_eq!(open, [imgui::RESEARCH_WINDOW, "Status"]);
+    // Closed (Escape), each is where it was, as big.
+    game.press_escape();
+    screen.settle(&mut game);
+    assert_eq!(shown(), before);
+    assert_eq!(screen.layout.window_edge("Debug"), edge);
+    assert_eq!(screen.layout.captured(), 1);
+
+    // Opened by the city's Research button and closed by Space, the same.
+    game.open_city(0);
+    screen.settle(&mut game);
+    game.activate_target(Target::OpenResearch);
+    assert!(game.research_view());
+    screen.settle(&mut game);
+    let open: Vec<String> = shown().into_iter().map(|(title, ..)| title).collect();
+    assert_eq!(open, [imgui::RESEARCH_WINDOW, "Status"]);
+    assert!(game.exit_structure_menu());
+    screen.settle(&mut game);
+    assert_eq!(shown(), before);
+    assert_eq!(screen.layout.window_edge("Debug"), edge);
 }
 
 #[test]
@@ -225,29 +420,40 @@ fn the_tech_tree_puts_each_tier_in_a_column_with_lines_to_what_needs_it() {
     assert_eq!(link(2, 6), LinkState::Open);
 
     // Classic: side by side, tier by tier, nothing overlapping, and no line
-    // crossing a card.
+    // crossing a card; in more room, the columns further apart and
+    // centered in it.
     let metrics = tree.classic_metrics();
-    let placed = tree.place(tree.width(&metrics), &metrics);
-    assert!(!placed.stacked);
-    let rect = |i: usize| Rect {
-        min: placed.cards[i].0,
-        max: placed.cards[i].1,
-    };
-    for i in 0..tree.cards.len() {
-        for j in i + 1..tree.cards.len() {
-            assert!(!rect(i).overlaps(rect(j), 0.0), "{i} and {j}");
-            if tree.slots[i].0 < tree.slots[j].0 {
-                assert!(rect(i).max.x < rect(j).min.x, "{i} left of {j}");
-            }
-        }
-    }
-    for &(min, max, _) in &placed.wires {
-        let wire = Rect {
-            min: min + 1.5,
-            max: max - 1.5,
+    let least = tree.width(&metrics);
+    for width in [least, least * 1.4, least * 3.0] {
+        let placed = tree.place(width, &metrics);
+        assert!(!placed.stacked);
+        let rect = |i: usize| Rect {
+            min: placed.cards[i].0,
+            max: placed.cards[i].1,
         };
         for i in 0..tree.cards.len() {
-            assert!(!wire.overlaps(rect(i), 0.0), "a line crosses card {i}");
+            for j in i + 1..tree.cards.len() {
+                assert!(!rect(i).overlaps(rect(j), 0.0), "{i} and {j} in {width}");
+                if tree.slots[i].0 < tree.slots[j].0 {
+                    assert!(rect(i).max.x < rect(j).min.x, "{i} left of {j}");
+                }
+            }
+        }
+        for &(min, max, _) in &placed.wires {
+            let wire = Rect {
+                min: min + 1.5,
+                max: max - 1.5,
+            };
+            for i in 0..tree.cards.len() {
+                assert!(!wire.overlaps(rect(i), 0.0), "a line crosses card {i}");
+            }
+        }
+        let left = placed.cards.iter().map(|c| c.0.x).fold(f32::MAX, f32::min);
+        let right = placed.cards.iter().map(|c| c.1.x).fold(0.0, f32::max);
+        assert!((left - (width - right)).abs() <= 1.0, "centered in {width}");
+        assert!(right - left <= width + 0.5);
+        if width > least {
+            assert!(right - left > least, "spread in {width}");
         }
     }
     // Too narrow for the columns: the tiers stack, still apart, in the width.
@@ -316,15 +522,15 @@ fn the_tech_tree_shows_in_columns_and_queues_a_click_in_both_presentations() {
         .collect();
     assert_eq!(queued, [techs[0], techs[3]]);
 
-    // ImGui: the tree's columns side by side in Selection, its text and
-    // icons apart, a card's tooltip, and a card's click queues it.
+    // ImGui: the tree's columns side by side, its text and icons apart, a
+    // card's tooltip, and a card's click queues it.
     let mut game = research_in_progress();
     let mut screen = ImGuiScreen::styled(SCREEN);
     screen.settle(&mut game);
     let at = |tech: Tech| screen_button(&screen, Target::Research(tech));
     assert!(at(techs[0]).x < at(techs[3]).x);
     assert!(at(techs[3]).x < at(techs[7]).x);
-    let crowded = crowded_marks("Selection");
+    let crowded = crowded_marks(imgui::RESEARCH_WINDOW);
     assert!(crowded.is_empty(), "{crowded:#?}");
     let card = screen_button(&screen, Target::Research(techs[2]));
     screen.frame(&mut game, Some(card), false);
@@ -336,14 +542,28 @@ fn the_tech_tree_shows_in_columns_and_queues_a_click_in_both_presentations() {
     );
     screen.click(&mut game, Target::Research(techs[2]));
     assert_eq!(game.research_place(Team::Blue, techs[2]), Some(4));
-    // Narrow, the tiers stack: a column's cards one over the other.
-    screen
-        .layout
-        .resize_panel("Selection", Vec2::new(320.0, SCREEN.y - 120.0));
+    // In the least window the game allows, the columns stay side by side,
+    // the tree's pane scrolling across to the last; its text and icons
+    // still apart.
+    drop(screen);
+    let least = Vec2::from(MIN_WINDOW_SIZE);
+    let mut screen = ImGuiScreen::styled(least);
     screen.settle(&mut game);
-    let at = |tech: Tech| screen_button(&screen, Target::Research(tech));
-    assert_eq!(at(techs[0]).x, at(techs[3]).x);
-    assert!(at(techs[0]).y < at(techs[3]).y);
+    let at = |screen: &ImGuiScreen, tech: Tech| screen.button(Target::Research(tech));
+    assert!(at(&screen, techs[0]).unwrap().x < at(&screen, techs[3]).unwrap().x);
+    let crowded = crowded_research(true);
+    assert!(crowded.is_empty(), "{crowded:#?}");
+    let card = at(&screen, techs[0]).unwrap();
+    for _ in 0..3 {
+        screen.context.io_mut().add_mouse_wheel_event([-5.0, 0.0]);
+        screen.frame(&mut game, Some(card), false);
+    }
+    screen.frame(&mut game, None, false);
+    let moved = at(&screen, techs[0]);
+    assert!(
+        moved.is_none_or(|moved| moved.x < card.x),
+        "scrolled across"
+    );
 }
 
 /// The middle of the button ImGui drew for `target` last frame.
