@@ -59,7 +59,7 @@ pub struct Opener {
 fn nonce(count: u64) -> Nonce {
     let mut bytes = [0; 12];
     bytes[4..].copy_from_slice(&count.to_be_bytes());
-    *Nonce::from_slice(&bytes)
+    Nonce::from(bytes)
 }
 
 fn invalid(why: impl Into<String>) -> io::Error {
@@ -188,19 +188,23 @@ pub fn handshake(
     let shared = exchange
         .finish(&inbound)
         .map_err(|_| invalid("the key exchange failed"))?;
+    Ok(channel(&shared, side))
+}
 
-    let keys = Hkdf::<Sha256>::new(Some(SALT), &shared);
+/// The channel's two halves for `side`, from the key both ends now share.
+fn channel(shared: &[u8], side: Side) -> (Sealer, Opener) {
+    let keys = Hkdf::<Sha256>::new(Some(SALT), shared);
     let key = |label: &[u8]| {
         let mut key = [0; 32];
         keys.expand(label, &mut key)
             .expect("32 bytes is a valid length");
-        ChaCha20Poly1305::new(Key::from_slice(&key))
+        ChaCha20Poly1305::new(&Key::from(key))
     };
     let (seal_label, open_label) = match side {
         Side::Guest => (GUEST_TO_HOST, HOST_TO_GUEST),
         Side::Host => (HOST_TO_GUEST, GUEST_TO_HOST),
     };
-    Ok((
+    (
         Sealer {
             cipher: key(seal_label),
             sent: 0,
@@ -209,7 +213,7 @@ pub fn handshake(
             cipher: key(open_label),
             received: 0,
         },
-    ))
+    )
 }
 
 #[cfg(test)]
@@ -295,6 +299,22 @@ mod tests {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
         assert!(host.join().unwrap().is_err());
+    }
+
+    /// The bytes on the wire for a fixed shared key. They must not change
+    /// when the crypto crates are updated: the other end may be an older
+    /// build with the same `PROTOCOL_VERSION`.
+    #[test]
+    fn a_fixed_key_seals_to_the_same_bytes() {
+        let shared = [7; 32];
+        let (mut sealer, _) = channel(&shared, Side::Guest);
+        let first = sealer.seal(b"hello").unwrap();
+        let second = sealer.seal(b"hello").unwrap();
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(&first), "a96c333051b5f35c90a5d7a38954405c310b1fc112");
+        assert_eq!(hex(&second), "bcbe449ece3c5035c0c4f34da062c485112d5a6335");
+        let (_, mut opener) = channel(&shared, Side::Host);
+        assert_eq!(opener.open(&first).unwrap(), b"hello");
     }
 
     #[test]
