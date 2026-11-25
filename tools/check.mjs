@@ -14,7 +14,8 @@
 // with the Rust in Cargo.toml's `rust-version`, and never installs it: when that
 // toolchain isn't installed it is skipped with a note (CI installs it first, and
 // there a missing toolchain fails). tools lints the commit messages in
-// `origin/main..HEAD` unless given `--range`, and skips that with no `origin/main`.
+// `origin/main..HEAD` unless given `--range`, and skips that with no `origin/main`;
+// it also checks file lengths against their budgets (size-budget.mjs).
 //
 // It stops at the first failing step and exits non-zero.
 
@@ -72,6 +73,8 @@ function jobs({ fast, range }) {
       lintRange
         ? [NODE, 'tools/commit-msg-lint.mjs', '--range', lintRange]
         : { skip: 'commit messages (no origin/main to compare with)' },
+      [NODE, 'tools/size-budget.mjs', '--self-test'],
+      [NODE, 'tools/size-budget.mjs'],
     ],
   };
 }

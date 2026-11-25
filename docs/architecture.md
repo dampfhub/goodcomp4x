@@ -34,7 +34,7 @@ src/game/            GameState and everything game-specific
 shaders/             mesh.vert (view-projection), mesh.frag (color x atlas coverage or distance field)
 assets/fonts/        IBM Plex Mono SemiBold, embedded by font.rs (OFL)
 docs/                architecture, rules, controls, design proposals, history (docs/README.md)
-tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs, check.mjs (CI's checks), hooks/
+tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs, check.mjs (CI's checks), hooks/, size-budget.mjs
 .agents/skills/      agent skills, read by Codex (canonical)
 .claude/skills/      pointers to those skills, read by Claude Code
 .github/             CI workflow, PR template

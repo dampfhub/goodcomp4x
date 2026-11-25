@@ -53,6 +53,10 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
    (names, labels, tooltips, hints, notices, reasons) against `docs/text.md`, "Writing it:
    short and plain". Make it as short as it can be, and make sure it doesn't read as written by
    an AI. List the strings you checked in the PR.
+10. Code files get 800 lines and test files 1200. A file already longer is listed in
+    `tools/size-budget.json` and may only shrink; `check.mjs` enforces it. Split a file rather
+    than grow it. If growing it really is better, raise or add its ceiling in that JSON by hand,
+    and say why in the PR. After shrinking one, `node tools/size-budget.mjs --update` lowers it.
 
 ## Where things are
 
@@ -70,6 +74,7 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
 | `tools/board/` | work-board wrapper (`board.mjs`) and its config | `.agents/skills/board/SKILL.md` |
 | `tools/commit-msg-lint.mjs` | refuses commit messages that close an issue by accident | its header comment |
 | `tools/check.mjs`, `tools/hooks/` | the checks CI runs, as one script; opt-in git hooks | its header comment |
+| `tools/size-budget.mjs`, `.json` | file-length budgets, and ceilings for files over them | its header comment |
 | `.agents/skills/`, `.claude/skills/` | agent skills (canonical, and pointers for Claude Code) | the skill's `SKILL.md` |
 | `.github/` | CI workflow and PR template | |
 
