@@ -1151,7 +1151,7 @@ attacking if that brings it into range. Heading anywhere else than an enemy (rui
 unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
 holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
 teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
-never builds buildings, and ignores any player-controlled AI unit; its settlers go their own way (below).
+and ignores any player-controlled AI unit; its settlers go their own way (below).
 An AI scout gathers what its side knows and stays alive, rather than fight:
 - It never ends its move where an enemy it sees could reach and attack it next turn (the enemy's
   move and range by its type, a Cavalry's Charge and a deployed Siege's extra hex included), if
@@ -1183,18 +1183,39 @@ within 2. Its queue otherwise grows the city. A city without a Barracks (built o
 slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
 pay. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted troops
 (Cavalry) than it has Pikemen alive and queued; else Cavalry or Armored when its deposits allow and the side can pay,
-else Melee, or Ranged for every two Melee (whichever of the two the side can pay for, when it can pay for only one), of
-what its side has researched. **Research:** once its side has a troop (scouts and settlers aside)
+else a Siege (below), else Melee, or Ranged for every two Melee (for every Melee once it has
+wood past its reserve, below; whichever of the two the side can pay for, when it can pay for
+only one), of what its side has researched. **Research:** once its side has a troop (scouts and settlers aside)
 and a city, an AI side with nothing queued researches the tech for Ranged, then Cavalry, then the
-Pikeman, then Armored (each with what it needs first), and nothing else: it builds nothing else a
-tech unlocks, and research costs the food its cities grow on. A tech that waits for the stockpile
+Pikeman, then Armored (each with what it needs first). After those it researches the Cannery's
+tech, then the Siege's, but only once it has their price (and what they need first) past its
+reserve, as research costs the food its cities grow on. A tech that waits for the stockpile
 stays queued; research pays first, so its cities spend what it leaves. An AI city with a worker at home and an empty list places one job it can
 pay for, the first of: cutting a forest it works where a farm could then go (fresh water, open
 ground); while its side has less wood than a Ranged costs, cutting the nearest forest within
 workers' reach that no city works; an improvement on a tile it works, the one that adds most
-first (food counting double: a farm, then a mine or pasture, then a lumber mill); a road there. At a contested friendly city gate, AI
+first (food counting double: a farm, then a mine or pasture, then a lumber mill); with wood
+past its reserve, a farm or pasture its Cannery would collect from (below); a road on a tile it
+works; with wood past its reserve, an improvement on a tile within workers' reach that no city
+works yet, ahead of its citizens, in the same order (nearest the city on a tie). At a contested friendly city gate, AI
 units hold position and attack an enemy in range. Ties break by hex coordinates, so it is
 deterministic.
+
+**Spending a surplus:** an AI side keeps a reserve of 20 wood (about a Settler's and a
+Ranged's), and spends past it, after its queues have what they start this turn:
+- **Buildings:** each turn it places at most one, the first of a Forge, Stable, Cannery and Mill
+  that it has researched, can pay for past its reserve (and 10 metal more, for one paid in
+  metal), and has a site for in a city with workers and without one, on the site that gains
+  most. A site is a tile its side has seen within workers' reach, unworked and unimproved, out of
+  the dens' reach, with no enemy in sight on it and no other job. A Forge or Stable goes beside
+  the city's Barracks where it adds Iron or Horses deposits its side's Barracks don't draw on
+  yet. A Cannery goes where it would collect at least 3 food a turn, counting the improved tiles
+  no city works within 3 hexes and those its workers could make farms or pastures (within 3 of
+  no other Cannery of its side). A Mill goes where it adds at least 1 food a turn, from worked
+  tiles beside it that deliver only 75%. It builds no Smelter: sides with mines to spare bank
+  metal already.
+- **Siege:** an idle Barracks trains a Siege when its side knows of an enemy city, can pay for
+  it past its reserve and 20 metal more, and one troop in three at most would be a Siege.
 
 The AI builds Scouts and expands with Settlers:
 - A side with no scout, alive or queued, trains one, after a city's first worker.
@@ -1249,9 +1270,10 @@ its sites and workers again.
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
 
-- The AI never uses abilities (its scouts never go on lookout) or builds buildings or
-  structures, and its armies explore by walking to the nearest ground never seen, so without a
-  scout's findings they find their enemies slowly.
+- The AI never uses abilities (its scouts never go on lookout) or builds structures, and of the
+  buildings it builds only the Barracks and, from a surplus, a Forge, Stable, Cannery or Mill.
+  Its armies explore by walking to the nearest ground never seen, so without a scout's findings
+  they find their enemies slowly.
 - Forts' +50% defense is a placeholder; what forts should really give is undecided.
 - Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
   ground.
@@ -1271,7 +1293,7 @@ Known bugs link to their board item; the rest are design questions nobody has de
   move); it doesn't stop when an enemy merely comes into sight, and it can't queue abilities,
   swaps or holds for later turns.
 - The stockpile economy's prices, times, growth cost and the Barracks' 3 troops per deposit are
-  a first pass, slowed once for tempo (option B, `rts-economy.md` Round 7), and the late game
-  has nothing to spend a growing stockpile on once cities are full (see `rts-economy.md`).
+  a first pass, slowed once for tempo (option B, `rts-economy.md` Round 7). A side at its supply
+  cap still banks metal it has no use for (see `rts-economy.md`, Round 13).
 - No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
   with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

@@ -1132,3 +1132,70 @@ at the city center (3 Melees in 24 World 4 games), so nothing there competes wit
 
 `PROTOCOL_VERSION` 42. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
+
+## Round 13: the AI spends its surplus (#399)
+
+The Round 11 report found the late game banking wood and metal it never spent. No price or rule
+changed here, only the AI's choices (`game-rules.md`, AI, "Spending a surplus"). A side keeps 20
+wood in reserve and spends past it:
+- **Improvements ahead of its citizens:** with nothing left to do on the tiles it works, its
+  workers improve the tiles in reach that no city works yet. This is most of the wood spent.
+- **Buildings,** one placed a turn at most: a Forge or Stable beside a Barracks where it adds a
+  deposit; a Cannery where it would collect 3 food or more (and its workers make the farms and
+  pastures it collects from); a Mill where it adds a food or more. One paid in metal also leaves
+  10 metal.
+- **Research** past its troops' techs, from the surplus: the Cannery's, then the Siege's.
+- **Troops:** Ranged for every Melee instead of every two (a Ranged pays wood where a Melee pays
+  food, and the same metal), and a Siege, at most one troop in three, once it knows of an enemy
+  city, leaving 20 metal.
+
+The report now has a turn-100 row. `economy_report`, 100 turns, seeds 0-23, the default games,
+on `main` at e0268d4 (with research and #401's tie-break, so the bank is smaller than Round 11's
+143 / 47) and this change:
+
+```
+SIM_SEEDS=24 REPORT_TURNS=100 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side:
+
+| | before | after |
+|---|---|---|
+| Stockpile f / w / m at turn 60 | 18 / 36 / 21 | 18 / 24 / 19 |
+| Stockpile f / w / m at turn 80 | 21 / 58 / 35 | 20 / 35 / 29 |
+| Stockpile f / w / m at turn 100 | 21 / 100 / 58 | 24 / 49 / 47 |
+| Population at turn 60 / 80 / 100 | 6.3 / 10.8 / 16.9 | 6.1 / 10.7 / 17.2 |
+| Army at turn 60 / 80 / 100 | 6.0 / 10.4 / 17.0 | 5.7 / 10.0 / 16.7 |
+| Trained by turn 100 | 33.4 | 32.9 |
+| Melee / Ranged / Siege trained by turn 100 | 18.9 / 10.7 / 0 | 16.4 / 11.4 / 0.9 |
+| Second city (never by 100) | 49 (8%) | 50 (7%) |
+| Spent on buildings by turn 100, f / w / m | 0 / 39 / 0 | 0 / 53 / 4 |
+| Improvements built (all sides, 24 games) | 1558 | 1982 |
+| Canneries / Mills / Stables / Forges built | 0 | 78 / 14 / 11 / 2 |
+
+The other games at turn 100, before → after:
+- **World with 1 AI side:** wood 115 → 56, metal 45 → 38; population 21.1 → 20.9; army 19.9 →
+  20.1.
+- **World with 5 AI sides:** wood 116 → 56, metal 55 → 44; population 16.5 → 16.6; army 16.7 →
+  15.9.
+- **World with 6 AI sides:** wood 110 → 50, metal 49 → 37; population 16.9 → 17.4; army 17.7 →
+  17.3.
+- **Cities:** wood 102 → 65, metal 22 → 13.
+
+### What it shows
+
+- **The wood bank halves,** and the metal bank falls by a sixth to a quarter. The 90th
+  percentile falls more: wood 224 → 108 and metal 186 → 133 in World with 4 AI sides.
+- **Population holds,** from 0.2 less to 0.5 more at turn 100 (measured on 81de4d6, before
+  #401, it gained 0.2 to 0.8).
+- **The army is about the same,** 0.8 smaller to 0.2 larger at turn 100, within the spread
+  between seeds. Gathering is much of a side's metal, and a Siege costs 6 of it.
+- **Tried and dropped** (measured on 81de4d6, before #401): a second worker for a rich city
+  spent wood fastest (33 at turn 100, against 58 without it) but cost 1.1 of the army, as the
+  city's turns on it were turns it didn't gather metal. A Smelter (from mines no citizen works)
+  added metal to sides that already banked it: 2 to 14 more at turn 100.
+- **What's left in the bank** is mostly metal on sides at their supply cap, with nothing that
+  uses supply left to train. Spending it needs a use for metal that isn't a troop.
+
+`PROTOCOL_VERSION` 42. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
