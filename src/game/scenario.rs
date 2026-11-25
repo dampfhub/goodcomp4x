@@ -189,6 +189,21 @@ impl GameState {
         self.lifetime_special_cap = lifetime_special_cap;
     }
 
+    /// Plays `turns` turns at once with the AI planning every side, the
+    /// player's included (screenshot mode's `--turns`).
+    pub fn play_ai_turns(&mut self, turns: u32) {
+        let instant = self.settings.instant_playback;
+        self.settings.instant_playback = true;
+        for _ in 0..turns {
+            self.selected = None;
+            self.group.clear();
+            self.plan_ai_turn(self.local_team);
+            self.resolve_turn();
+            self.update(0.0);
+        }
+        self.settings.instant_playback = instant;
+    }
+
     /// F8: switches turn playback between one step at a time and all at once.
     pub fn toggle_instant_playback(&mut self) {
         self.settings.instant_playback = !self.settings.instant_playback;

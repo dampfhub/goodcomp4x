@@ -117,7 +117,7 @@ the real panels and clicks a button where ImGui drew it (`imgui::DRAWN_BUTTONS`,
 `imgui::one_context_at_a_time()`. `imgui/tests.rs` has the views', boxes' and captured panels'
 tests, and `imgui/tests/layout.rs` the saved layout's and the dock plan's. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
 `imgui::DRAWN_MARKS` holds each piece of text and icon drawn, with what clips it.
-After UI changes run `cargo build --release` and look at a screenshot
-(`cargo run -- --screenshot out.png --scenario cities`); screenshot mode shows ImGui, and the
-classic view needs a temporary `use_imgui: false` in `App::new` (revert it by editing the line,
-not with `git checkout`, which would drop your other changes to `app.rs`).
+After UI changes look at a screenshot of each presentation:
+`cargo run -- --screenshot out.png --scenario cities` shows ImGui, and `--ui classic` the classic
+UI. `--turns N` plays N turns first, the AI on every side, for what the opening position
+doesn't show (queues, a later turn's panels).
