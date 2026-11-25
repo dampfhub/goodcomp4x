@@ -274,7 +274,8 @@ settled:
 - **Refunds:** an item taken off refunds its price only if it was paid. A captured city's
   queues and a destroyed Barracks' are lost, paid items with them, as before.
 - **Several cities on one stockpile:** queues pay in city order, each city's queue before its
-  Barracks', which is deterministic for the simulations and network lockstep.
+  Barracks', which is deterministic for the simulations and network lockstep. (Round 13 changed
+  this: every Barracks pays first.)
 - **Grow's price** is set when it's paid, at the population then plus the Grows already paid
   for in the city. The card prices it counting every Grow queued ahead, which is what it will
   cost once they're done.
