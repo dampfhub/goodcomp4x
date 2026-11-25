@@ -20,9 +20,9 @@ vertex lists. File-level maps and the rules for editing each layer are in `src/A
 ```
 AGENTS.md            agent instructions for the whole repo (nested ones under src/)
 README.md            what this is and how to run it
-Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
+Cargo.toml, build.rs crate manifest (rust-version 1.88); build.rs compiles shaders/ with glslc
 src/main.rs          logger, command line, event loop
-src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
+src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --ui, --turns, --size, --host/--join)
 src/net/             a network game's link: TCP, sealed with a key from the join code (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS; 30 unfocused), F5 fullscreen
 src/clipboard.rs     system clipboard text (Win32 via windows-sys; a stub elsewhere), for App and ImGui
@@ -227,6 +227,7 @@ switches, so a seed replays the same game, map included. `mapgen.rs` has its own
 the map seed.
 
 Screenshot mode (`--screenshot out.png`, `src/screenshot.rs`) is the visual counterpart: it
-draws a scenario's opening frame in a hidden window and saves it as a PNG. The renderer only
+draws a scenario's opening frame (or, with `--turns N`, the frame N AI-played turns in) in a
+hidden window and saves it as a PNG. The renderer only
 offers "copy the next frame back" (`capture_next_frame`, `take_captured_frame`); the app decides
 when, and writes the file.

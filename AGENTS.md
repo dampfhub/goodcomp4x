@@ -16,7 +16,9 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
 
-Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
+Building needs Rust 1.88+ (locally, any stable you have; CI pins 1.100.0 in
+`.github/workflows/ci.yml`, so a new Rust's lints don't break main, and moving it is its own
+PR) and `glslc`: `build.rs` compiles `shaders/` with
 `$VULKAN_SDK/bin/glslc`, falling back to `PATH`. Logging goes through `log`/`env_logger` at
 `info` by default, which includes the combat log; `RUST_LOG` changes it.
 
@@ -82,9 +84,9 @@ Building needs Rust 1.92+ and `glslc`: `build.rs` compiles `shaders/` with
   over 20 s). `--seed N` fixes the world's map and `--size 1280x720` the window size (default
   1600x900); the same arguments give the same image, so before/after shots compare directly.
   Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
-  validation errors too. It shows the scenario's opening position only; for anything past that,
-  run the game. UI layout and click targets are testable without a window (see
-  `src/game/ui/tests.rs`).
+  validation errors too. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
+  plays N turns first, the AI on every side (the same game every run). UI layout and click
+  targets are testable without a window (see `src/game/ui/tests.rs`).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
   snapshot, F8 toggles instant turn playback, F9 finishes the current build, F10 toggles fog of
   war (`docs/controls.md`).

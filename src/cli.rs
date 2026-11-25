@@ -21,6 +21,10 @@ Options:
                        and zoom all the way out (F10 + Alt + zoom out)
   --view <NAME>        open a view as the game starts: research (the tech
                        tree, T), so a screenshot can show it
+  --ui <NAME>          with --screenshot: imgui (the default) or classic,
+                       the UI F11 switches to
+  --turns <N>          with --screenshot: play N turns first, the AI on
+                       every side
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900); at least 640x480 at 100%
                        display scaling, and more at higher scaling
@@ -45,6 +49,10 @@ pub struct Options {
     pub world_overlay: bool,
     /// A view to open as the game starts (`--view`).
     pub view: Option<View>,
+    /// Screenshot mode: the classic UI (`--ui classic`) rather than ImGui.
+    pub classic_ui: bool,
+    /// Screenshot mode: turns the AI plays on every side before the shot.
+    pub turns: u32,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
     /// A multiplayer game to host or join.
@@ -85,6 +93,8 @@ impl Default for Options {
             screenshot: None,
             world_overlay: false,
             view: None,
+            classic_ui: false,
+            turns: 0,
             size: None,
             network: None,
             help: false,
@@ -98,6 +108,7 @@ impl Options {
         let mut options = Self::default();
         let (mut host, mut port, mut join, mut code) = (false, None, None, None);
         let mut players = None;
+        let (mut ui, mut turns) = (false, false);
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
             let mut value = || {
@@ -130,6 +141,21 @@ impl Options {
                         View::from_name(&name)
                             .with_context(|| format!("no view called {name:?}: try research"))?,
                     );
+                }
+                "--ui" => {
+                    options.classic_ui = match value()?.as_str() {
+                        "classic" => true,
+                        "imgui" => false,
+                        other => bail!("--ui wants imgui or classic, not {other:?}"),
+                    };
+                    ui = true;
+                }
+                "--turns" => {
+                    let text = value()?;
+                    options.turns = text.parse().with_context(|| {
+                        format!("--turns wants a whole number of turns, not {text:?}")
+                    })?;
+                    turns = true;
                 }
                 "--size" => options.size = Some(parse_size(&value()?)?),
                 "--host" => host = true,
@@ -186,6 +212,12 @@ impl Options {
         }
         if options.world_overlay && options.screenshot.is_none() {
             bail!("--world-overlay requires --screenshot");
+        }
+        if ui && options.screenshot.is_none() {
+            bail!("--ui requires --screenshot (F11 switches the UI in the game)");
+        }
+        if turns && options.screenshot.is_none() {
+            bail!("--turns requires --screenshot");
         }
         Ok(options)
     }
@@ -261,6 +293,11 @@ mod tests {
         assert_eq!(options.size, Some((1280, 720)));
         assert!(!options.help);
 
+        let later = parse(&["--screenshot", "x.png", "--ui", "classic", "--turns", "5"]).unwrap();
+        assert_eq!((later.classic_ui, later.turns), (true, 5));
+        let imgui = parse(&["--screenshot", "x.png", "--ui", "imgui"]).unwrap();
+        assert!(!imgui.classic_ui);
+
         let world = parse(&["--seed", "42", "--scenario", "world"]).unwrap();
         assert_eq!((world.scenario, world.seed), (Scenario::World, Some(42)));
     }
@@ -274,6 +311,17 @@ mod tests {
                 .world_overlay
         );
         assert!(parse(&["--scenario", "moon"]).is_err());
+        assert!(
+            parse(&["--ui", "classic"]).is_err(),
+            "--ui needs --screenshot"
+        );
+        assert!(
+            parse(&["--turns", "3"]).is_err(),
+            "--turns needs --screenshot"
+        );
+        assert!(parse(&["--screenshot", "x.png", "--ui", "retro"]).is_err());
+        assert!(parse(&["--screenshot", "x.png", "--turns", "-1"]).is_err());
+        assert!(parse(&["--screenshot", "x.png", "--turns"]).is_err());
         assert!(parse(&["--screenshot"]).is_err());
         assert!(parse(&["--size", "1280"]).is_err());
         assert!(parse(&["--size", "0x720"]).is_err());

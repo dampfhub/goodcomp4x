@@ -284,6 +284,7 @@ impl App {
             None => options.scenario.new_game(&settings),
         });
         game.set_settings(settings);
+        game.play_ai_turns(options.turns);
         if options.world_overlay {
             game.toggle_fog();
             game.set_details(true);
@@ -315,7 +316,7 @@ impl App {
             imgui_layout: ImGuiLayoutState::from_text(&layout),
             world_vertices: Vec::new(),
             ui_vertices: Vec::new(),
-            use_imgui: saved.imgui,
+            use_imgui: saved.imgui && !options.classic_ui,
 
             last_frame: None,
             refresh_mhz: None,
@@ -1462,5 +1463,20 @@ mod tests {
         assert_eq!(app.requested_size, Some(PhysicalSize::new(1600, 900)));
         assert!(!app.remember);
         assert_eq!(app.game.map_seed(), Some(42));
+        assert!(app.use_imgui);
+    }
+
+    #[test]
+    fn a_screenshot_can_show_the_classic_ui_some_turns_in() {
+        let options = Options {
+            screenshot: Some("test.png".into()),
+            classic_ui: true,
+            turns: 3,
+            ..Options::default()
+        };
+        let app = App::new_with_load(options, None, |_| None);
+        assert!(!app.use_imgui);
+        assert_eq!(app.game.turn(), 3);
+        assert!(!app.game.is_resolving());
     }
 }
