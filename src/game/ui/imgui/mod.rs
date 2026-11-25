@@ -26,6 +26,8 @@ mod native;
 mod persist;
 mod pins;
 mod render;
+#[cfg(test)]
+mod screen;
 mod style;
 mod test_hooks;
 #[cfg(test)]
@@ -51,6 +53,8 @@ use windows::*;
 
 #[cfg(test)]
 pub(super) use native::forget_docking;
+#[cfg(test)]
+pub(super) use screen::ImGuiScreen;
 #[cfg(test)]
 pub(super) use test_hooks::{
     DRAWN_BUTTONS, DRAWN_MARKS, DrawnControl, DrawnMark, SHORT_BUTTONS, SHOWN_NOTICE,
