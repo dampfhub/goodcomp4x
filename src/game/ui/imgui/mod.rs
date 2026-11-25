@@ -46,8 +46,8 @@ use native::*;
 #[cfg(test)]
 use persist::*;
 use pins::*;
-use tech_tree::*;
 pub use style::style_imgui;
+use tech_tree::*;
 use test_hooks::*;
 use views::*;
 use widgets::*;
@@ -101,6 +101,9 @@ pub(super) const STATUS_HEIGHT: f32 = 52.0;
 const BAR_HEIGHT: f32 = 12.0;
 /// The settings menu's width, before a narrow screen takes some off.
 const SETTINGS_WIDTH: f32 = 460.0;
+/// The research queue's width beside the tech tree: its rows are a tech's
+/// name and its turns.
+const RESEARCH_QUEUE_WIDTH: f32 = 340.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
 const SLOT_COUNT: usize = 6;
 const SELECTION: usize = 0;
@@ -271,22 +274,29 @@ impl GameState {
         };
         let units = self.roster_panel();
         let settings = self.settings_open.then(|| self.settings_panel_content());
-        let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
-        // The research view's tree wants its columns side by side.
-        let tray_width = tree_panel_width(ui, fonts, &tray)
-            .map_or(left_width, |width| width.max(left_width).min(max_width));
+        // The research view's tree wants its columns side by side, and its
+        // queue of short rows leaves the room beside it to the rest.
+        let tree_width = tree_panel_width(ui, fonts, &tray);
+        let tray_width =
+            tree_width.map_or(left_width, |width| width.max(left_width).min(max_width));
+        let queue_width = if tree_width.is_some() {
+            left_width.min(RESEARCH_QUEUE_WIDTH)
+        } else {
+            left_width
+        };
+        let queue_height = measure_panel(ui, &queue, fonts, queue_width).min(225.0);
         let mut tray_height = measure_panel(ui, &tray, fonts, tray_width).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
         // reserve its space above the selection before docking either window.
         if !tray.rows.is_empty()
             && !queue.rows.is_empty()
-            && viewport.x < tray_width + left_width + 3.0 * PANEL_MARGIN + PANEL_GAP
+            && viewport.x < tray_width + queue_width + 3.0 * PANEL_MARGIN + PANEL_GAP
         {
             tray_height = tray_height.min((available - queue_height - PANEL_GAP).max(120.0));
         }
         let measured = [
             (!tray.rows.is_empty()).then_some(Vec2::new(tray_width, tray_height)),
-            (!queue.rows.is_empty()).then_some(Vec2::new(left_width, queue_height)),
+            (!queue.rows.is_empty()).then_some(Vec2::new(queue_width, queue_height)),
             Some(Vec2::new(
                 debug_width,
                 measure_panel(ui, &debug, fonts, debug_width).min(available),

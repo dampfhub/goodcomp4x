@@ -48,17 +48,6 @@ impl GameState {
             && self.group.is_empty()
     }
 
-    // TEMP413 evidence only: remove before committing.
-    pub fn temp413_demo(&mut self) {
-        let all: Vec<Tech> = Tech::all().collect();
-        let team = self.local_team;
-        self.research[team.index()].done.insert(all[0]);
-        self.queue_selected_research(all[4]);
-        self.queue_selected_research(all[9]);
-        self.research[team.index()].queue[0].paid = true;
-        self.research[team.index()].queue[0].progress = 5;
-    }
-
     /// T, or a city's Research button: opens the research view, leaving
     /// whatever was open, or closes it.
     pub fn toggle_research(&mut self) {

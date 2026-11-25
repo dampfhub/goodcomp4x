@@ -2,6 +2,7 @@
 
 use super::action_icons;
 use super::builder::visible_button_hint;
+use super::tech_tree::draw_tech_card;
 use super::{
     ARMED_BORDER, ARMED_BORDER_COLOR, BAR_BG, BODY, BORDER, BORDER_COLOR, BUTTON_BG, BUTTON_HEIGHT,
     BUTTON_HOVER_BG, BUTTON_PADDING, Button, ButtonState, Color, DEBUG_ALPHA, DIM_TEXT,
@@ -10,7 +11,6 @@ use super::{
     SHORT_BORDER_COLOR, SHORT_HOVER_BG, SHORT_PRICE, SHORT_QUEUED_PRICE, SMALL, Shape, TEXT,
     WAITING_TEXT,
 };
-use super::tech_tree::draw_tech_card;
 use super::{ChipIcon, Target};
 use crate::game::draw::{push_barracks_house, push_city_tower, push_unit_token};
 use crate::game::font;

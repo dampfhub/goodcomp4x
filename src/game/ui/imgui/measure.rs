@@ -45,7 +45,7 @@ pub(super) fn measure_panel(ui: &Ui, panel: &PanelBuilder, fonts: &[FontId; 3], 
                 (buttons.len().clamp(1, 5) as f32 * 34.0) + 18.0
             }
             Row::Roster(_) => ROSTER_CHIP + 6.0,
-            Row::TechTree(tree) => tree_height(ui, fonts, tree, inner) + SPACING_Y,
+            Row::TechTree(tree) => tree_height(ui, fonts, tree, inner) + 2.0 * SPACING_Y,
             Row::ScrollList(_) => unreachable!("flattened by flat_rows"),
             Row::LabeledButtons(..) => unreachable!("classic only"),
             Row::Heading(_) => {

@@ -18,8 +18,8 @@ use glam::Vec2;
 use super::builder::ButtonSpec;
 use super::text::fit_text;
 use super::{
-    BAR_BG, BODY, BOOSTED_TEXT, BORDER_COLOR, Color, DIM_TEXT, GOLD_TEXT, LINE_GAP, SHORT_PRICE,
-    SMALL, TEXT, WAITING_TEXT,
+    BAR_BG, BODY, BOOSTED_TEXT, BORDER_COLOR, Color, DIM_TEXT, GOLD_TEXT, SHORT_PRICE, SMALL, TEXT,
+    WAITING_TEXT,
 };
 use crate::game::font;
 use crate::game::mesh;
@@ -28,19 +28,23 @@ use crate::game::unit_icons::{self, UnitIcon};
 use crate::renderer::Vertex;
 
 /// Room between two columns, where the lines between them turn.
-pub(super) const COLUMN_GAP: f32 = 44.0;
+pub(super) const COLUMN_GAP: f32 = 32.0;
 /// Room between two cards of a column.
 pub(super) const CARD_GAP: f32 = 12.0;
-/// Room between a card's edge and what's in it.
+/// Room between a card's sides and what's in it, and above its name.
 pub(super) const CARD_PAD: f32 = 8.0;
+const CARD_TOP: f32 = 6.0;
 /// Room an unlock's icon takes before its name, or in a row of icons.
 pub(super) const UNLOCK_ICON: f32 = 22.0;
-/// The progress bar at the foot of the card being researched, and the room
-/// above it.
+/// The progress bar at the foot of the card being researched, just inside
+/// its rim, the room under the bar and the room over it.
 pub(super) const CARD_BAR: f32 = 5.0;
+const CARD_FOOT: f32 = 4.0;
 const CARD_BAR_GAP: f32 = 4.0;
+/// Room between two lines of small text, past the font's own.
+pub(super) const LINE_SPACING: f32 = 2.0;
 /// Room between a card's price and its tag (QUEUED 2).
-pub(super) const TAG_GAP: f32 = 12.0;
+pub(super) const TAG_GAP: f32 = 10.0;
 /// Room under a tier's heading.
 const HEADING_GAP: f32 = 6.0;
 /// Room above a tier's heading when the tiers are stacked.
@@ -166,9 +170,9 @@ pub(super) enum LinkState {
 impl LinkState {
     pub(super) fn color(self) -> Color {
         match self {
-            Self::Open => [0.20, 0.22, 0.26, 1.0],
+            Self::Open => [0.30, 0.32, 0.38, 1.0],
             Self::Planned => [0.60, 0.48, 0.16, 1.0],
-            Self::Done => [0.22, 0.52, 0.24, 1.0],
+            Self::Done => [0.30, 0.64, 0.32, 1.0],
         }
     }
 }
@@ -273,7 +277,7 @@ impl TechTree {
             |text| name.width(text),
             |text| small.width(text),
             name.line_height,
-            small.line_height + LINE_GAP,
+            small.line_height + LINE_SPACING,
         )
     }
 
@@ -293,11 +297,12 @@ impl TechTree {
     /// Every card's height: its name, its detail, its unlocks and room for
     /// the progress bar.
     pub(super) fn card_height(&self, metrics: &TreeMetrics) -> f32 {
-        (2.0 * CARD_PAD
+        (CARD_TOP
             + metrics.name_line
             + metrics.line * (1 + self.unlock_lines()) as f32
             + CARD_BAR_GAP
-            + CARD_BAR)
+            + CARD_BAR
+            + CARD_FOOT)
             .ceil()
     }
 
@@ -326,7 +331,10 @@ impl TechTree {
             .iter()
             .map(|&(column, slot)| {
                 let min = Vec2::new(column_x(column), top + slot * (card_height + CARD_GAP));
-                (min.round(), (min + Vec2::new(card_width, card_height)).round())
+                (
+                    min.round(),
+                    (min + Vec2::new(card_width, card_height)).round(),
+                )
             })
             .collect();
         let headings = (0..self.columns())
@@ -374,7 +382,8 @@ impl TechTree {
 
     fn place_stacked(&self, width: f32, metrics: &TreeMetrics) -> TreePlacement {
         let card_height = self.card_height(metrics);
-        let per_row = (((width + CARD_GAP) / (metrics.card_width + CARD_GAP)).floor() as usize).max(1);
+        let per_row =
+            (((width + CARD_GAP) / (metrics.card_width + CARD_GAP)).floor() as usize).max(1);
         let card_width = metrics.card_width.min(width.max(0.0));
         let mut cards = vec![(Vec2::ZERO, Vec2::ZERO); self.cards.len()];
         let mut headings = Vec::new();
@@ -425,12 +434,12 @@ pub(super) struct CardRows {
 
 impl CardRows {
     pub(super) fn new(metrics: &TreeMetrics, height: f32) -> Self {
-        let detail = CARD_PAD + metrics.name_line;
+        let detail = CARD_TOP + metrics.name_line;
         Self {
-            name: CARD_PAD,
+            name: CARD_TOP,
             detail,
             unlocks: detail + metrics.line,
-            bar: height - CARD_PAD - CARD_BAR,
+            bar: height - CARD_FOOT - CARD_BAR,
         }
     }
 }
@@ -448,7 +457,7 @@ pub(super) fn arrange(columns: &[usize], needs: &[Vec<usize>]) -> Vec<(usize, f3
     let count = columns.len();
     let column_count = columns.iter().map(|&c| c + 1).max().unwrap_or(0);
     let mut slot = vec![0.0_f32; count];
-    let mut order: Vec<Vec<usize>> = vec![Vec::new(); column_count];
+    let mut order: Vec<Vec<usize>> = Vec::with_capacity(column_count);
     for column in 0..column_count {
         let mut members: Vec<usize> = (0..count).filter(|&i| columns[i] == column).collect();
         let center = |i: usize| {
@@ -463,7 +472,7 @@ pub(super) fn arrange(columns: &[usize], needs: &[Vec<usize>]) -> Vec<(usize, f3
         for (place, &i) in members.iter().enumerate() {
             slot[i] = place as f32;
         }
-        order[column] = members;
+        order.push(members);
     }
     let tallest = order.iter().map(Vec::len).max().unwrap_or(0);
     let Some(fixed) = order.iter().position(|members| members.len() == tallest) else {
@@ -529,14 +538,14 @@ pub(super) fn draw_tech_card(
     out: &mut Vec<Vertex>,
 ) {
     let (rim, width) = card.rim();
+    // Opaque, so the rim drawn under it doesn't tint it.
     let ground = match (card.state, hovered) {
-        (TechState::Researched, _) => [0.016, 0.034, 0.018, 0.95],
-        (TechState::Researching, _) => [0.05, 0.043, 0.016, 0.95],
-        (TechState::Waits, _) => [0.06, 0.03, 0.028, 0.95],
-        (TechState::Queued, false) => [0.036, 0.032, 0.02, 0.95],
-        (TechState::Locked, false) => [0.018, 0.019, 0.024, 0.95],
-        (_, false) => [0.03, 0.035, 0.05, 0.95],
-        (_, true) => [0.08, 0.09, 0.13, 0.95],
+        (TechState::Researched, _) => [0.022, 0.055, 0.026, 1.0],
+        (TechState::Researching, _) => [0.075, 0.06, 0.018, 1.0],
+        (TechState::Waits, _) => [0.075, 0.03, 0.026, 1.0],
+        (TechState::Locked, false) => [0.018, 0.019, 0.024, 1.0],
+        (_, false) => [0.03, 0.035, 0.05, 1.0],
+        (_, true) => [0.08, 0.09, 0.13, 1.0],
     };
     mesh::quad(min - width, max + width, rim, out);
     mesh::quad(min, max, ground, out);
@@ -544,7 +553,7 @@ pub(super) fn draw_tech_card(
     let metrics = TreeMetrics {
         card_width: max.x - min.x,
         name_line: name_face.line_height,
-        line: small.line_height + LINE_GAP,
+        line: small.line_height + LINE_SPACING,
     };
     let rows = CardRows::new(&metrics, max.y - min.y);
     // A line `down` from the top, its capitals centered in the line.
@@ -556,7 +565,12 @@ pub(super) fn draw_tech_card(
     name_face.push(Vec2::new(left, y), &name, card.name_color(), out);
     let y = baseline(rows.detail, metrics.line, small.cap_height);
     let tag_width = card.tag.as_ref().map_or(0.0, |tag| small.width(tag));
-    let detail_room = room - if card.tag.is_some() { tag_width + TAG_GAP } else { 0.0 };
+    let detail_room = room
+        - if card.tag.is_some() {
+            tag_width + TAG_GAP
+        } else {
+            0.0
+        };
     let detail = fit_text(&card.detail, detail_room.max(0.0), |t| small.width(t));
     small.push(Vec2::new(left, y), &detail, card.detail_color(), out);
     if let Some(tag) = &card.tag {
@@ -583,7 +597,10 @@ pub(super) fn draw_tech_card(
     }
     if let Some(progress) = card.progress {
         let top = max.y - rows.bar;
-        let (bar_min, bar_max) = (Vec2::new(left, top - CARD_BAR), Vec2::new(max.x - CARD_PAD, top));
+        let (bar_min, bar_max) = (
+            Vec2::new(left, top - CARD_BAR),
+            Vec2::new(max.x - CARD_PAD, top),
+        );
         mesh::quad(bar_min, bar_max, BAR_BG, out);
         let filled = bar_min.x + (bar_max.x - bar_min.x) * progress.clamp(0.0, 1.0);
         mesh::quad(bar_min, Vec2::new(filled, bar_max.y), GOLD_TEXT, out);
@@ -591,12 +608,17 @@ pub(super) fn draw_tech_card(
 }
 
 /// How far an unlock's icon reaches from its center.
-pub(super) const UNLOCK_ICON_RADIUS: f32 = 8.0;
+pub(super) const UNLOCK_ICON_RADIUS: f32 = 10.0;
 
 /// An unlock's icon centered on `center`, Y up: a unit's pictogram in
 /// `color`, or a building's badge, its letter drawn on it by the caller
 /// in ImGui (`font::push_glyph` here draws the classic font's).
-pub(super) fn push_unlock_icon(center: Vec2, icon: UnlockIcon, color: Color, out: &mut Vec<Vertex>) {
+pub(super) fn push_unlock_icon(
+    center: Vec2,
+    icon: UnlockIcon,
+    color: Color,
+    out: &mut Vec<Vertex>,
+) {
     match icon {
         UnlockIcon::Unit(icon) => {
             unit_icons::push_pictogram(center, UNLOCK_ICON_RADIUS, icon, color, out)
@@ -626,3 +648,44 @@ pub(super) const BADGE_LETTER: Color = [0.05, 0.05, 0.05, 1.0];
 /// map's proportions.
 pub(super) const BADGE_HALF: f32 = 7.5;
 pub(super) const BADGE_CAP: f32 = 8.5;
+
+#[cfg(test)]
+mod tests {
+    use super::arrange;
+
+    #[test]
+    fn a_card_sits_between_the_cards_it_is_linked_to() {
+        // Today's tree: I-A, I-B, I-C; II-A and II-B need I-A, II-C I-B,
+        // II-D I-C; III-A needs II-A, III-B II-D, III-C II-B and II-C.
+        let columns = [0, 0, 0, 1, 1, 1, 1, 2, 2, 2];
+        let needs = vec![
+            vec![],
+            vec![],
+            vec![],
+            vec![0],
+            vec![0],
+            vec![1],
+            vec![2],
+            vec![3],
+            vec![6],
+            vec![4, 5],
+        ];
+        let slots: Vec<f32> = arrange(&columns, &needs)
+            .into_iter()
+            .map(|(_, slot)| slot)
+            .collect();
+        // The longest column, II, as it is; I-A level with the middle of
+        // II-A and II-B; III-C between II-B and II-C.
+        assert_eq!(slots, [0.5, 2.0, 3.0, 0.0, 1.0, 2.0, 3.0, 0.0, 3.0, 1.5]);
+
+        // Cards wanting the same place keep a card's room between them, and
+        // their order, inside the longest column's height.
+        let columns = [0, 0, 0, 1, 1, 1];
+        let needs = vec![vec![], vec![], vec![], vec![0], vec![0], vec![0]];
+        let slots: Vec<f32> = arrange(&columns, &needs)
+            .into_iter()
+            .map(|(_, slot)| slot)
+            .collect();
+        assert_eq!(slots, [0.0, 1.0, 2.0, 0.0, 1.0, 2.0]);
+    }
+}

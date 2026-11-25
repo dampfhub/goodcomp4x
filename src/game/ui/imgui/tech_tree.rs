@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::game::ui::tech_tree::{
-    BADGE_LETTER, CARD_BAR, CARD_PAD, CardRows, TechCard, TechState, TechTree, TreeMetrics,
-    UNLOCK_ICON, UNLOCK_ICON_RADIUS, UnlockIcon, push_badge_square,
+    BADGE_LETTER, CARD_BAR, CARD_PAD, CardRows, LINE_SPACING, TechCard, TechState, TechTree,
+    TreeMetrics, UNLOCK_ICON, UNLOCK_ICON_RADIUS, UnlockIcon, push_badge_square,
 };
 use crate::game::unit_icons;
 
@@ -21,7 +21,7 @@ pub(super) fn tree_metrics(ui: &Ui, fonts: &[FontId; 3], tree: &TechTree) -> Tre
         let _body = ui.push_font(fonts[1]);
         let name_line = ui.text_line_height();
         let _small = ui.push_font(fonts[0]);
-        (name_line, ui.text_line_height() + 4.0)
+        (name_line, ui.text_line_height() + LINE_SPACING)
     };
     tree.metrics(
         |text| {
@@ -93,7 +93,15 @@ impl GameState {
                 self.button_tooltip(ui, spec, subject);
                 ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED)
             };
-            draw_card(ui, fonts, (at(min), at(max)), card, tree.names, &metrics, hovered);
+            draw_card(
+                ui,
+                fonts,
+                (at(min), at(max)),
+                card,
+                tree.names,
+                &metrics,
+                hovered,
+            );
         }
         // The room the tree takes, as one item.
         ui.set_cursor_screen_pos(origin);
@@ -117,8 +125,6 @@ fn draw_card(
         (TechState::Researched, _) => [0.07, 0.13, 0.08, 1.0],
         (TechState::Researching, _) => [0.24, 0.21, 0.11, 1.0],
         (TechState::Waits, _) => [0.22, 0.09, 0.07, 1.0],
-        (TechState::Queued, false) => [0.16, 0.145, 0.09, 1.0],
-        (TechState::Queued, true) => [0.22, 0.20, 0.12, 1.0],
         (TechState::Locked, false) => [0.06, 0.07, 0.08, 1.0],
         (_, false) => [0.11, 0.14, 0.16, 1.0],
         (_, true) => [0.17, 0.21, 0.24, 1.0],
@@ -158,7 +164,13 @@ fn draw_card(
     let top = line_top(rows.detail);
     draw_rich(ui, [left, top], &detail, card.detail_color(), false);
     if let Some(tag) = &card.tag {
-        draw_rich(ui, [max[0] - CARD_PAD - tag_width, top], tag, card.tag_color(), false);
+        draw_rich(
+            ui,
+            [max[0] - CARD_PAD - tag_width, top],
+            tag,
+            card.tag_color(),
+            false,
+        );
     }
     let color = card.unlock_color();
     for (index, unlock) in card.unlocks.iter().enumerate() {

@@ -290,12 +290,9 @@ impl App {
             game.set_details(true);
             game.camera.zoom(-100.0);
         }
-        match options.view {
-            Some(View::Research) => game.toggle_research(),
-            None => {}
-        }
-        if std::env::var_os("TEMP413").is_some() {
-            game.temp413_demo(); // TEMP413
+        // After any turns played, so nothing selected in them closes it.
+        if let Some(View::Research) = options.view {
+            game.toggle_research();
         }
         if let Some(text) = load(NETWORK_FILE) {
             game.set_net_menu(NetMenu::from_text(&text));

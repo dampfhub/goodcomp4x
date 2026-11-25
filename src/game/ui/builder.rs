@@ -3,6 +3,7 @@
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
+use super::tech_tree::TechTree;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
@@ -11,7 +12,6 @@ use super::{
     ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, TITLE_BUTTON_HEIGHT,
     TITLE_ROW_HEIGHT, Target, UnitAction,
 };
-use super::tech_tree::TechTree;
 use crate::game::font::{self, Face};
 use crate::game::settings::Setting;
 use glam::Vec2;

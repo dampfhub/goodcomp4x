@@ -85,7 +85,8 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
   1600x900); the same arguments give the same image, so before/after shots compare directly.
   Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
   validation errors too. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
-  plays N turns first, the AI on every side (the same game every run). UI layout and click
+  plays N turns first, the AI on every side (the same game every run); `--view research` opens
+  the research view (T) for the shot. UI layout and click
   targets are testable without a window (see `src/game/ui/tests.rs`).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
   snapshot, F8 toggles instant turn playback, F9 finishes the current build, F10 toggles fog of

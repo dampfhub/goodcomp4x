@@ -910,8 +910,14 @@ impl GameState {
         tray.fit_height(layout.remaining_height(Zone::BottomLeft, tray.size().x));
         let tray_size = tray.size();
         layout.dock_panel(tray, Zone::BottomLeft);
-        let queue_visible =
+        let mut queue_visible =
             queue_items_that_fit(layout.remaining_height(Zone::BottomLeft, tray_size.x));
+        if self.research_view() && queue_visible < self.research(self.local_team).queue.len() {
+            // The tree is tall: a queue that doesn't fit over it docks
+            // beside it, in a column of its own, leaving room for the rest.
+            let column = layout.remaining_height(Zone::BottomRight, 1.0) / 2.0;
+            queue_visible = queue_visible.max(queue_items_that_fit(column));
+        }
         if let Some(city) = self.selected_city {
             let mut queue = PanelBuilder::default();
             self.city_queue_panel(city, queue_visible, &mut queue);
