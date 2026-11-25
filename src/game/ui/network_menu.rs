@@ -6,7 +6,7 @@
 //! network, and the code and address each have a COPY button.
 //!
 //! The typed fields are `Row::Field`s: ImGui draws each as a text box
-//! (`render_field`, `imgui.rs`) whose edits come back as `set_net_field`;
+//! (`render_field`, `imgui/render.rs`) whose edits come back as `set_net_field`;
 //! classic draws it as a button that starts typing into it
 //! (`Target::EditNetField`), after which `App` hands keys to
 //! `type_net_text` until Enter, Tab or Escape, and Ctrl+V, Ctrl+C and
