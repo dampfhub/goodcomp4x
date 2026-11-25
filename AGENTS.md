@@ -15,6 +15,8 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Debug with validation | `cargo run` (the validation layer comes with the Vulkan SDK; without it the game warns and runs unvalidated) |
 | Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
+| Everything CI checks | `node tools/check.mjs` (`--fast` skips the tests, `--list` prints the steps) |
+| Git hooks (opt-in) | `git config core.hooksPath tools/hooks`: lints commit messages, runs `check.mjs --fast` before a push |
 
 Building needs Rust 1.88+ (locally, any stable you have; CI pins 1.100.0 in
 `.github/workflows/ci.yml`, so a new Rust's lints don't break main, and moving it is its own
@@ -24,8 +26,9 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
 
 ## Rules
 
-1. Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`
-   all pass: CI (`.github/workflows/ci.yml`) runs exactly these on every PR. A visible change also
+1. Done means `node tools/check.mjs` passes: `cargo fmt --check`, `cargo clippy --all-targets
+   -- -D warnings`, `cargo test` and the tool checks. CI (`.github/workflows/ci.yml`) runs the
+   same script on every PR. A visible change also
    needs evidence it looks right: a layout or hit-test unit test (`src/game/ui/tests.rs` has examples),
    a screenshot you have looked at (see Verifying), or running the game.
 2. Before editing in a directory that has its own `AGENTS.md` (see the table below), read it.
@@ -66,6 +69,7 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
 | `docs/` | architecture, rules, controls, design proposals, history | `docs/README.md` |
 | `tools/board/` | work-board wrapper (`board.mjs`) and its config | `.agents/skills/board/SKILL.md` |
 | `tools/commit-msg-lint.mjs` | refuses commit messages that close an issue by accident | its header comment |
+| `tools/check.mjs`, `tools/hooks/` | the checks CI runs, as one script; opt-in git hooks | its header comment |
 | `.agents/skills/`, `.claude/skills/` | agent skills (canonical, and pointers for Claude Code) | the skill's `SKILL.md` |
 | `.github/` | CI workflow and PR template | |
 
