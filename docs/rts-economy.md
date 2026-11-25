@@ -1133,7 +1133,7 @@ at the city center (3 Melees in 24 World 4 games), so nothing there competes wit
 `PROTOCOL_VERSION` 42. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
 
-## Round 13: the AI spends its surplus (#399)
+## Round 14: the AI spends its surplus (#399)
 
 The Round 11 report found the late game banking wood and metal it never spent. No price or rule
 changed here, only the AI's choices (`game-rules.md`, AI, "Spending a surplus"). A side keeps 20
@@ -1150,8 +1150,8 @@ wood in reserve and spends past it:
   city, leaving 20 metal.
 
 The report now has a turn-100 row. `economy_report`, 100 turns, seeds 0-23, the default games,
-on `main` at e0268d4 (with research and #401's tie-break, so the bank is smaller than Round 11's
-143 / 47) and this change:
+on `main` at e0268d4 and this change. That `main` has research and #401's tie-break, so the bank
+is smaller than Round 11's 143 / 47, but not Round 13: the two were measured side by side.
 
 ```
 SIM_SEEDS=24 REPORT_TURNS=100 cargo test --release economy_report -- --ignored --nocapture
@@ -1198,4 +1198,46 @@ The other games at turn 100, before → after:
   uses supply left to train. Spending it needs a use for metal that isn't a troop.
 
 `PROTOCOL_VERSION` 42. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
+
+## Scouts look out, armies follow what they saw (#402)
+
+Not an economy change, but measured with the same report, which now also says when each side
+first knows of an enemy city and how many turns scouts spent on lookout. Two AI changes
+(`game-rules.md`, AI):
+- **Leads:** an AI side remembers where it last saw enemy units (a hex's sighting now keeps
+  whether one stood there). Its armies head for such a hex, seen within 10 turns, as they would
+  for an enemy city, before they explore.
+- **Lookout:** a scout with nothing new within a move goes on lookout, if the farther sight
+  would show ground its side has never seen (ground only stale doesn't count).
+
+`economy_report`, 100 turns, seeds 0-23, on `main` at 7ddbb51 (with the report's new lines) and
+this change. Medians, per side:
+
+| | World 1 AI | World 4 | World 5 | World 6 |
+|---|---|---|---|---|
+| Contact (side) | 17 → 17 | 12 → 12 | 12 → 12 | 11 → 11 |
+| First fight between troops (side) | 36 → 31 | 24 → 24 | 23 → 24 | 23 → 22 |
+| Enemy city known (side) | 64 → 50 | 41 → 43 | 41 → 43 | 45 → 40 |
+| Scout turns on lookout (24 games) | 0 → 46 | 0 → 68 | 0 → 89 | 0 → 105 |
+| Army at turn 100 | 20.2 → 18.8 | 16.6 → 15.4 | 15.9 → 15.8 | 17.3 → 16.0 |
+
+### What it shows
+
+- **Leads help most where sides are few:** with one AI side, troops first fight 5 turns
+  sooner and the enemy city is known 14 turns sooner. With 4 to 6 AI sides, enemies are near
+  anyway and nothing moves by more than 3 turns either way.
+- **Lookout as a choice costs contact.** Looking out whenever it would show more than the best
+  move (or, on hills, more than the move) delayed contact by 3 to 10 turns, as a scout on
+  lookout stands still. So it looks out only when no move shows anything new, which is rare.
+- **Sides find enemy cities late:** the median side knows of none until turn 40 to 64, and 7%
+  to 23% never do in 100 turns. One scout a side is the limit; more scouts, or scouts that go
+  for the land beyond their own, would be the next thing to try.
+- **Armies at turn 100 are up to 1.4 smaller,** with a few more losses a turn once fighting
+  starts (0.19 → 0.21 on average): they find enemies to fight.
+- **A side sees a little less of the map,** as its armies head for enemies before they explore:
+  10.9% → 10.5% by turn 40 over seeds 0 to 15, and 10.7% → 9.9% over the simulation's default
+  seeds. `simulation.rs`'s bar for it (`SCOUT_MIN_SEEN`) goes from 10% to 9%.
+
+`PROTOCOL_VERSION` 43. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
