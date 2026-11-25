@@ -141,7 +141,7 @@ pub(super) fn draw_production_icon(
 /// points down). ImGui feathers every filled triangle's edges by a pixel,
 /// the inner ones too, which leaves a small silhouette fuzzy and seamed:
 /// these are drawn unfeathered, crisp and whole.
-fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
+pub(super) fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
     unfeathered(|| {
         for triangle in vertices.as_chunks::<3>().0 {
@@ -298,7 +298,7 @@ pub(super) fn rich_width(ui: &Ui, text: &str) -> f32 {
 /// Draws `text` into the window's draw list with its top-left at `pos`, each
 /// icon character as its icon, the same pictures as the map's yield chips.
 /// A dimmed line's icons fade with it.
-fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
+pub(super) fn draw_rich(ui: &Ui, pos: [f32; 2], text: &str, color: [f32; 4], dim: bool) {
     let draw = ui.get_window_draw_list();
     let size = icon_box(ui);
     let middle = pos[1] + ui.current_font_size() / 2.0;

@@ -35,6 +35,7 @@ mod research;
 mod roster;
 pub(in crate::game) use roster::RosterKey;
 mod settings_menu;
+mod tech_tree;
 mod text;
 mod tooltips;
 mod trays;
@@ -344,6 +345,9 @@ struct Button {
     faded: bool,
     min: Vec2,
     max: Vec2,
+    /// A tech's card in the research view's tree, which draws itself
+    /// (`tech_tree::draw_tech_card`).
+    card: Option<Box<tech_tree::TechCard>>,
 }
 
 impl Button {
@@ -406,6 +410,12 @@ enum Shape {
         min: Vec2,
         max: Vec2,
         chip: RosterChip,
+    },
+    /// A filled rectangle: a stretch of a line in the tech tree.
+    Fill {
+        min: Vec2,
+        max: Vec2,
+        color: Color,
     },
 }
 

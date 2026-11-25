@@ -10,6 +10,7 @@ use super::{
     SHORT_BORDER_COLOR, SHORT_HOVER_BG, SHORT_PRICE, SHORT_QUEUED_PRICE, SMALL, Shape, TEXT,
     WAITING_TEXT,
 };
+use super::tech_tree::draw_tech_card;
 use super::{ChipIcon, Target};
 use crate::game::draw::{push_barracks_house, push_city_tower, push_unit_token};
 use crate::game::font;
@@ -115,6 +116,7 @@ pub(super) fn draw_shape(shape: &Shape, out: &mut Vec<Vertex>) {
                 face.push(origin, &text, TEXT, out);
             }
         }
+        Shape::Fill { min, max, color } => mesh::quad(*min, *max, *color, out),
     }
 }
 
@@ -158,6 +160,10 @@ pub(super) fn draw_chip_hover(min: Vec2, max: Vec2, out: &mut Vec<Vertex>) {
 }
 
 pub(super) fn draw_button(button: &Button, hovered: bool, out: &mut Vec<Vertex>) {
+    if let Some(card) = &button.card {
+        draw_tech_card(button.min, button.max, card, hovered, out);
+        return;
+    }
     let (bg, text_color, hint_color) = match (button.state(), hovered) {
         (ButtonState::Ready, false) => (BUTTON_BG, TEXT, DIM_TEXT),
         (ButtonState::Ready, true) => (BUTTON_HOVER_BG, TEXT, DIM_TEXT),

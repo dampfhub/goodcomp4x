@@ -19,6 +19,8 @@ Options:
                        to FILE as a PNG, and exit
   --world-overlay     with --screenshot: disable fog, show resource yields,
                        and zoom all the way out (F10 + Alt + zoom out)
+  --view <NAME>        open a view as the game starts: research (the tech
+                       tree, T), so a screenshot can show it
   --size <WxH>         window size in pixels, e.g. 1280x720 (screenshots
                        default to 1600x900); at least 640x480 at 100%
                        display scaling, and more at higher scaling
@@ -41,11 +43,29 @@ pub struct Options {
     /// Screenshot mode: where to write the PNG.
     pub screenshot: Option<PathBuf>,
     pub world_overlay: bool,
+    /// A view to open as the game starts (`--view`).
+    pub view: Option<View>,
     /// Window size in physical pixels, if given.
     pub size: Option<(u32, u32)>,
     /// A multiplayer game to host or join.
     pub network: Option<Network>,
     pub help: bool,
+}
+
+/// A view `--view` opens as the game starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    /// The research view, the tech tree (T).
+    Research,
+}
+
+impl View {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "research" => Some(Self::Research),
+            _ => None,
+        }
+    }
 }
 
 /// `--host` (with `--port`) or `--join`.
@@ -64,6 +84,7 @@ impl Default for Options {
             seed: None,
             screenshot: None,
             world_overlay: false,
+            view: None,
             size: None,
             network: None,
             help: false,
@@ -103,6 +124,13 @@ impl Options {
                 }
                 "--screenshot" => options.screenshot = Some(value()?.into()),
                 "--world-overlay" => options.world_overlay = true,
+                "--view" => {
+                    let name = value()?;
+                    options.view = Some(
+                        View::from_name(&name)
+                            .with_context(|| format!("no view called {name:?}: try research"))?,
+                    );
+                }
                 "--size" => options.size = Some(parse_size(&value()?)?),
                 "--host" => host = true,
                 "--port" => {
@@ -256,5 +284,17 @@ mod tests {
             "the default scenario has no seed"
         );
         assert!(parse(&["--help"]).unwrap().help);
+    }
+
+    #[test]
+    fn view_opens_the_research_view() {
+        assert_eq!(
+            parse(&["--screenshot", "out.png", "--view", "research"])
+                .unwrap()
+                .view,
+            Some(View::Research)
+        );
+        assert!(parse(&["--view", "moon"]).is_err());
+        assert!(parse(&["--view"]).is_err());
     }
 }

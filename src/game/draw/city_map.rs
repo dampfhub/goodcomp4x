@@ -377,7 +377,7 @@ pub(super) struct MapView {
     construction: Vec<SeenJob>,
 }
 
-pub(super) fn building_badge(building: crate::game::city::Building) -> (char, Color) {
+pub(in crate::game) fn building_badge(building: crate::game::city::Building) -> (char, Color) {
     match building {
         crate::game::city::Building::Barracks => ('B', [0.72, 0.35, 0.18, 1.0]),
         crate::game::city::Building::Mill => ('M', [0.35, 0.65, 0.28, 1.0]),

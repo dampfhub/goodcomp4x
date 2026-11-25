@@ -27,6 +27,7 @@ mod persist;
 mod pins;
 mod render;
 mod style;
+mod tech_tree;
 mod test_hooks;
 #[cfg(test)]
 mod tests;
@@ -43,6 +44,7 @@ use native::*;
 #[cfg(test)]
 use persist::*;
 use pins::*;
+use tech_tree::*;
 pub use style::style_imgui;
 use test_hooks::*;
 use views::*;
@@ -266,17 +268,20 @@ impl GameState {
         let units = self.roster_panel();
         let settings = self.settings_open.then(|| self.settings_panel_content());
         let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
-        let mut tray_height = measure_panel(ui, &tray, fonts, left_width).min(available);
+        // The research view's tree wants its columns side by side.
+        let tray_width = tree_panel_width(ui, fonts, &tray)
+            .map_or(left_width, |width| width.max(left_width).min(max_width));
+        let mut tray_height = measure_panel(ui, &tray, fonts, tray_width).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
         // reserve its space above the selection before docking either window.
         if !tray.rows.is_empty()
             && !queue.rows.is_empty()
-            && viewport.x < 2.0 * left_width + 3.0 * PANEL_MARGIN + PANEL_GAP
+            && viewport.x < tray_width + left_width + 3.0 * PANEL_MARGIN + PANEL_GAP
         {
             tray_height = tray_height.min((available - queue_height - PANEL_GAP).max(120.0));
         }
         let measured = [
-            (!tray.rows.is_empty()).then_some(Vec2::new(left_width, tray_height)),
+            (!tray.rows.is_empty()).then_some(Vec2::new(tray_width, tray_height)),
             (!queue.rows.is_empty()).then_some(Vec2::new(left_width, queue_height)),
             Some(Vec2::new(
                 debug_width,

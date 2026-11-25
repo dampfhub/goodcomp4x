@@ -15,7 +15,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
-use crate::cli::Options;
+use crate::cli::{Options, View};
 use crate::clipboard;
 use crate::game::Settings;
 use crate::game::keys::{self, Command, Key};
@@ -288,6 +288,13 @@ impl App {
             game.toggle_fog();
             game.set_details(true);
             game.camera.zoom(-100.0);
+        }
+        match options.view {
+            Some(View::Research) => game.toggle_research(),
+            None => {}
+        }
+        if std::env::var_os("TEMP413").is_some() {
+            game.temp413_demo(); // TEMP413
         }
         if let Some(text) = load(NETWORK_FILE) {
             game.set_net_menu(NetMenu::from_text(&text));

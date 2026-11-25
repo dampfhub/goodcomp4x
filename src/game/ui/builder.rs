@@ -11,6 +11,7 @@ use super::{
     ROSTER_CHIP_GAP, RosterChip, SCROLLBAR_WIDTH, SMALL, Shape, TITLE_BUTTON_HEIGHT,
     TITLE_ROW_HEIGHT, Target, UnitAction,
 };
+use super::tech_tree::TechTree;
 use crate::game::font::{self, Face};
 use crate::game::settings::Setting;
 use glam::Vec2;
@@ -116,6 +117,7 @@ impl ButtonSpec {
             faded,
             min,
             max,
+            card: None,
         }
     }
 }
@@ -211,6 +213,9 @@ pub(super) enum Row {
     /// at the row's left and compact buttons of equal width at its right
     /// end.
     LabeledButtons(Line, Vec<ButtonSpec>),
+    /// The research view's tech tree (`tech_tree.rs`): its columns side by
+    /// side, or stacked when they don't fit the width.
+    TechTree(TechTree),
 }
 
 impl Row {
@@ -391,9 +396,18 @@ impl PanelBuilder {
     /// Makes the panel no taller than `height`, if it can, by showing less of
     /// what scrolls within it: first its scroll lists, down to two rows'
     /// room, then its building catalogue, down to two cards, then the
-    /// lists down to one row. Classic uses it before docking a panel that
-    /// may have grown past the screen (ImGui's windows scroll instead).
+    /// lists down to one row. A tech tree's cards drop their unlocks' names,
+    /// keeping the icons. Classic uses it before docking a panel that may
+    /// have grown past the screen (ImGui's windows scroll instead).
     pub(super) fn fit_height(&mut self, height: f32) {
+        for i in 0..self.rows.len() {
+            if self.size().y <= height.round() {
+                break;
+            }
+            if let Row::TechTree(tree) = &mut self.rows[i] {
+                tree.names = false;
+            }
+        }
         for (list_rows, catalog_cards) in [(2.0, BUILDING_LIST_VISIBLE), (2.0, 2), (1.0, 2)] {
             for i in 0..self.rows.len() {
                 if !matches!(self.rows[i], Row::ScrollList(_) | Row::BuildingCatalog(..)) {
@@ -418,6 +432,11 @@ impl PanelBuilder {
                 }
             }
         }
+    }
+
+    /// The research view's tech tree.
+    pub(super) fn tech_tree(&mut self, tree: TechTree) {
+        self.rows.push(Row::TechTree(tree));
     }
 
     /// A row of unit tokens, each clickable.
@@ -491,6 +510,10 @@ impl PanelBuilder {
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
             Row::ScrollList(list) => list.window(),
+            Row::TechTree(tree) => {
+                let metrics = tree.classic_metrics();
+                tree.place(tree.width(&metrics), &metrics).size.y
+            }
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -538,6 +561,7 @@ impl PanelBuilder {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
+            Row::TechTree(tree) => tree.width(&tree.classic_metrics()),
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -812,9 +836,45 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 layout.roster_chips.push((min, max, chip.key));
             }
         }
+        Row::TechTree(tree) => place_tech_tree(layout, tree, top_left, inner_width, faded),
         Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
             unreachable!("expanded by classic_rows")
         }
+    }
+}
+
+/// Places a tech tree (`tech_tree.rs`) from `top_left`: its headings, its
+/// lines, and each card as a button that draws itself (`Button::card`).
+fn place_tech_tree(
+    layout: &mut Layout,
+    tree: TechTree,
+    top_left: Vec2,
+    inner_width: f32,
+    faded: bool,
+) {
+    let metrics = tree.classic_metrics();
+    let placed = tree.place(inner_width, &metrics);
+    // The tree's places are Y down from its top left; the UI's Y is up.
+    let at = |p: Vec2| Vec2::new(top_left.x + p.x, top_left.y - p.y);
+    for &(corner, column) in &placed.headings {
+        let middle = at(corner) - Vec2::new(0.0, metrics.line / 2.0);
+        let heading = vec![(tree.headings[column].clone(), GOLD_TEXT)];
+        push_text_row(layout, middle, SMALL, heading);
+    }
+    for &(min, max, state) in &placed.wires {
+        let (a, b) = (at(min), at(max));
+        layout.shapes.push(Shape::Fill {
+            min: a.min(b),
+            max: a.max(b),
+            color: state.color(),
+        });
+    }
+    for ((spec, mut card), &(min, max)) in tree.cards.into_iter().zip(&placed.cards) {
+        card.names = tree.names;
+        let (a, b) = (at(min), at(max));
+        let mut button = spec.place(a.min(b), a.max(b), faded);
+        button.card = Some(Box::new(card));
+        layout.buttons.push(button);
     }
 }
 
