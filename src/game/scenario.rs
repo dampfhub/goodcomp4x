@@ -6,6 +6,7 @@
 
 use rand::RngExt;
 
+use super::city::Build;
 use super::keys::Command;
 use super::settings::Settings;
 use super::strings::{hover_text, text, tooltip};
@@ -276,7 +277,31 @@ impl GameState {
         restored.generation = self.generation.wrapping_add(1);
         restored.savestate = Some(saved);
         restored.notice = format!("LOADED {}", restored.saved_summary().unwrap_or_default());
+        // Troops train only at a Barracks (#423): one an older snapshot
+        // queued at a city is taken off, refunded if it was paid.
+        let dropped = restored.drop_city_troops();
+        if dropped > 0 {
+            restored.notice += &format!(" · CITY TROOPS TAKEN OFF: {dropped}");
+        }
         *self = restored;
+    }
+
+    /// Takes every land troop off the cities' own queues, refunding what
+    /// was paid (`take_queue_item`), and says how many: a snapshot saved
+    /// before troops trained only at a Barracks (#423) may hold one.
+    pub(in crate::game) fn drop_city_troops(&mut self) -> usize {
+        let mut dropped = 0;
+        for city in 0..self.cities.len() {
+            while let Some(index) = self.cities[city]
+                .queue
+                .iter()
+                .position(|q| matches!(q.build, Build::Unit(unit) if !unit.unit_type().is_naval()))
+            {
+                self.take_queue_item(city, index);
+                dropped += 1;
+            }
+        }
+        dropped
     }
 
     /// Whether `other` is on the same map as this game: the same scenario
@@ -328,6 +353,28 @@ mod tests {
         game.load_state();
         assert_eq!(game.scenario, Scenario::Combat);
         assert_eq!(game.units[unit].hp, game.units[unit].max_hp());
+    }
+
+    #[test]
+    fn loading_an_older_snapshot_takes_its_city_troops_off_and_refunds_them() {
+        use crate::game::city::{Build, BuildUnit, Queued};
+        let mut game = GameState::city_scenario();
+        game.save_state();
+        // As saved before troops trained only at a Barracks (#423).
+        let saved = game.savestate.as_mut().unwrap();
+        let before = saved.stock(Team::Blue);
+        saved.cities[0].queue = vec![
+            Queued::prepaid(Build::Unit(BuildUnit::Melee)),
+            Queued::new(Build::Worker),
+        ];
+        game.load_state();
+        assert_eq!(game.cities[0].queue, [Queued::new(Build::Worker)]);
+        assert_eq!(game.stock(Team::Blue), before + BuildUnit::Melee.price());
+        assert!(
+            game.notice.ends_with("CITY TROOPS TAKEN OFF: 1"),
+            "{}",
+            game.notice
+        );
     }
 
     fn camera_at(x: f32, y: f32) -> Camera {

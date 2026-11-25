@@ -26,7 +26,7 @@ use super::workers::WorkerJob;
 use super::{GameState, PLAYER_TEAM};
 use crate::game::fast_hash::HashMap;
 
-pub(in crate::game) use barracks::{CITY_TRAINING_SLOWDOWN, UNITS_PER_DEPOSIT};
+pub(in crate::game) use barracks::UNITS_PER_DEPOSIT;
 pub use builds::{Build, BuildUnit, Building};
 pub(in crate::game) use builds::{
     GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, SCOUT_SHORTCUT, SETTLER_MIN_POPULATION,

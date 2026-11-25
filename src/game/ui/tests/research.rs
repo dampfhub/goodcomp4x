@@ -307,25 +307,20 @@ fn a_locked_card_names_the_tech_that_unlocks_it_in_both_presentations() {
     let needs = text!("research_lock", tech = ranged.name());
     let mill = Tech::unlocking(Unlock::Building(Building::Mill)).unwrap();
     let needs_mill = text!("research_lock", tech = mill.name());
-    for (target, needs) in [
-        (Target::Build(BuildUnit::Ranged), &needs),
-        (Target::Building(Building::Mill), &needs_mill),
-    ] {
-        catalog_cursor(&mut game, target);
-        let card = find_button(&game, target);
-        assert_eq!(card.state(), ButtonState::Disabled, "{target:?}");
-        assert_eq!(&card.hint, needs, "{target:?}");
-        let tip = line_strings(game.tooltip_lines(&card).into_iter().map(|(_, l)| l));
-        assert_eq!(tip.last(), Some(needs), "{target:?}: {tip:?}");
-    }
-    // ImGui draws it off, so a click there queues nothing.
-    game.cities[0].building_scroll = 0;
-    let mut screen = ImGuiScreen::new();
-    let before = game.cities[0].queue.clone();
-    screen.click(&mut game, Target::Build(BuildUnit::Ranged));
-    assert_eq!(game.cities[0].queue, before);
-    // The Barracks' card too.
+    let target = Target::Building(Building::Mill);
+    catalog_cursor(&mut game, target);
+    let card = find_button(&game, target);
+    assert_eq!(card.state(), ButtonState::Disabled);
+    assert_eq!(card.hint, needs_mill);
+    let tip = line_strings(game.tooltip_lines(&card).into_iter().map(|(_, l)| l));
+    assert_eq!(tip.last(), Some(&needs_mill), "{tip:?}");
+    // The Barracks' card too, and ImGui draws it off, so a click there
+    // queues nothing.
     game.open_barracks(0);
+    let mut screen = ImGuiScreen::new();
+    screen.click(&mut game, Target::BarracksBuild(BuildUnit::Ranged));
+    assert!(game.cities[0].barracks_queue.is_empty());
+    drop(screen);
     let card = find_button(&game, Target::BarracksBuild(BuildUnit::Ranged));
     assert_eq!(card.hint, needs);
     assert_eq!(card.unavailable.as_deref(), Some(needs.as_str()));

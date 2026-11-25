@@ -284,11 +284,7 @@ fn pinned_city_action_uses_its_own_city_after_selection_closes() {
     let pin = game.selected_pin().unwrap();
     game.leave_city_view();
     assert!(game.selected_city.is_none());
-    game.activate_pinned(
-        pin,
-        &PinnedGroups::default(),
-        Target::Build(BuildUnit::Melee),
-    );
+    game.activate_pinned(pin, &PinnedGroups::default(), Target::BuildWorker);
     assert_eq!(game.selected_city, game.pinned_city_index(pin));
     assert!(!game.cities[game.selected_city.unwrap()].queue.is_empty());
 }
@@ -398,11 +394,7 @@ fn a_captured_city_already_open_is_not_opened_again() {
     game.camera.center += Vec2::new(3.0, 0.0);
     let camera = game.camera.center;
     game.notice = "SOMETHING TO KEEP".into();
-    game.activate_pinned(
-        pin,
-        &PinnedGroups::default(),
-        Target::Build(BuildUnit::Melee),
-    );
+    game.activate_pinned(pin, &PinnedGroups::default(), Target::BuildWorker);
     assert_eq!(game.camera.center, camera, "no glide back to the city");
     assert!(!game.notice.starts_with("CHOOSE WHAT"), "{}", game.notice);
     // From a unit's selection it opens the city, as the map does.

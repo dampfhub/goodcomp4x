@@ -746,7 +746,7 @@ impl GameState {
             Target::ReleaseWorker => self.release_worker(),
             Target::ShowWorker(id) => self.show_worker(id),
             Target::QueueItem(kind, index) => self.queue_item_clicked(kind, index),
-            Target::Build(build) => self.queue_selected_city_unit(build),
+            Target::Build(build) => self.queue_selected_city_ship(build),
             Target::ToggleYields => self.toggle_yields(),
             Target::OpenSettings => self.settings_open = true,
             Target::Building(building) => self.queue_selected_city_building(building),

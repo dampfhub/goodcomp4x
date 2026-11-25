@@ -760,27 +760,14 @@ mod tests {
         g.fund(Team::Blue);
         g.research[0] = Research::default();
         g.selected_city = Some(0);
-        g.queue_selected_city_unit(BuildUnit::Ranged);
-        assert!(
-            !g.cities[0]
-                .queue
-                .iter()
-                .any(|q| q.build == Build::Unit(BuildUnit::Ranged))
-        );
-        assert!(
-            g.city_build_issue(0, Build::Unit(BuildUnit::Ranged))
-                .is_some()
-        );
-        assert!(
-            g.city_build_issue(0, Build::Unit(BuildUnit::Melee))
-                .is_none()
-        );
+        g.cities[0].barracks = Some(crate::game::hex::Hex::new(-2, 0));
+        g.queue_selected_barracks_unit(BuildUnit::Ranged);
+        assert!(g.cities[0].barracks_queue.is_empty());
+        assert!(g.barracks_lock(0, BuildUnit::Ranged).is_some());
+        assert!(g.barracks_lock(0, BuildUnit::Melee).is_none());
         let mill = crate::game::JobKind::Build(Building::Mill);
         assert!(g.job_kind_unavailable(0, mill).is_some());
         g.research_all(Team::Blue);
-        assert!(
-            g.city_build_issue(0, Build::Unit(BuildUnit::Ranged))
-                .is_none()
-        );
+        assert!(g.barracks_lock(0, BuildUnit::Ranged).is_none());
     }
 }

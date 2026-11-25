@@ -20,8 +20,8 @@ use super::{Build, BuildUnit, CLUSTER_SIZE, City, Lane, Queued};
 use crate::game::GameState;
 use crate::game::unit::{Team, Unit, UnitType};
 
-/// Supply each city gives its side, whatever its size: room for the AI's
-/// two troops a city (`AI_ARMY_PER_CITY`) and a scout.
+/// Supply each city gives its side, whatever its size: room for two troops
+/// and a scout.
 pub(in crate::game) const SUPPLY_PER_CITY: u32 = 3;
 /// Supply each of a city's first `FULL_SUPPLY_CITIZENS` citizens adds.
 pub(in crate::game) const SUPPLY_PER_CITIZEN: u32 = 1;
@@ -230,11 +230,16 @@ mod tests {
         g
     }
 
-    /// Queues Melee in Blue's city until its supply is all used.
+    /// Queues Melee at the Barracks of Blue's city (one by it, if it has
+    /// none) until its supply is all used.
     fn fill_supply(g: &mut GameState) {
+        if g.cities[0].barracks.is_none() {
+            g.cities[0].barracks = Some(Hex::new(-2, 0));
+            g.cities[0].built.push(Building::Barracks);
+        }
         for _ in 0..g.supply_cap(Team::Blue) {
             if g.supply_used(Team::Blue) < g.supply_cap(Team::Blue) {
-                g.queue_selected_city_unit(BuildUnit::Melee);
+                g.queue_selected_barracks_unit(BuildUnit::Melee);
             }
         }
         assert_eq!(g.supply_used(Team::Blue), g.supply_cap(Team::Blue));
@@ -317,12 +322,12 @@ mod tests {
         assert_eq!(g.units_supply(Team::Blue), 3);
         // Queued items count, paid or not; only those paid have started.
         g.cities[0].queue = vec![
-            Queued::new(Build::Unit(BuildUnit::Melee)),
             Queued::prepaid(Build::Scout),
             Queued::new(Build::Settler),
             Queued::new(Build::Worker),
         ];
-        g.cities[0].barracks_queue = vec![Queued::new(BuildUnit::Siege)];
+        g.cities[0].barracks_queue =
+            vec![Queued::new(BuildUnit::Melee), Queued::new(BuildUnit::Siege)];
         assert_eq!(g.supply_used(Team::Blue), 6);
         assert_eq!(g.supply_started(Team::Blue), 4);
     }
@@ -336,15 +341,14 @@ mod tests {
         fill_supply(&mut g);
         let (used, cap) = (g.supply_used(Team::Blue), g.supply_cap(Team::Blue));
         let queued = g.cities[0].queue.len();
-        g.queue_selected_city_unit(BuildUnit::Melee);
-        assert_eq!(g.notice, format!("MELEE: SUPPLY FULL ({used}/{cap})"));
+        let training = g.cities[0].barracks_queue.len();
         g.queue_selected_city_scout();
         assert_eq!(g.notice, format!("SCOUT: SUPPLY FULL ({used}/{cap})"));
         assert_eq!(g.cities[0].queue.len(), queued);
         // The Barracks too; its deposit cap still says why first.
         g.queue_selected_barracks_unit(BuildUnit::Ranged);
         assert_eq!(g.notice, format!("RANGED: SUPPLY FULL ({used}/{cap})"));
-        assert!(g.cities[0].barracks_queue.is_empty());
+        assert_eq!(g.cities[0].barracks_queue.len(), training);
         assert!(g.deposit_lock(0, BuildUnit::Armored).is_some());
         assert_eq!(
             g.barracks_lock(0, BuildUnit::Armored),
@@ -359,17 +363,15 @@ mod tests {
         let blue = g.units.iter().position(|u| u.team == Team::Blue).unwrap();
         g.units.remove(blue);
         g.queue_selected_barracks_unit(BuildUnit::Ranged);
-        assert_eq!(g.cities[0].barracks_queue.len(), 1);
+        assert_eq!(g.cities[0].barracks_queue.len(), training + 1);
     }
 
     #[test]
     fn an_item_queued_before_the_cap_fell_waits_for_supply_in_place() {
         let mut g = blue_city();
         g.cities[0].population = 3;
-        fill_supply(&mut g);
-        g.cities[0].queue.truncate(1);
+        g.queue_selected_city_scout();
         g.queue_selected_city_worker();
-        let melee = Build::Unit(BuildUnit::Melee);
         let units = g.units.len();
         // Citizens lost: Blue is over its cap, and keeps its units.
         assert!(g.remove_citizen(0) && g.remove_citizen(0));
@@ -383,7 +385,7 @@ mod tests {
         assert!(g.waiting_items(lane).is_empty(), "not for the stockpile");
         g.resolve_economy();
         assert!(!g.cities[0].queue[0].paid, "it waits, unpaid");
-        assert_eq!(g.cities[0].queue[0].build, melee);
+        assert_eq!(g.cities[0].queue[0].build, Build::Scout);
         assert!(g.cities[0].queue[1].paid);
         // A troop lost makes room, and it starts.
         let blue = g.units.iter().position(|u| u.team == Team::Blue).unwrap();
@@ -400,20 +402,20 @@ mod tests {
         let mut g = blue_city();
         g.cities[0].population = 3;
         fill_supply(&mut g);
-        g.cities[0].queue.truncate(1);
+        g.cities[0].barracks_queue.truncate(1);
         g.resolve_economy();
-        assert!(g.cities[0].queue[0].paid);
+        assert!(g.cities[0].barracks_queue[0].paid);
         assert!(g.remove_citizen(0) && g.remove_citizen(0));
         assert!(g.supply_started(Team::Blue) > g.supply_cap(Team::Blue));
         let troops = |g: &GameState| g.units.iter().filter(|u| u.team == Team::Blue).count();
         let before = troops(&g);
         for _ in 0..12 {
-            if g.cities[0].queue.is_empty() {
+            if g.cities[0].barracks_queue.is_empty() {
                 break;
             }
             g.resolve_economy();
         }
-        assert!(g.cities[0].queue.is_empty(), "the Melee came out");
+        assert!(g.cities[0].barracks_queue.is_empty(), "the Melee came out");
         assert_eq!(troops(&g), before + 1);
         assert!(g.supply_used(Team::Blue) > g.supply_cap(Team::Blue));
         assert!(g.supply_overruns.is_empty(), "{:?}", g.supply_overruns);

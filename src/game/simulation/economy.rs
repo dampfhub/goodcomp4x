@@ -21,12 +21,9 @@
 //! - `REPORT_JSON=<path>`: also writes the numbers to that file as JSON, for charts.
 //! - `REPORT_ANIMALS=<n>`: the worlds' Animals setting (`Settings::world_animals`): 0 for none,
 //!   1 for one den a side (the default), 2 for two.
-//! - `REPORT_ARMY_FIRST=1`: after the AI plans, a city queue that would only gather trains a
-//!   Melee instead when its side can pay for one (`spend_on_troops`): a side spending on troops
-//!   what the AI banks, for how fast an army can come.
 //! - `REPORT_QUEUE_AHEAD=1`: after the AI plans, every side's cities queue ahead as a player
-//!   would (`queue_ahead`): a city queue that would only gather trains a Melee (or grows)
-//!   instead, whatever the stockpile holds, and waits for it, gathering by itself meanwhile.
+//!   would (`queue_ahead`), whatever the stockpile holds: an idle Barracks trains a Melee, and
+//!   a city queue that would only gather grows instead, gathering by itself while it waits.
 //! - `REPORT_GAME_LINES=1`: also prints each game, a line per side every 5 turns (the
 //!   report of the earlier rounds).
 //! - `SIM_SPEEDUP=1` and `SIM_LIFETIME_CAP=1`: production speeding builds, and the lifetime
@@ -866,27 +863,8 @@ impl Observer {
     }
 }
 
-/// `REPORT_ARMY_FIRST=1`: after the AI plans, each city queue that would only gather trains a
-/// Melee instead, if its side can pay for one this turn (`forecast`'s spare, counting what its
-/// other queues start): a side that spends on troops what the AI banks.
-fn spend_on_troops(game: &mut GameState) {
-    let melee = Build::Unit(BuildUnit::Melee);
-    for city in 0..game.cities.len() {
-        let queue = &game.cities[city].queue;
-        if queue.len() != 1 || queue[0].paid || queue[0].build != Build::Gather {
-            continue;
-        }
-        let team = game.cities[city].team;
-        if game.forecast(team).spare.covers(melee.price()) {
-            game.take_queue_item(city, 0);
-            game.queue_build(city, melee);
-        }
-    }
-}
-
 /// Plays one game of `kind` from `seed` for `turns` turns, as `play_turn` does, watching it.
 fn play(kind: GameKind, seed: u64, turns: u32, game_lines: bool) -> (GameLog, String) {
-    let army_first = env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0);
     let ahead = env_number("REPORT_QUEUE_AHEAD").is_some_and(|n| n > 0);
     let mut game = kind.start(seed);
     let mut observer = Observer::new(&game);
@@ -900,9 +878,6 @@ fn play(kind: GameKind, seed: u64, turns: u32, game_lines: bool) -> (GameLog, St
         game.plan_ai_turn(PLAYER_TEAM);
         // Plans every other side, then the turn plays out in `update`.
         game.resolve_turn();
-        if army_first {
-            spend_on_troops(&mut game);
-        }
         if ahead {
             for team in Team::ALL {
                 queue_ahead(&mut game, team);
@@ -1613,7 +1588,7 @@ fn economy_report() {
     let game_lines = env_number("REPORT_GAME_LINES").is_some_and(|n| n > 0);
     let seeds = seeds();
     println!(
-        "economy_report: {turns} turns, seeds {seeds:?}, games {}{}{}{}{}",
+        "economy_report: {turns} turns, seeds {seeds:?}, games {}{}{}{}",
         kinds.iter().map(|k| k.name()).collect::<Vec<_>>().join(","),
         if env_number("SIM_SPEEDUP").is_some_and(|n| n > 0) {
             ", production speeds builds"
@@ -1622,11 +1597,6 @@ fn economy_report() {
         },
         if env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0) {
             ", lifetime cap"
-        } else {
-            ""
-        },
-        if env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0) {
-            ", army first"
         } else {
             ""
         },
@@ -1682,10 +1652,9 @@ fn economy_report() {
     }
     if let Ok(path) = std::env::var("REPORT_JSON") {
         let json = format!(
-            "{{\"turns\":{turns},\"speedup\":{},\"lifetime_cap\":{},\"army_first\":{},\"queue_ahead\":{},\"kinds\":[{}]}}\n",
+            "{{\"turns\":{turns},\"speedup\":{},\"lifetime_cap\":{},\"queue_ahead\":{},\"kinds\":[{}]}}\n",
             env_number("SIM_SPEEDUP").is_some_and(|n| n > 0),
             env_number("SIM_LIFETIME_CAP").is_some_and(|n| n > 0),
-            env_number("REPORT_ARMY_FIRST").is_some_and(|n| n > 0),
             env_number("REPORT_QUEUE_AHEAD").is_some_and(|n| n > 0),
             reports
                 .iter()

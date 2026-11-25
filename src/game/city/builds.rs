@@ -2,7 +2,6 @@
 //! confirmation, the Barracks queue, and completing builds. What builds
 //! cost and how the stockpile pays for them is in `economy.rs`.
 use super::MAX_CITY_POPULATION;
-use super::barracks::CITY_TRAINING_SLOWDOWN;
 use super::economy::{Lane, Stock, WORK_PER_TURN, stock_icons, turns_icon};
 use super::founding::MIN_CITY_DISTANCE;
 use super::supply::build_supply;
@@ -123,7 +122,7 @@ impl Building {
     pub fn description(self) -> &'static str {
         match self {
             Self::Barracks => {
-                "TRAINS TROOPS TWICE AS FAST. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
+                "TRAINS TROOPS. ON OPEN LAND; ON HORSES OR IRON, ALSO CAVALRY OR ARMORED."
             }
             Self::Mill => "ADJACENT WORKED TILES DELIVER ALL THEIR FOOD.",
             Self::Workshop => "ADJACENT BUILDINGS TAKE HALF THE TURNS.",
@@ -230,12 +229,10 @@ impl Build {
     }
 }
 
-/// Turns a Melee or Ranged takes at a Barracks (twice that in a city
-/// center). Tempo tuning (#239): option B raised it from 2
+/// Turns a Melee or Ranged takes at a Barracks. Tempo tuning (#239): option B raised it from 2
 /// (`docs/rts-economy.md`, Round 7).
 pub(in crate::game) const LIGHT_TROOP_TURNS: i32 = 3;
-/// Turns a Cavalry, Siege or Armored takes at a Barracks (twice that in a
-/// city center). Tempo tuning (#239): option B raised it from 3; the
+/// Turns a Cavalry, Siege or Armored takes at a Barracks. Tempo tuning (#239): option B raised it from 3; the
 /// Patrol Galley, which shared it, keeps 3 (`docs/rts-economy.md`, Round 7).
 pub(in crate::game) const HEAVY_TROOP_TURNS: i32 = 4;
 
@@ -315,8 +312,7 @@ impl BuildUnit {
         };
         Stock::whole(food, wood, metal)
     }
-    /// Turns it takes at the head of the queue; a city center takes
-    /// `CITY_TRAINING_SLOWDOWN` times as long for a land troop.
+    /// Turns it takes at the head of the queue.
     pub fn turns(self) -> i32 {
         match self {
             Self::Melee | Self::Pikeman | Self::Ranged => LIGHT_TROOP_TURNS,
@@ -342,7 +338,8 @@ impl BuildUnit {
             Self::BombardShip => "RANGE 3 SHORE AND SHIP BOMBARDMENT",
         }
     }
-    /// The key that queues it in an open city, if it has one (`app.rs`).
+    /// The key that queues it at the open city's or Barracks' Barracks, if
+    /// it has one (`app.rs`).
     pub fn shortcut(self) -> Option<char> {
         match self {
             Self::Melee => Some('1'),
@@ -365,6 +362,9 @@ impl BuildUnit {
         }
     }
 }
+
+/// Why a city can't train a land troop: only a Barracks does.
+pub(in crate::game) const TRAINS_AT_A_BARRACKS: &str = "TRAINS AT A BARRACKS";
 
 /// What taking one item off a queue gave back, for its notice.
 pub(in crate::game) fn refund_word(paid: bool) -> &'static str {
@@ -394,7 +394,10 @@ impl GameState {
         })
     }
 
-    pub fn queue_selected_city_unit(&mut self, build: BuildUnit) {
+    /// A ship card: a ship from the open city's own queue, which needs a
+    /// Harbor. Land troops train only at a Barracks
+    /// (`queue_selected_barracks_unit`).
+    pub fn queue_selected_city_ship(&mut self, build: BuildUnit) {
         if self.is_playing_out() {
             return;
         }
@@ -403,23 +406,6 @@ impl GameState {
             return;
         };
         if self.cities[city].team != self.local_team {
-            return;
-        }
-        if build.unit_type().is_naval() && !self.city_is_coastal(city) {
-            self.notice = "ONLY COASTAL CITIES CAN BUILD SHIPS".into();
-            return;
-        }
-        if build.unit_type().is_naval() && self.cities[city].placed_site(Building::Harbor).is_none()
-        {
-            self.notice = "SHIPS NEED A HARBOR".into();
-            return;
-        }
-        if let Some(resource) = build.required_resource() {
-            self.notice = format!(
-                "{} TRAINS AT A BARRACKS ON {}",
-                build.name(),
-                resource.name()
-            );
             return;
         }
         if let Some(why) = self.city_build_issue(city, Build::Unit(build)) {
@@ -435,8 +421,7 @@ impl GameState {
         let price = self.queue_price(city, build);
         self.queue_build(city, build);
         let index = self.cities[city].queue.len() - 1;
-        let turns = self.city_build_turns(city, build);
-        self.notice = self.queued_notice(city, Lane::City, index, price, turns);
+        self.notice = self.queued_notice(city, Lane::City, index, price, build.turns());
     }
 
     /// The notice for item `index`, just queued in one of `city`'s queues
@@ -543,12 +528,24 @@ impl GameState {
         self.queue_in_city(city, build);
     }
 
-    /// Why `city` can't queue `build` now: its side hasn't researched it
-    /// (`tech_lock`), a Settler needs `SETTLER_MIN_POPULATION` citizens, a
-    /// city queues one Scout at a time, and a troop, ship or Scout needs room
-    /// in its side's supply (`supply_lock`).
+    /// Why `city` can't queue `build` now: a land troop trains only at a
+    /// Barracks, a ship needs a coastal city with a Harbor, its side hasn't
+    /// researched it (`tech_lock`), a Settler needs `SETTLER_MIN_POPULATION`
+    /// citizens, a city queues one Scout at a time, and a ship or Scout needs
+    /// room in its side's supply (`supply_lock`).
     pub(in crate::game) fn city_build_issue(&self, city: usize, build: Build) -> Option<String> {
         let c = &self.cities[city];
+        if let Build::Unit(unit) = build {
+            if !unit.unit_type().is_naval() {
+                return Some(TRAINS_AT_A_BARRACKS.into());
+            }
+            if !self.city_is_coastal(city) {
+                return Some("NEEDS A COASTAL CITY".into());
+            }
+            if c.placed_site(Building::Harbor).is_none() {
+                return Some("NEEDS A HARBOR".into());
+            }
+        }
         if let Some(lock) = self.build_tech_lock(c.team, build) {
             return Some(lock);
         }
@@ -715,30 +712,21 @@ impl GameState {
         })
     }
 
-    /// Work `build` needs in `city`'s own queue: its own, and for a land
-    /// troop `CITY_TRAINING_SLOWDOWN` times a Barracks' (`barracks.rs`).
-    pub(in crate::game) fn city_build_work(&self, _city: usize, build: Build) -> i32 {
-        match build {
-            Build::Unit(unit) if !unit.unit_type().is_naval() => {
-                unit.work() * CITY_TRAINING_SLOWDOWN
-            }
-            _ => build.work(),
-        }
-    }
-
-    /// Turns `build` takes in `city`'s own queue (`city_build_work`).
-    pub(in crate::game) fn city_build_turns(&self, city: usize, build: Build) -> i32 {
-        (self.city_build_work(city, build) + WORK_PER_TURN - 1) / WORK_PER_TURN
-    }
-
+    /// A Barracks card, or 1 / 2 / 3 in an open city or Barracks: a troop
+    /// for its Barracks' queue. A city with none says where troops train.
     pub fn queue_selected_barracks_unit(&mut self, build: BuildUnit) {
         if self.is_playing_out() {
             return;
         }
         let Some(city) = self.selected_barracks.or(self.selected_city) else {
+            self.notice = "OPEN A CITY WITH C FIRST".into();
             return;
         };
-        if self.cities[city].team != self.local_team || self.cities[city].barracks.is_none() {
+        if self.cities[city].team != self.local_team {
+            return;
+        }
+        if self.cities[city].barracks.is_none() {
+            self.notice = format!("{}: {TRAINS_AT_A_BARRACKS}", build.name());
             return;
         }
         if let Some(reason) = self.barracks_lock(city, build) {

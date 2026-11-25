@@ -36,7 +36,7 @@ use super::workers::{JobKind, WorkerJob};
 /// plays out by, or the map a seed generates (every machine builds the world
 /// from its seed, `mapgen.rs`), so mismatched builds refuse each other
 /// instead of desyncing.
-pub const PROTOCOL_VERSION: u32 = 43;
+pub const PROTOCOL_VERSION: u32 = 44;
 /// The most of anything a plan may list (units, a queue, worked tiles...):
 /// far past what play produces, and a bound on what a hostile peer can make
 /// this machine process.
@@ -564,12 +564,12 @@ impl GameState {
         plans.is_some_and(|plans| plans.iter().any(|p| p.team == team))
     }
 
-    /// How many of `unit` `team`'s cities have queued.
+    /// How many Workers `team`'s cities have queued.
     #[cfg(test)]
-    pub fn units_queued(&self, team: Team, unit: BuildUnit) -> usize {
+    pub fn workers_queued(&self, team: Team) -> usize {
         let queued = self.cities.iter().filter(|c| c.team == team);
         let builds = queued.flat_map(|c| &c.queue);
-        builds.filter(|q| q.build == Build::Unit(unit)).count()
+        builds.filter(|q| q.build == Build::Worker).count()
     }
 
     /// Whether the first turn has resolved: after it, nobody can join.
@@ -1195,7 +1195,7 @@ impl GameState {
                 return bad(format!("{at}: WORKERS IT DIDN'T HOLD"));
             }
             // Its queue holds what a city trains: only what its side has
-            // researched, no Cavalry or Armored, ships only with a Harbor, no
+            // researched, no land troop (#423), ships only with a Harbor, no
             // growing past the cap, one Scout at a time, and no new Settler
             // below the population it needs (one it had queued may wait for
             // citizens). Its Barracks', only troops its side has researched.
@@ -1203,10 +1203,7 @@ impl GameState {
             let trainable = |item: &Queued<Build>| {
                 start.build_unlocked(team, item.build)
                     && match item.build {
-                        Build::Unit(unit) => {
-                            unit.required_resource().is_none()
-                                && (!unit.unit_type().is_naval() || harbor)
-                        }
+                        Build::Unit(unit) => unit.unit_type().is_naval() && harbor,
                         _ => true,
                     }
             };
@@ -1966,7 +1963,7 @@ mod tests {
             game.units[unit].planned_move = Some(target);
             let city = game.cities.iter().position(|c| c.team == team).unwrap();
             game.open_city(city);
-            game.queue_selected_city_unit(BuildUnit::Melee);
+            game.queue_selected_city_worker();
             game.leave_city_view();
         }
         let host_plan = host.team_plan(HOST_SEAT);
@@ -2082,7 +2079,7 @@ mod tests {
         let pos = guest.units[unit].pos;
         guest.units[unit].planned_move = Some(open_hexes(&guest, pos)[0]);
         guest.open_city(city);
-        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.queue_selected_city_worker();
         guest.end_planning();
         assert!(guest.waiting_for_peers(), "{}", guest.notice);
         let sent = guest.take_outbox();
@@ -2187,11 +2184,7 @@ mod tests {
         exchange(&mut host, &mut guest);
         assert_eq!(host.turn, 1);
         assert_eq!(host.checksum(), guest.checksum());
-        assert_eq!(
-            guest.units_queued(team, BuildUnit::Melee),
-            1,
-            "the build sent"
-        );
+        assert_eq!(guest.workers_queued(team), 1, "the build sent");
     }
 
     /// What the top bar says once an order has taken the turn back.
@@ -2347,7 +2340,7 @@ mod tests {
     #[test]
     fn an_order_after_ending_the_turn_takes_it_back_and_the_new_plan_plays_out() {
         let (mut host, mut guest) = pair();
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         exchange(&mut host, &mut guest);
         assert!(host.has_plan_from(GUEST_SEAT));
         assert_eq!(guest.resolving_label(), "WAITING FOR BLUE");
@@ -2355,7 +2348,7 @@ mod tests {
         let city = city_of(&guest, GUEST_SEAT);
         guest.open_city(city);
         assert!(guest.waiting_for_peers(), "looking takes nothing back");
-        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.queue_selected_city_worker();
         guest.update(0.0);
         assert!(!guest.waiting_for_peers(), "{}", guest.notice);
         exchange(&mut host, &mut guest);
@@ -2377,7 +2370,7 @@ mod tests {
         assert_eq!(host.checksum(), guest.checksum());
         assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
         for game in [&host, &guest] {
-            assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 1);
+            assert_eq!(game.workers_queued(GUEST_SEAT), 1);
         }
     }
 
@@ -2385,21 +2378,21 @@ mod tests {
     fn a_guest_sees_the_host_take_its_turn_back_with_an_order() {
         let (mut host, mut guests) = table(2);
         // Red and the host end their turns; Green hasn't.
-        end_turn_building(&mut guests[0], None);
-        end_turn_building(&mut host, None);
+        end_turn_building(&mut guests[0], false);
+        end_turn_building(&mut host, false);
         exchange_all(&mut host, &mut guests);
         assert_eq!(guests[0].resolving_label(), "WAITING FOR GREEN");
         // The host queues a Melee: its turn is taken back, and Red sees it.
         let city = city_of(&host, HOST_SEAT);
         host.open_city(city);
-        host.queue_selected_city_unit(BuildUnit::Melee);
+        host.queue_selected_city_worker();
         host.update(0.0);
         assert!(!host.waiting_for_peers(), "{}", host.notice);
         exchange_all(&mut host, &mut guests);
         assert_eq!(guests[0].notice, "BLUE IS CHANGING THEIR ORDERS");
         assert_eq!(guests[0].resolving_label(), "WAITING FOR BLUE, GREEN");
         // Green ends its turn: the turn still waits for the host's.
-        end_turn_building(&mut guests[1], None);
+        end_turn_building(&mut guests[1], false);
         exchange_all(&mut host, &mut guests);
         assert!(!host.is_playing_out());
         assert_eq!(guests[1].resolving_label(), "WAITING FOR BLUE");
@@ -2414,7 +2407,7 @@ mod tests {
         for game in std::iter::once(&host).chain(&guests) {
             assert_eq!(game.turn, 1);
             assert_eq!(game.checksum(), host.checksum());
-            assert_eq!(game.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+            assert_eq!(game.workers_queued(HOST_SEAT), 1);
         }
         assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
     }
@@ -2427,7 +2420,7 @@ mod tests {
         for frame_between in [false, true] {
             let (mut host, mut guest) = pair();
             let _ = host.take_outbox();
-            end_turn_building(&mut guest, None);
+            end_turn_building(&mut guest, false);
             for m in guest.take_outbox() {
                 host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
             }
@@ -2437,7 +2430,7 @@ mod tests {
             // Red, before the `Resolve` reaches it, queues a Melee.
             let city = city_of(&guest, GUEST_SEAT);
             guest.open_city(city);
-            guest.queue_selected_city_unit(BuildUnit::Melee);
+            guest.queue_selected_city_worker();
             if frame_between {
                 guest.update(0.0);
                 assert!(!guest.waiting_for_peers());
@@ -2454,7 +2447,7 @@ mod tests {
             // Once it plays out, orders are refused.
             guest.selected_city = Some(city);
             let queue = guest.cities[city].queue.clone();
-            guest.queue_selected_city_unit(BuildUnit::Ranged);
+            guest.queue_selected_city_scout();
             guest.clear_selected_city_queue();
             assert_eq!(guest.cities[city].queue, queue);
             guest.selected_city = None;
@@ -2476,7 +2469,7 @@ mod tests {
             assert_eq!(host.checksum(), guest.checksum());
             assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
             for game in [&host, &guest] {
-                assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 0);
+                assert_eq!(game.workers_queued(GUEST_SEAT), 0);
             }
         }
     }
@@ -2484,14 +2477,14 @@ mod tests {
     #[test]
     fn an_order_as_the_last_plan_arrives_holds_the_turn_for_the_new_one() {
         let (mut host, mut guest) = pair();
-        end_turn_building(&mut host, None);
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut host, false);
+        end_turn_building(&mut guest, false);
         // The host queues a Melee just as Red's plan, the last it waited
         // for, arrives: the order takes the host's turn back first, so the
         // turn waits for the host's new plan.
         let city = city_of(&host, HOST_SEAT);
         host.open_city(city);
-        host.queue_selected_city_unit(BuildUnit::Melee);
+        host.queue_selected_city_worker();
         for m in guest.take_outbox() {
             host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
         }
@@ -2509,7 +2502,7 @@ mod tests {
         assert_eq!((host.turn, guest.turn), (1, 1));
         assert_eq!(host.checksum(), guest.checksum());
         for game in [&host, &guest] {
-            assert_eq!(game.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+            assert_eq!(game.workers_queued(HOST_SEAT), 1);
         }
     }
 
@@ -2549,13 +2542,15 @@ mod tests {
         game.cities.iter().position(|c| c.team == team).unwrap()
     }
 
-    /// Ends `game`'s turn with `build` queued in its first city.
-    fn end_turn_building(game: &mut GameState, build: Option<BuildUnit>) {
+    /// Ends `game`'s turn with a Worker queued in its first city, or a
+    /// Gather.
+    fn end_turn_building(game: &mut GameState, worker: bool) {
         let city = city_of(game, game.local_team);
         game.open_city(city);
-        match build {
-            Some(unit) => game.queue_selected_city_unit(unit),
-            None => game.queue_selected_city_gather(),
+        if worker {
+            game.queue_selected_city_worker();
+        } else {
+            game.queue_selected_city_gather();
         }
         game.end_planning();
         // Waiting for the others, or resolving if it was the last.
@@ -2567,7 +2562,7 @@ mod tests {
         let (mut host, mut guests) = table(2);
         let red = Team::Red;
         // Red ends its turn, gathering.
-        end_turn_building(&mut guests[0], None);
+        end_turn_building(&mut guests[0], false);
         exchange_all(&mut host, &mut guests);
         assert!(host.has_plan_from(red));
         // It takes the turn back: the host lets go of its plan and waits.
@@ -2577,7 +2572,7 @@ mod tests {
         assert!(!host.has_plan_from(red));
         assert_eq!(host.notice, "RED IS CHANGING THEIR ORDERS");
         // Its player queues a Melee too and ends the turn again.
-        end_turn_building(&mut guests[0], Some(BuildUnit::Melee));
+        end_turn_building(&mut guests[0], true);
         exchange_all(&mut host, &mut guests);
         assert!(host.has_plan_from(red));
         // Green and the host end theirs, and the turn plays out with Red's
@@ -2593,11 +2588,7 @@ mod tests {
         for game in std::iter::once(&host).chain(&guests) {
             assert_eq!(game.turn, 1);
             assert_eq!(game.checksum(), host.checksum());
-            assert_eq!(
-                game.units_queued(red, BuildUnit::Melee),
-                1,
-                "the new orders"
-            );
+            assert_eq!(game.workers_queued(red), 1, "the new orders");
         }
         assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
     }
@@ -2605,22 +2596,22 @@ mod tests {
     #[test]
     fn the_host_takes_back_its_own_turn() {
         let (mut host, mut guest) = pair();
-        end_turn_building(&mut host, None);
+        end_turn_building(&mut host, false);
         assert!(host.has_plan_from(HOST_SEAT));
         host.take_back_turn();
         assert!(!host.waiting_for_peers() && !host.has_plan_from(HOST_SEAT));
         // The guest's plan alone doesn't resolve the turn now.
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         exchange(&mut host, &mut guest);
         assert!(!host.is_playing_out(), "waiting for the host's plan");
-        end_turn_building(&mut host, Some(BuildUnit::Melee));
+        end_turn_building(&mut host, true);
         exchange(&mut host, &mut guest);
         play_out(&mut host);
         play_out(&mut guest);
         exchange(&mut host, &mut guest);
         assert_eq!(host.turn, 1);
         assert_eq!(host.checksum(), guest.checksum());
-        assert_eq!(guest.units_queued(HOST_SEAT, BuildUnit::Melee), 1);
+        assert_eq!(guest.workers_queued(HOST_SEAT), 1);
     }
 
     #[test]
@@ -2639,7 +2630,7 @@ mod tests {
         }
         let city = city_of(&guest, GUEST_SEAT);
         guest.open_city(city);
-        guest.queue_selected_city_unit(BuildUnit::Melee);
+        guest.queue_selected_city_scout();
         guest.leave_city_view();
         assert!(guest.gathers_this_turn(&guest.forecast(GUEST_SEAT), city));
         let expected = guest.expected_stock(GUEST_SEAT) + GATHER_YIELD;
@@ -2648,7 +2639,7 @@ mod tests {
         assert_eq!(host.check_plan(&guest.team_plan(GUEST_SEAT)), Ok(()));
         guest.end_planning();
         exchange(&mut host, &mut guest);
-        end_turn_building(&mut host, Some(BuildUnit::Melee));
+        end_turn_building(&mut host, true);
         exchange(&mut host, &mut guest);
         play_out(&mut host);
         play_out(&mut guest);
@@ -2659,8 +2650,8 @@ mod tests {
         for game in [&host, &guest] {
             assert_eq!(
                 game.cities[city].queue,
-                [Queued::new(Build::Unit(BuildUnit::Melee))],
-                "the Melee waits"
+                [Queued::new(Build::Scout)],
+                "the Scout waits"
             );
             assert_eq!(game.stock(GUEST_SEAT), expected, "and the city gathered");
         }
@@ -2687,7 +2678,7 @@ mod tests {
         }
 
         // The city view.
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         assert!(guest.waiting_for_peers(), "{}", guest.notice);
         assert_eq!(guest.selected_city, None, "the city view closes");
         // Taken back, the Barracks view.
@@ -2726,7 +2717,7 @@ mod tests {
     #[test]
     fn a_take_back_after_the_host_resolved_changes_nothing() {
         let (mut host, mut guest) = pair();
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         for m in guest.take_outbox() {
             host.receive(GUEST_SEAT, roundtrip(&m)).unwrap();
         }
@@ -2736,7 +2727,7 @@ mod tests {
         // Red, before the `Resolve` reaches it, takes its turn back and ends
         // it again with a Melee queued.
         guest.take_back_turn();
-        end_turn_building(&mut guest, Some(BuildUnit::Melee));
+        end_turn_building(&mut guest, true);
         let late = guest.take_outbox();
         assert!(matches!(
             &late[..],
@@ -2767,7 +2758,7 @@ mod tests {
         assert_eq!(host.checksum(), guest.checksum());
         assert_eq!(host.lockstep.as_ref().unwrap().desync, None);
         for game in [&host, &guest] {
-            assert_eq!(game.units_queued(GUEST_SEAT, BuildUnit::Melee), 0);
+            assert_eq!(game.workers_queued(GUEST_SEAT), 0);
         }
         // Its checksum is in: nothing more comes for that turn.
         let why = host
@@ -2838,7 +2829,7 @@ mod tests {
     #[test]
     fn a_guest_refuses_a_turn_with_orders_it_never_sent() {
         let (mut host, mut guest) = pair();
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         let sent = guest.team_plan(GUEST_SEAT);
         let own = host.team_plan(HOST_SEAT);
         // Its orders changed on the way, though they'd pass the checks.
@@ -3092,6 +3083,13 @@ mod tests {
         assert!(why.contains("WORK IT DIDN'T DO"), "{why}");
     }
 
+    /// A site for `city`'s Barracks beside it, on no tile its citizens work.
+    fn barracks_site(game: &GameState, city: usize) -> Hex {
+        let c = &game.cities[city];
+        let open = |h: &Hex| game.grid.is_passable(*h) && !c.works(*h);
+        c.pos.neighbors().into_iter().find(open).unwrap()
+    }
+
     /// The guest's city with queues part paid for and under way, as earlier
     /// turns' economies leave them, the same on both machines as this
     /// turn's planning begins; and the city's index.
@@ -3101,14 +3099,7 @@ mod tests {
             .iter()
             .position(|c| c.team == GUEST_SEAT)
             .unwrap();
-        // Beside the city, on no tile its citizens work.
-        let c = &guest.cities[city];
-        let barracks = c
-            .pos
-            .neighbors()
-            .into_iter()
-            .find(|h| guest.grid.is_passable(*h) && !c.works(*h))
-            .unwrap();
+        let barracks = barracks_site(guest, city);
         let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
         // A Siege and a Ranged, which take research.
         guest.research_all(GUEST_SEAT);
@@ -3116,11 +3107,11 @@ mod tests {
         for c in [&mut guest.cities[city], &mut start.cities[city]] {
             c.barracks = Some(barracks);
             c.queue = vec![
-                Queued::worked(Build::Unit(BuildUnit::Melee), 4),
+                Queued::worked(Build::Scout, 4),
                 Queued::prepaid(Build::Grow),
                 Queued::new(Build::Worker),
                 Queued::prepaid(Build::Grow),
-                Queued::new(Build::Unit(BuildUnit::Siege)),
+                Queued::new(Build::Worker),
             ];
             c.barracks_queue = vec![
                 Queued::new(BuildUnit::Ranged),
@@ -3134,11 +3125,16 @@ mod tests {
     fn a_plan_queues_no_more_than_its_supply_allows() {
         let (mut host, mut guest) = pair();
         let city = city_of(&guest, GUEST_SEAT);
+        // A Barracks, on both machines as the turn began.
+        let barracks = Some(barracks_site(&guest, city));
+        guest.cities[city].barracks = barracks;
+        let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
+        start.cities[city].barracks = barracks;
         guest.open_city(city);
-        // Up to its supply, as the city's cards allow, and no more.
+        // Up to its supply, as the Barracks' cards allow, and no more.
         let cap = guest.supply_cap(GUEST_SEAT);
         for _ in 0..cap {
-            guest.queue_selected_city_unit(BuildUnit::Melee);
+            guest.queue_selected_barracks_unit(BuildUnit::Melee);
         }
         assert_eq!(guest.supply_used(GUEST_SEAT), cap);
         let plan = guest.team_plan(GUEST_SEAT);
@@ -3147,11 +3143,14 @@ mod tests {
             let why = host.check_plan(plan).expect_err("refused");
             assert!(why.contains("THAN ITS SUPPLY ALLOWS"), "{why}");
         };
-        for build in [Build::Unit(BuildUnit::Melee), Build::Scout] {
-            let mut past = plan.clone();
-            past.cities[0].queue.insert(0, Queued::new(build));
-            refused(&host, &past);
-        }
+        let mut past = plan.clone();
+        past.cities[0]
+            .barracks_queue
+            .insert(0, Queued::new(BuildUnit::Melee));
+        refused(&host, &past);
+        let mut past = plan.clone();
+        past.cities[0].queue.insert(0, Queued::new(Build::Scout));
+        refused(&host, &past);
         // A Worker uses none.
         let mut worker = plan.clone();
         worker.cities[0].queue.push(Queued::new(Build::Worker));
@@ -3160,12 +3159,12 @@ mod tests {
         // them), a side keeps what it had queued, or takes some off, but
         // adds nothing.
         let start = host.lockstep.as_mut().unwrap().turn_start.as_mut().unwrap();
-        start.cities[city].queue = plan.cities[0].queue.clone();
+        start.cities[city].barracks_queue = plan.cities[0].barracks_queue.clone();
         start.cities[city]
-            .queue
-            .push(Queued::new(Build::Unit(BuildUnit::Melee)));
+            .barracks_queue
+            .push(Queued::new(BuildUnit::Melee));
         let mut kept = plan.clone();
-        kept.cities[0].queue = start.cities[city].queue.clone();
+        kept.cities[0].barracks_queue = start.cities[city].barracks_queue.clone();
         assert_eq!(host.check_plan(&kept), Ok(()));
         assert_eq!(host.check_plan(&plan), Ok(()));
         kept.cities[0].queue.push(Queued::new(Build::Scout));
@@ -3337,12 +3336,12 @@ mod tests {
                 "{why}"
             );
         };
-        // Paying as it queues: the Siege marked paid, with or without its
-        // price off the stockpile.
+        // Paying as it queues: the last Worker marked paid, with or without
+        // its price off the stockpile.
         let mut plan = good.clone();
         plan.cities[c].queue[4].paid = true;
         refused(&host, &plan);
-        plan.stock -= BuildUnit::Siege.price();
+        plan.stock -= Build::Worker.price();
         refused(&host, &plan);
         // Work it didn't do, on a paid item or an unpaid one.
         let mut plan = good.clone();
@@ -3366,7 +3365,7 @@ mod tests {
         plan.stock += Build::Worker.price();
         refused(&host, &plan);
 
-        // Taken off paid, the Melee refunds its price, and a paid Grow the
+        // Taken off paid, the Scout refunds its price, and a paid Grow the
         // dearer Grow's: the checks take both, and nothing more.
         guest.open_city(city);
         guest.remove_selected_city_queue_item(0);
@@ -3376,7 +3375,7 @@ mod tests {
         let population = guest.cities[city].population;
         assert_eq!(
             plan.stock,
-            good.stock + BuildUnit::Melee.price() + grow_price(population + 1)
+            good.stock + Build::Scout.price() + grow_price(population + 1)
         );
         let mut greedy = plan.clone();
         greedy.stock.food += 1;
@@ -3407,7 +3406,7 @@ mod tests {
                 let len = game.cities[city].queue.len();
                 let troops = game.cities[city].barracks_queue.len();
                 match rng.random_range(0..10) {
-                    0 => game.queue_selected_city_unit(BuildUnit::Melee),
+                    0 => game.queue_selected_city_scout(),
                     9 => game.queue_selected_barracks_unit(BuildUnit::Pikeman),
                     1 => game.queue_selected_city_growth(),
                     2 => game.queue_selected_city_worker(),
@@ -3597,11 +3596,9 @@ mod tests {
         // A build marked paid that it never paid for, and one paid for as
         // it's queued: only the turn's economy pays, as work starts.
         let mut plan = good.clone();
-        plan.cities[0]
-            .queue
-            .push(Queued::prepaid(Build::Unit(BuildUnit::Siege)));
+        plan.cities[0].queue.push(Queued::prepaid(Build::Worker));
         refused(&mut host, plan.clone());
-        plan.stock -= BuildUnit::Siege.price();
+        plan.stock -= Build::Worker.price();
         refused(&mut host, plan);
         // Progress it didn't make, a troop a city can't train, and tiles
         // out of its reach.
@@ -3613,11 +3610,13 @@ mod tests {
         refused(&mut host, plan.clone());
         plan.cities[0].queue[0].paid = true;
         refused(&mut host, plan);
+        // Any land troop: those train only at a Barracks (#423).
         let mut plan = good.clone();
         plan.cities[0]
             .queue
-            .push(Queued::new(Build::Unit(BuildUnit::Cavalry)));
-        refused(&mut host, plan);
+            .push(Queued::new(Build::Unit(BuildUnit::Melee)));
+        let why = refused(&mut host, plan);
+        assert!(why.contains("A BUILD IT CAN'T MAKE"), "{why}");
         let mut plan = good.clone();
         let far = host
             .grid

@@ -133,7 +133,7 @@ and stands (`multiplayer.md`).
 | Drag a priority chip (wheat, log, ingot; its rank in the corner) onto another | Reorder the city's priorities (and re-assign) |
 | Click a priority chip | Put that good first (and re-assign) |
 | Y / Menu > City Yields | Show or hide tile yields around the open city; Menu opens Settings without closing the city |
-| 1 / 2 / 3 | Queue Melee / Ranged / Siege in the city, paid from the stockpile when work on it starts (a barracks trains them twice as fast; Cavalry and Armored only train at a barracks on Horses / Iron) |
+| 1 / 2 / 3 | Queue Melee / Ranged / Siege at the open city's or barracks' Barracks, paid from the stockpile when work on it starts. Troops train only at a Barracks: a city with none queues nothing, and its tray says TROOPS: PLACE A BARRACKS (5), or BARRACKS GOING UP while its workers build one. Cavalry and Armored only train at a barracks on Horses / Iron |
 | 5 / 6 / 7 | Pick a Barracks / Mill / Workshop to place for the workers |
 | Scroll inside the city production list | Browse unit, building and work cards in one list; coastal cards appear only in eligible cities |
 | Build a Harbor in a coastal city, then use the city unit cards | Queue Patrol Galley, Landing Craft or Bombard Ship for sea deployment |
@@ -153,7 +153,7 @@ and stands (`multiplayer.md`).
 | Wheel over a long queue, or drag its scrollbar | Scroll the queue |
 | Backspace | Remove the first item in the queue |
 | PageDown | Swap the first two queue items |
-| See Barracks, or left-click your barracks (with no view open, or from any city or barracks view) | Open the barracks view (its own queue of all five unit types, how many Cavalry and Armored its deposits still allow, and your supply) |
+| See Barracks, or left-click your barracks (with no view open, or from any city or barracks view) | Open the barracks view (its own queue of the six troop types, the only place they train, how many Cavalry and Armored its deposits still allow, and your supply) |
 | Click the city center while in city view (beside any unit's token) | Enter that city's tactical interior map |
 | V / City Interior button | Open the selected or hovered city's interior; press again to return |
 | Click a Blue troop, then another interior hex | Queue its independent move or attack on the map |

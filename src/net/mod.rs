@@ -432,7 +432,6 @@ fn shown_lan_address(ip: IpAddr) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::game::BuildUnit;
     use std::io::{Read, Write};
     use std::time::Instant;
 
@@ -717,12 +716,13 @@ mod tests {
         }
     }
 
-    /// Ends `game`'s turn with `build` queued in a city (a Gather if none).
-    fn end_turn_building(game: &mut GameState, build: Option<BuildUnit>) {
+    /// Ends `game`'s turn with a Worker queued in a city, or a Gather.
+    fn end_turn_building(game: &mut GameState, worker: bool) {
         game.select_city();
-        match build {
-            Some(unit) => game.queue_selected_city_unit(unit),
-            None => game.queue_selected_city_gather(),
+        if worker {
+            game.queue_selected_city_worker();
+        } else {
+            game.queue_selected_city_gather();
         }
         game.end_planning();
         assert!(game.is_resolving(), "{}", game.notice());
@@ -740,7 +740,7 @@ mod tests {
         let (mut green_net, mut green) =
             join(&mut host_net, &mut host, &code).expect("Green joins");
         // Red ends its turn, and the host has its plan.
-        end_turn_building(&mut red, None);
+        end_turn_building(&mut red, false);
         let mut games = [(&mut host_net, &mut host), (&mut red_net, &mut red)];
         pump_all_until(&mut games, |g| g[0].has_plan_from(Team::Red));
         // Red takes it back: the host lets go of the plan.
@@ -749,11 +749,11 @@ mod tests {
         let mut games = [(&mut host_net, &mut host), (&mut red_net, &mut red)];
         pump_all_until(&mut games, |g| !g[0].has_plan_from(Team::Red));
         assert_eq!(host.notice(), "RED IS CHANGING THEIR ORDERS");
-        // Red queues a Melee and ends its turn again; Green and the host end
+        // Red queues a Worker and ends its turn again; Green and the host end
         // theirs, and the turn plays out with Red's new orders everywhere.
-        end_turn_building(&mut red, Some(BuildUnit::Melee));
-        end_turn_building(&mut green, None);
-        end_turn_building(&mut host, None);
+        end_turn_building(&mut red, true);
+        end_turn_building(&mut green, false);
+        end_turn_building(&mut host, false);
         let mut games = [
             (&mut host_net, &mut host),
             (&mut red_net, &mut red),
@@ -765,7 +765,7 @@ mod tests {
         settle(&mut games);
         for game in [&host, &red, &green] {
             assert_eq!(game.checksum(), host.checksum());
-            assert_eq!(game.units_queued(Team::Red, BuildUnit::Melee), 1);
+            assert_eq!(game.workers_queued(Team::Red), 1);
         }
         assert!(!host.notice().contains("DESYNC"), "{}", host.notice());
         assert_eq!(host_net.links.len(), 2, "nobody dropped");
@@ -776,8 +776,8 @@ mod tests {
         let (mut host_net, mut host) = host(2, &small());
         let code = host.join_code().unwrap().to_string();
         let (mut guest_net, mut guest) = join(&mut host_net, &mut host, &code).expect("joins");
-        end_turn_building(&mut guest, None);
-        end_turn_building(&mut host, None);
+        end_turn_building(&mut guest, false);
+        end_turn_building(&mut host, false);
         // The guest plays the turn out at once; the host is slower, and
         // still playing it out when the guest's next plan arrives.
         let start = Instant::now();
@@ -789,14 +789,14 @@ mod tests {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(host.is_playing_out());
-        end_turn_building(&mut guest, None);
+        end_turn_building(&mut guest, false);
         settle(&mut [(&mut host_net, &mut host), (&mut guest_net, &mut guest)]);
         assert_eq!(host_net.links.len(), 1, "{}", host.notice());
         // Once the host has played it out too, the plan is in, and the next
         // turn plays out the same on both.
         let mut games = [(&mut host_net, &mut host), (&mut guest_net, &mut guest)];
         pump_all_until(&mut games, |g| g[0].has_plan_from(Team::Red));
-        end_turn_building(&mut host, None);
+        end_turn_building(&mut host, false);
         let mut games = [(&mut host_net, &mut host), (&mut guest_net, &mut guest)];
         pump_all_until(&mut games, |g| {
             g.iter().all(|g| g.turn() == 2 && !g.is_resolving())
