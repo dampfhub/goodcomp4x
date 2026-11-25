@@ -974,8 +974,8 @@ mod tests {
         assert_eq!(g.notice, "QUEUED UP TO THE \u{E003}5 LIMIT");
         // The melee keeps its three turns and adds two; the ranged unit,
         // starting now, moves all five.
-        for i in 0..2 {
-            assert_eq!(g.units[i].plan_len(), 5, "unit {i}");
+        for (i, unit) in g.units[..2].iter().enumerate() {
+            assert_eq!(unit.plan_len(), 5, "unit {i}");
         }
         let melee = moves(&g, 0);
         assert_eq!(melee[..3], queued[..], "what it had queued stays");

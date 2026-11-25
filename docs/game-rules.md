@@ -439,18 +439,20 @@ Shore and ship attacks do not draw melee retaliation across the waterline.
 
 ## Turn resolution (`turn.rs`)
 
-After a 0.6 s pause (so the last order is visible), the turn plays out in 19 steps on land, one
-every 0.6 s, with the acting units flashing (or all at once with instant playback). Steps where
-nobody acts are skipped.
+After a 0.6 s pause (so the last order is visible), the turn plays out in 25 steps (`RESOLUTION_ORDER`, then the
+workers), one every 0.6 s, with the acting units flashing (or all at once with instant playback).
+Steps where nobody acts are skipped.
 
 1. Scout move  2. Cavalry move  3. Wolf move  4. Melee move  5. Pikeman move  6. Bear move
 7. Ranged attack  8. Scout attack  9. Cavalry attack  10. Wolf attack  11. Melee attack
 12. Pikeman attack  13. Bear attack  14. Ranged move  15. Siege move  16. Siege attack
-17. Armored move  18. Armored attack  19. Workers
+17. Armored move  18. Armored attack  19. Patrol Galley move  20. Landing Craft move
+21. Bombard Ship move  22. Patrol Galley attack  23. Landing Craft attack  24. Bombard Ship attack
+25. Workers
 
-Ships move and attack after the Armored steps, before the workers. Animals act beside their like
-(see Animals): wolves after cavalry, bears after melee. Workers go last, after every unit has
-acted, so they're exposed (see Workers).
+Ships move and attack after the Armored steps, before the workers: all three ship types move,
+then all three attack. Animals act beside their like (see Animals): wolves after cavalry, bears
+after melee. Workers go last, after every unit has acted, so they're exposed (see Workers).
 
 Holding Alt shows each unit's rank: blue number = its move among move steps, red = its attack
 among attack steps.
@@ -469,7 +471,7 @@ Everyone in a step acts simultaneously:
 - **Alert fire:** a unit on alert (see Orders) acts in its own type's attack step, like a
   planned attack, at an enemy unit within its attack range as the step starts. So it hits
   whatever ended an earlier move step in range, this turn or a turn before, and one that comes
-  in range only after its step (a siege moving in at step 13, say, against melee on alert) is
+  in range only after its step (a siege moving in at step 15, say, against melee on alert) is
   fired on the next turn, if it's still there. The target is the nearest enemy unit, then the
   weakest (fewest HP), then the lowest hex (q, then r). It is chosen on the real board, fog or
   not, the same on every machine of a network game. It is only ever a unit: never a city or an
@@ -493,6 +495,10 @@ Everyone in a step acts simultaneously:
   with Blue on top.
 - In their attack step every turn, the two automatically trade blows. They can't be ordered to
   attack anything else.
+- Two units of the same type share an attack step, so they exchange blows once a turn. Units of
+  different types each strike in their own step, so they fight twice a turn: a blow from a unit
+  with attack range 1 draws a blow back from a rival that survives it, and one from farther range
+  (Ranged, Siege, Bombard Ship) doesn't.
 - Either can move out to give up the hex. Other units can still attack into it and hit their
   enemy there.
 
@@ -568,7 +574,7 @@ Everyone in a step acts simultaneously:
 | Volley | Ranged | attack also hits enemies adjacent to the target, all hits at 60% | 2 turns |
 | Charge | Cavalry | +1 move, +50% attack this turn | 2 turns |
 | Deploy / Pack Up | Siege | spend a turn setting up (no move or attack); deployed: +1 range, can't move; packing up takes a turn too | none |
-| Lookout | Scout | stay put this turn; +2 sight through the next turn | none |
+| Lookout | Scout, Patrol Galley, Landing Craft, Bombard Ship | stay put this turn; +2 sight through the next turn | none |
 
 A queued ability shows as a gold ring and deployed siege as a steel ring. Cooldowns tick down at
 every turn end.
