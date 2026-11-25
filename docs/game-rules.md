@@ -1144,8 +1144,10 @@ dens, walls and terrain count as last seen; ground never seen counts as open.
 Each AI unit picks, of the enemy units in sight (animals aside: see below), the enemy workers alone in sight and ruins its
 side knows of that no unit of its side holds or is heading for, and the enemy cities its side has
 seen, the one nearest on foot (walking distance around the terrain, walls and others' gates and
-cities it knows of; a city counts from its gates, and an enemy unit before a city as near).
-Knowing of none, it explores: it heads for the nearest ground its side has never seen. With
+cities it knows of; a city counts from its gates, and an enemy unit before a city as near), or,
+as near, a hex out of sight where its side saw an enemy unit (animals aside) in the last 10
+turns: its armies follow what its scouts saw. Seeing such a hex again with no enemy on it ends
+it. Knowing of none of these, it explores: it heads for the nearest ground its side has never seen. With
 nothing left to explore either, it heads straight for the nearest enemy in sight it can hit: a
 ship on the water only if it's Ranged or Siege, which can shoot at one. It steps onto ruins it can
 reach, and then holds them until they're claimed, attacking enemies in range from there. It steps
@@ -1154,8 +1156,9 @@ range, or moves to the reachable hex with the shortest remaining walk (staying p
 attacking if that brings it into range. Heading anywhere else than an enemy (ruins, a city, the
 unknown), it attacks any enemy in sight in range of where it ends up. Next to an enemy city it
 holds its ground there, its fighters going in through the gates (see City interiors). It skips hexes a
-teammate already claimed, and units in a contested hex stay and fight. It never uses abilities,
-and ignores any player-controlled AI unit; its settlers go their own way (below).
+teammate already claimed, and units in a contested hex stay and fight. It uses no ability but a
+scout's Lookout (below), and ignores any player-controlled AI unit; its settlers go their own
+way (below).
 An AI scout gathers what its side knows and stays alive, rather than fight:
 - It never ends its move where an enemy it sees could reach and attack it next turn (the enemy's
   move and range by its type, a Cavalry's Charge and a deployed Siege's extra hex included), if
@@ -1167,8 +1170,11 @@ An AI scout gathers what its side knows and stays alive, rather than fight:
   (counting double) or hasn't seen for 10 turns. Hills count, as they see farther, and hexes
   behind a mountain don't, as it wouldn't see them. On a tie it takes the one farthest from its
   side's cities, and a side's scouts don't count what another of them already heads to see, so
-  they fan out. With nothing like that within reach, it heads for
-  the nearest such ground.
+  they fan out.
+- With nothing like that within reach, it goes on **lookout** where it stands, if that's safe,
+  it didn't just come off one, and the lookout's farther sight would show ground its side has
+  never seen (as a scout walled in by water or mountains might). Else it heads for the nearest such
+  ground. It looks out only then: a turn standing still is a turn it doesn't move on.
 - With no safe hex it's cornered: it gets out of reach of as many enemies as it can, as far as
   it can, and of those hexes the nearest its side's cities (so two scouts that meet on a hex part
   ways). Only if an enemy is still beside it does it attack, the nearest in range. It even slips
@@ -1274,10 +1280,13 @@ its sites and workers again.
 
 Known bugs link to their board item; the rest are design questions nobody has decided yet.
 
-- The AI never uses abilities (its scouts never go on lookout) or builds structures, and of the
-  buildings it builds only the Barracks and, from a surplus, a Forge, Stable, Cannery or Mill.
-  Its armies explore by walking to the nearest ground never seen, so without a scout's findings
-  they find their enemies slowly.
+- The AI uses no ability but its scouts' Lookout, and that only when moving would show nothing
+  new: looking out more often delayed contact between sides (`rts-economy.md`, #402). It builds
+  no structures, and of the buildings only the Barracks and, from a surplus, a Forge, Stable,
+  Cannery or Mill.
+- AI sides find each other's cities late: half of them know of none until turn 40 or later in
+  the Worlds, with one scout each. Its armies follow enemy units seen in the last 10 turns, but
+  they still explore by walking to the nearest ground never seen when they know of none.
 - Forts' +50% defense is a placeholder; what forts should really give is undecided.
 - Structures can't be destroyed or captured, and a wall or gate can go on any edge next to explored
   ground.
@@ -1298,6 +1307,6 @@ Known bugs link to their board item; the rest are design questions nobody has de
   swaps or holds for later turns.
 - The stockpile economy's prices, times, growth cost and the Barracks' 3 troops per deposit are
   a first pass, slowed once for tempo (option B, `rts-economy.md` Round 7). A side at its supply
-  cap still banks metal it has no use for (see `rts-economy.md`, Round 13).
+  cap still banks metal it has no use for (see `rts-economy.md`, Round 14).
 - No victory condition; F1-F4 restart a scenario. The Debug panel offers a Naval scenario
   with two coastal cities, prebuilt Harbors and Coastal Batteries, and ships ready to fight.

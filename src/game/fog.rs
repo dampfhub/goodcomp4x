@@ -89,10 +89,14 @@ impl Fog {
 }
 
 /// A hex as the player last saw it. Only what can change is kept; the
-/// ground itself never does. Units aren't kept: a sighting of one says
-/// nothing about where it is now.
+/// ground itself never does. Units are kept only as `enemy_unit`, a lead
+/// for the AI's armies (`ai.rs`): a sighting of one says nothing about
+/// where it is now, so nothing draws it.
 #[derive(Clone, Default)]
 pub(super) struct Sighting {
+    /// Whether a unit of another side than the viewer's (not an
+    /// animal) stood here.
+    pub enemy_unit: bool,
     pub city: Option<SeenBuilding>,
     pub barracks: Option<SeenBuilding>,
     /// An improvement's label and owner.
@@ -313,6 +317,10 @@ impl GameState {
             });
         Sighting {
             turn: self.turn,
+            enemy_unit: self
+                .units
+                .iter()
+                .any(|u| u.pos == hex && u.team != viewer && !u.is_animal()),
             city,
             barracks,
             site: self.sites.get(&hex).map(|s| (s.label, s.team)),

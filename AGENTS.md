@@ -13,8 +13,10 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Format | `cargo fmt` (CI runs `cargo fmt --check`) |
 | Play | `cargo run --release` (release skips Vulkan validation) |
 | Debug with validation | `cargo run` (the validation layer comes with the Vulkan SDK; without it the game warns and runs unvalidated) |
-| Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
+| Screenshot | `cargo run --release -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
+| Everything CI checks | `node tools/check.mjs` (`--fast` skips the tests, `--list` prints the steps) |
+| Git hooks (opt-in) | `git config core.hooksPath tools/hooks`: lints commit messages, runs `check.mjs --fast` before a push |
 
 Building needs Rust 1.88+ (locally, any stable you have; CI pins 1.100.0 in
 `.github/workflows/ci.yml`, so a new Rust's lints don't break main, and moving it is its own
@@ -24,8 +26,9 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
 
 ## Rules
 
-1. Done means `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`
-   all pass: CI (`.github/workflows/ci.yml`) runs exactly these on every PR. A visible change also
+1. Done means `node tools/check.mjs` passes: `cargo fmt --check`, `cargo clippy --all-targets
+   -- -D warnings`, `cargo test` and the tool checks. CI (`.github/workflows/ci.yml`) runs the
+   same script on every PR. A visible change also
    needs evidence it looks right: a layout or hit-test unit test (`src/game/ui/tests.rs` has examples),
    a screenshot you have looked at (see Verifying), or running the game.
 2. Before editing in a directory that has its own `AGENTS.md` (see the table below), read it.
@@ -50,6 +53,10 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
    (names, labels, tooltips, hints, notices, reasons) against `docs/text.md`, "Writing it:
    short and plain". Make it as short as it can be, and make sure it doesn't read as written by
    an AI. List the strings you checked in the PR.
+10. Code files get 800 lines and test files 1200. A file already longer is listed in
+    `tools/size-budget.json` and may only shrink; `check.mjs` enforces it. Split a file rather
+    than grow it. If growing it really is better, raise or add its ceiling in that JSON by hand,
+    and say why in the PR. After shrinking one, `node tools/size-budget.mjs --update` lowers it.
 
 ## Where things are
 
@@ -66,6 +73,8 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
 | `docs/` | architecture, rules, controls, design proposals, history | `docs/README.md` |
 | `tools/board/` | work-board wrapper (`board.mjs`) and its config | `.agents/skills/board/SKILL.md` |
 | `tools/commit-msg-lint.mjs` | refuses commit messages that close an issue by accident | its header comment |
+| `tools/check.mjs`, `tools/hooks/` | the checks CI runs, as one script; opt-in git hooks | its header comment |
+| `tools/size-budget.mjs`, `.json` | file-length budgets, and ceilings for files over them | its header comment |
 | `.agents/skills/`, `.claude/skills/` | agent skills (canonical, and pointers for Claude Code) | the skill's `SKILL.md` |
 | `.github/` | CI workflow and PR template | |
 
@@ -78,13 +87,14 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
   replays exactly that game (`$env:SIM_SEED=<seed>` first in PowerShell), and `SIM_SEEDS=<n>`
   plays seeds `0..n` to hunt for failures.
 - Anything visual: take a screenshot and look at it (an agent can open the PNG with its
-  image-reading tool): `cargo run -- --screenshot out.png --scenario <combat|cities|frontier|world>`
+  image-reading tool): `cargo run --release -- --screenshot out.png --scenario <combat|cities|frontier|world>`
   renders the scenario in a hidden window (no input, no focus), waits about a second for it to
   settle, writes one frame as a PNG and exits 0 (non-zero, with the reason, if it fails or takes
   over 20 s). `--seed N` fixes the world's map and `--size 1280x720` the window size (default
   1600x900); the same arguments give the same image, so before/after shots compare directly.
-  Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
-  validation errors too. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
+  Write screenshots outside the repo (or delete them). Use a release build: a debug one starts the
+  validation layer, which can take longer than the 20 s limit. For a validation check, see
+  `src/renderer/AGENTS.md`. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
   plays N turns first, the AI on every side (the same game every run); `--view research` opens
   the research view (T) for the shot. UI layout and click
   targets are testable without a window (see `src/game/ui/tests.rs`).

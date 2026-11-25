@@ -1,0 +1,4 @@
+#!/bin/sh
+# Refuses a commit message that would close an issue by accident (tools/commit-msg-lint.mjs).
+# Opt in with: git config core.hooksPath tools/hooks
+exec node tools/commit-msg-lint.mjs --file "$1"

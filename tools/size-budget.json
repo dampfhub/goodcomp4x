@@ -1,0 +1,50 @@
+{
+  "budget": {
+    "code": 800,
+    "tests": 1200
+  },
+  "extensions": [
+    ".rs",
+    ".mjs",
+    ".js",
+    ".glsl",
+    ".vert",
+    ".frag",
+    ".comp"
+  ],
+  "tests": [
+    "tests.rs",
+    "tests/",
+    "src/game/perf.rs",
+    "src/game/simulation.rs",
+    "src/game/simulation/"
+  ],
+  "ceilings": {
+    "src/app.rs": 1475,
+    "src/game/ai.rs": 2987,
+    "src/game/animals.rs": 975,
+    "src/game/city/builds.rs": 1162,
+    "src/game/city/economy.rs": 802,
+    "src/game/city/interior.rs": 1277,
+    "src/game/city/tests.rs": 2991,
+    "src/game/fog.rs": 1064,
+    "src/game/mapgen.rs": 1562,
+    "src/game/mod.rs": 1446,
+    "src/game/multiplayer.rs": 4461,
+    "src/game/order_queue.rs": 1886,
+    "src/game/orders.rs": 1294,
+    "src/game/simulation.rs": 1252,
+    "src/game/simulation/economy.rs": 1699,
+    "src/game/strings.rs": 873,
+    "src/game/turn.rs": 1392,
+    "src/game/ui/builder.rs": 1022,
+    "src/game/ui/mod.rs": 962,
+    "src/game/ui/tests.rs": 5964,
+    "src/game/ui/tooltips.rs": 1213,
+    "src/game/ui/trays.rs": 1111,
+    "src/game/workers.rs": 2485,
+    "src/net/mod.rs": 808,
+    "src/renderer/mod.rs": 1092,
+    "tools/board/board.mjs": 1184
+  }
+}

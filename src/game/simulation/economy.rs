@@ -2,7 +2,8 @@
 //! and World scenarios and measures, turn by turn, how the stockpile economy runs
 //! (`docs/rts-economy.md`, Round 6): what each side trains, by type and by turn; how its
 //! cities grow and when each growth step lands; what piles up in the stockpile and what runs
-//! short; when sides first meet and first fight, and how many units die a turn after; when it
+//! short; when sides first meet and first fight, and how many units die a turn after; when each
+//! first knows of an enemy city, and how many turns scouts spend on lookout; when it
 //! researches (its first tech, the Cavalry's, every tech); how long
 //! each build takes in practice (queued, paid, worked, out); where the resources go; and how far
 //! apart the sides end up.
@@ -164,6 +165,8 @@ struct SideEvents {
     /// The turn its army first reached each of `ARMY_STEPS`.
     army: [Option<u32>; ARMY_STEPS.len()],
     first_contact: Option<u32>,
+    /// The first turn it knew of an enemy city, in sight or remembered.
+    enemy_city_known: Option<u32>,
     /// It attacked, or one of its units was hurt or killed.
     first_fight: Option<u32>,
     /// The same, with a troop of its (not a scout) the attacker or the one hurt.
@@ -243,6 +246,8 @@ struct GameLog {
     /// Animals killed (`animals.rs`), the dens the world began with, and
     /// those left.
     animals_killed: u32,
+    /// Turns a scout spent on lookout (`Ability::Lookout`), all sides.
+    lookouts: u32,
     dens: (usize, usize),
 }
 
@@ -348,6 +353,7 @@ impl Observer {
                 jobs: Vec::new(),
                 abandoned: 0,
                 animals_killed: 0,
+                lookouts: 0,
                 dens: (game.dens.len(), game.dens.len()),
             },
             alive: HashMap::default(),
@@ -841,6 +847,22 @@ impl Observer {
                 first(&mut side.events.first_contact, turn);
             }
         }
+        // What each side knows: an enemy city, and its scouts on lookout.
+        for side in &mut self.log.sides {
+            let team = side.team;
+            if side.events.enemy_city_known.is_none()
+                && game.side_memory[team.index()]
+                    .values()
+                    .any(|seen| seen.city.is_some_and(|city| city.team != team))
+            {
+                side.events.enemy_city_known = Some(turn);
+            }
+        }
+        self.log.lookouts += game
+            .units
+            .iter()
+            .filter(|u| u.lookout && !u.is_animal())
+            .count() as u32;
     }
 }
 
@@ -1002,6 +1024,7 @@ impl KindReport {
             side_event(format!("army of {step}"), &|e| e.army[i]);
         }
         side_event("contact (side)".into(), &|e| e.first_contact);
+        side_event("enemy city known (side)".into(), &|e| e.enemy_city_known);
         side_event("fight (side)".into(), &|e| e.first_fight);
         side_event("troop fight (side)".into(), &|e| e.troop_fight);
         side_event("first loss".into(), &|e| e.first_loss);
@@ -1266,8 +1289,9 @@ impl KindReport {
             (k + g.animals_killed, d + g.dens.0, l + g.dens.1)
         });
         println!(
-            "  animals killed: {killed}; dens cleared: {} of {dens}",
-            dens - left
+            "  animals killed: {killed}; dens cleared: {} of {dens}; scout turns on lookout: {}",
+            dens - left,
+            self.games.iter().map(|(_, g)| g.lookouts).sum::<u32>()
         );
 
         println!("\nSpent so far (food/wood/metal, mean per side), and Gather's yield:");
