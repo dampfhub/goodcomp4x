@@ -541,7 +541,7 @@ Everyone in a step acts simultaneously:
   clears their orders, clicking one member selects just it.
 - The group is cleared when a turn resolves.
 
-## Attack display (`draw.rs`, `effects.rs`)
+## Attack display (`draw/orders.rs`, `draw/units.rs`, `effects.rs`)
 
 - Queued attacks are curved arrows from the attacker (or its ghost, if it moves first) to just
   short of the target. Only the player's own attacks get arrows; the AI's plans stay hidden.

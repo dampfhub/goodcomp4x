@@ -49,7 +49,7 @@ pub struct Settings {
     /// (`order_queue.rs`) queue no turns past it. A hex farther away is
     /// queued as far along the way as the limit allows.
     pub max_queued_turns: usize,
-    /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw.rs`)
+    /// Draw unexplored hexes under clouds (`push_cloud_banks`, `draw/clouds.rs`)
     /// rather than a flat grey.
     pub cloud_fog: bool,
     /// AI players in the next world (F4, `setup_world`): 1 to 6, or 0 for
