@@ -25,10 +25,10 @@ jobs:
       # build.rs compiles shaders/ with glslc from PATH.
       - name: Install glslc
         run: sudo apt-get update && sudo apt-get install -y glslc
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      # The Rust in rust-toolchain.toml, with clippy and rustfmt.
+      - name: Install Rust
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
@@ -39,9 +39,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install glslc
         run: sudo apt-get update && sudo apt-get install -y glslc
-      # Keep in step with rust-version in Cargo.toml.
-      - uses: dtolnay/rust-toolchain@ffaa7fb73f2b6e3c49bc425913220fa3d71c3ee5 # 1.92
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      # The oldest Rust supported: rust-version in Cargo.toml. RUSTUP_TOOLCHAIN
+      # overrides rust-toolchain.toml for the steps after this one.
+      - name: Install Rust
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$msrv" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: rustc --version
       - run: cargo check --locked --all-targets
 
   tools:

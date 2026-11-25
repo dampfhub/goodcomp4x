@@ -7,7 +7,8 @@ by unit type.
 
 ## Running it
 
-Requirements: Rust 1.92 or newer, a Vulkan driver, and
+Requirements: Rust through [rustup](https://rustup.rs/), which installs the version pinned in
+`rust-toolchain.toml` on first build (1.88 is the oldest that builds), a Vulkan driver, and
 `glslc` for compiling shaders (it ships with the [Vulkan SDK](https://vulkan.lunarg.com/); the
 build looks in `$VULKAN_SDK/bin`, then `PATH`).
 
