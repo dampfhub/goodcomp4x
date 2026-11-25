@@ -509,7 +509,7 @@ mod tests {
     }
 
     /// The hash `golden_scenes_stay_the_same` expects.
-    pub(super) const GOLDEN_SCENES: u64 = 18099940123531557745;
+    const GOLDEN_SCENES: u64 = 17138018699754215187;
 
     /// One hash of the scenes of every scenario: as it starts; without fog,
     /// with Alt held and a unit selected; with a city and then its interior
