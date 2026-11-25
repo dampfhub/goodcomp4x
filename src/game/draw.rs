@@ -4657,4 +4657,65 @@ mod tests {
         game.hovered_tile = None;
         assert_eq!(marks(&game), (0, 0));
     }
+
+    /// The hash `golden_scenes_stay_the_same` expects.
+    const GOLDEN_SCENES: u64 = 18099940123531557745;
+
+    /// One hash of the scenes of every scenario: as it starts; without fog,
+    /// with Alt held and a unit selected; with a city and then its interior
+    /// open; with the AI's orders planned for the player; and a few turns on.
+    /// A refactor of the drawing code must leave it the same. Ignored, as any
+    /// change to the drawing changes it: run it before such a refactor
+    /// (updating `GOLDEN_SCENES` if the drawing has changed since) and after,
+    /// with `cargo test --release golden_scenes -- --ignored`.
+    #[test]
+    #[ignore]
+    fn golden_scenes_stay_the_same() {
+        use crate::game::scenario::Scenario;
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut add = |game: &GameState| {
+            for v in game.build_vertices() {
+                let floats = v.pos.iter().chain(&v.color).chain(&v.uv);
+                for byte in floats.flat_map(|x| x.to_bits().to_le_bytes()) {
+                    hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        };
+        for scenario in Scenario::ALL {
+            let mut game = GameState::new();
+            game.settings.instant_playback = true;
+            game.seed_rng(7);
+            game.switch_scenario(scenario);
+            add(&game);
+
+            let mut open = game.clone();
+            open.fog_of_war = false;
+            open.set_details(true);
+            open.selected = open.units.iter().position(|u| u.team == PLAYER_TEAM);
+            add(&open);
+
+            let mut city = game.clone();
+            if let Some(i) = city.cities.iter().position(|c| c.team == PLAYER_TEAM) {
+                city.open_city(i);
+                add(&city);
+                city.open_city_interior(i);
+                add(&city);
+            }
+
+            game.plan_ai_turn(PLAYER_TEAM);
+            add(&game);
+            for _ in 0..6 {
+                game.selected = None;
+                game.group.clear();
+                game.plan_ai_turn(PLAYER_TEAM);
+                game.resolve_turn();
+                game.update(0.0);
+            }
+            add(&game);
+        }
+        assert_eq!(
+            hash, GOLDEN_SCENES,
+            "the scenes changed: a refactor of the drawing must leave them the same"
+        );
+    }
 }
