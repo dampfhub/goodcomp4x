@@ -14,7 +14,7 @@ use super::animals::{DEN_BREED_TURNS, DEN_SPOILS, MAX_TERRITORY, bounty, den_cap
 use super::city::{Build, BuildUnit, Building, Lane, MIN_CITY_DISTANCE, Stock};
 use super::combat;
 use super::fast_hash::{HashMap, HashSet};
-use super::fog::{Fog, Sighting};
+use super::fog::{Fog, LOOKOUT_SIGHT, Sighting};
 use super::hex::Hex;
 use super::research::{Tech, Unlock};
 use super::settings::ANIMALS_MANY;
@@ -40,6 +40,10 @@ struct Knowledge {
     cities: HashSet<Hex>,
     /// The hexes around those cities.
     gates: HashSet<Hex>,
+    /// Where it last saw enemy units (animals aside), out of sight now and
+    /// seen within `AI_LEAD_TURNS`: where its armies look for enemies before
+    /// they explore (`nearest_ai_target`).
+    leads: HashSet<Hex>,
     /// Whether its land units know they can't step onto each hex
     /// (`known_step`), by `HexGrid::index`: ground seen to be impassable,
     /// and enemy cities. An array, as searches ask of every
@@ -127,6 +131,9 @@ const NOT_FOUND: i32 = i32::MAX;
 
 /// Turns after which a hex its side has seen is worth a scout's look again.
 const SCOUT_STALE_TURNS: u32 = 10;
+/// How many turns an enemy unit its side saw stays a lead for its armies
+/// (`Knowledge::leads`).
+const AI_LEAD_TURNS: u32 = 10;
 
 /// How far from where it stands `enemy` could attack next turn: its move
 /// (and a Charge's extra hex), then its range (and a deployed siege
@@ -1222,6 +1229,15 @@ impl GameState {
             }))
             .collect();
         let gates = cities.iter().flat_map(|city| city.neighbors()).collect();
+        let leads = memory
+            .iter()
+            .filter(|&(&hex, seen)| {
+                seen.enemy_unit
+                    && !fog.sees(hex)
+                    && self.turn.saturating_sub(seen.turn) <= AI_LEAD_TURNS
+            })
+            .map(|(&hex, _)| hex)
+            .collect();
         // Everything in sight is in the memory too (`side_fog`), and ground
         // never seen is open.
         let mut closed = vec![false; self.grid.cells()];
@@ -1256,6 +1272,7 @@ impl GameState {
             dens,
             cities,
             gates,
+            leads,
             closed,
             walls,
             den_plans,
@@ -1488,7 +1505,8 @@ impl GameState {
     /// sight (animals aside, which are for the forces sent against them),
     /// the enemy workers alone in sight, and ruins (and dens no animal is
     /// expected at and no force is sent to, `den_plans`) that no ally holds
-    /// or is already heading for, and the enemy cities seen, the nearest on
+    /// or is already heading for, the enemy cities seen, and where its side
+    /// last saw enemy units out of sight (`Knowledge::leads`), the nearest on
     /// foot over the ground as its side knows it (around the reach of
     /// animals it leaves alone; a city counting from its gates, and an
     /// enemy before a city as near), ties to the lowest coordinates. With
@@ -1551,7 +1569,7 @@ impl GameState {
         let is_target = |hex: &Hex| targets.contains(hex);
         let lowest = |hexes: &mut dyn Iterator<Item = Hex>| hexes.min_by_key(|hex| (hex.q, hex.r));
         // With nothing known to go for, the nearest ground never seen is it.
-        let exploring = targets.is_empty() && known.cities.is_empty();
+        let exploring = targets.is_empty() && known.cities.is_empty() && known.leads.is_empty();
         let mut unexplored = None;
         // A city is as far as its gates, plus one.
         let found = self.search_rings(unit.pos, known, |ring, last_ring| {
@@ -1565,6 +1583,12 @@ impl GameState {
                 .filter(|hex| known.cities.contains(hex));
             if let Some(city) = lowest(&mut cities.into_iter()) {
                 return Some(city);
+            }
+            // Where an enemy was seen last, for want of one in sight.
+            if let Some(lead) =
+                lowest(&mut ring.iter().copied().filter(|h| known.leads.contains(h)))
+            {
+                return Some(lead);
             }
             if unexplored.is_none() {
                 unexplored =
@@ -1675,8 +1699,11 @@ impl GameState {
     /// a worker can't hit back) or ruins (held while safe); else the one
     /// that brings the most into sight that its side has never seen or not
     /// seen for a while (`scouting_value`; hills see farther), farthest from
-    /// its side's cities on a tie, so scouts fan out; with nothing new
-    /// within reach, it heads for the nearest ground that has
+    /// its side's cities on a tie, so scouts fan out. With nothing new
+    /// within a move, it goes on lookout where it stands
+    /// (`Ability::Lookout`), if that's safe, it isn't just back from one,
+    /// and the farther sight would show ground its side has never seen
+    /// (`lookout_value`); else it heads for the nearest ground that has
     /// (`nearest_unscouted`). With no safe hex it's cornered: it takes the
     /// least threatened, and fights back from there. `watched` is what the
     /// side's scouts planned so far this turn will see, which the next one
@@ -1692,6 +1719,8 @@ impl GameState {
         let (team, pos) = (unit.team, unit.pos);
         let fog = &known.fog;
         let hurt = unit.hp < unit.max_hp() / 2.0;
+        let can_look_out = !unit.lookout && unit.ability_cooldown == 0;
+        let mut look_out = false;
         let threats: Vec<(Hex, i32)> = self
             .units
             .iter()
@@ -1781,7 +1810,15 @@ impl GameState {
                 .copied()
                 .map(|hex| (self.scouting_value(hex, known, watched), hex))
                 .max_by_key(|&(value, hex)| (value, from_home(hex), Reverse((hex.q, hex.r))));
+            // A turn standing still costs ground: only with nothing new
+            // within a move does it look out instead.
+            let moving = best.map_or(0, |(value, _)| value);
+            look_out = can_look_out
+                && moving == 0
+                && safe.contains(&pos)
+                && self.lookout_value(pos, known, watched) > 0;
             match best {
+                _ if look_out => pos,
                 Some((value, hex)) if value > 0 => hex,
                 _ => match self.nearest_unscouted(pos, known, watched) {
                     Some(goal) => self.step_toward(goal, pos, &safe, known, floods),
@@ -1795,21 +1832,46 @@ impl GameState {
                 },
             }
         };
-        watched.extend(within(dest, self.sight_at(UnitType::Scout, dest)));
+        let sight = self.sight_at(UnitType::Scout, dest) + if look_out { LOOKOUT_SIGHT } else { 0 };
+        watched.extend(within(dest, sight));
         let unit = &mut self.units[idx];
         unit.planned_move = (dest != pos).then_some(dest);
         unit.planned_attack = attack;
+        unit.ability_queued = look_out;
     }
 
     /// How much a scout standing on `hex` would see that `known`'s side
     /// wants seen (`unscouted`), and no other scout of its sees this turn
     /// (`watched`): what's in range and not behind a mountain.
     fn scouting_value(&self, hex: Hex, known: &Knowledge, watched: &HashSet<Hex>) -> u32 {
-        within(hex, self.sight_at(UnitType::Scout, hex))
-            .filter(|h| self.grid.contains(*h) && !watched.contains(h))
-            .filter(|&h| self.in_line_of_sight(hex, h))
+        self.in_scout_sight(hex, self.sight_at(UnitType::Scout, hex), watched)
             .map(|h| self.unscouted(h, known))
             .sum()
+    }
+
+    /// How many hexes its side has never seen a scout on lookout at `hex`,
+    /// seeing `LOOKOUT_SIGHT` farther, would see that no other scout of its
+    /// sees this turn. Ground only stale doesn't count: a turn standing
+    /// still isn't worth a second look.
+    fn lookout_value(&self, hex: Hex, known: &Knowledge, watched: &HashSet<Hex>) -> usize {
+        let sight = self.sight_at(UnitType::Scout, hex) + LOOKOUT_SIGHT;
+        self.in_scout_sight(hex, sight, watched)
+            .filter(|&h| self.recalled(h, &known.fog).is_none())
+            .count()
+    }
+
+    /// The hexes a scout on `hex` seeing `sight` hexes sees, but for those
+    /// another scout of its side sees this turn (`watched`): in range and
+    /// not behind a mountain.
+    fn in_scout_sight<'a>(
+        &'a self,
+        hex: Hex,
+        sight: i32,
+        watched: &'a HashSet<Hex>,
+    ) -> impl Iterator<Item = Hex> + 'a {
+        within(hex, sight)
+            .filter(move |h| self.grid.contains(*h) && !watched.contains(h))
+            .filter(move |&h| self.in_line_of_sight(hex, h))
     }
 
     /// How much `known`'s side wants `hex` seen: 2 if it never has been, 1 if
@@ -2239,6 +2301,25 @@ mod tests {
         assert_eq!(dest.map(|d| d.distance(city)), Some(5));
     }
 
+    /// Knowing of nothing else, an AI unit heads for where its side last
+    /// saw an enemy unit, for `AI_LEAD_TURNS`.
+    #[test]
+    fn an_ai_unit_heads_for_where_its_side_last_saw_an_enemy() {
+        let mut game = lone_red();
+        red_explores_the_rest(&mut game);
+        let blue = Hex::new(6, 0);
+        game.units
+            .push(Unit::new(2, blue, Team::Blue, UnitType::Melee));
+        red_glances_from(&mut game, Hex::new(4, 0));
+        // It's gone out of sight since.
+        game.units.retain(|u| u.team == Team::Red);
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest.map(|d| d.distance(blue)), Some(5));
+
+        game.turn += AI_LEAD_TURNS + 1;
+        assert_eq!(replan(&mut game), (None, None), "too long ago");
+    }
+
     #[test]
     fn an_ai_unit_counts_ground_its_side_has_never_seen_as_open() {
         // Mountains down the column q = 3 wall Red off from a Blue city at
@@ -2314,6 +2395,30 @@ mod tests {
         assert_eq!(reach, 2);
         assert!(dest.is_some_and(|d| d.distance(blue) > reach), "{dest:?}");
         assert_eq!(attack, None);
+    }
+
+    /// Walled in by water, with nothing new within a move, a scout goes on
+    /// lookout to see the ground 4 and 5 hexes off; just back from one, it
+    /// doesn't go again.
+    #[test]
+    fn a_scout_with_nothing_new_within_a_move_goes_on_lookout() {
+        let lake = Tile {
+            terrain: Terrain::Lake,
+            hills: false,
+            feature: None,
+        };
+        let mut game = red_scout();
+        game.grid = HexGrid::new(8, Hex::new(0, 0).neighbors().map(|n| (n, lake)));
+        let far = |h: &Hex| (4..=5).contains(&h.distance(Hex::new(0, 0)));
+        Arc::make_mut(&mut game.side_memory[Team::Red.index()]).retain(|h, _| !far(h));
+        let (dest, _) = replan(&mut game);
+        assert_eq!(dest, None);
+        assert!(game.units[0].ability_queued, "goes on lookout");
+
+        game.units[0].ability_queued = false;
+        game.units[0].lookout = true;
+        replan(&mut game);
+        assert!(!game.units[0].ability_queued, "not twice running");
     }
 
     #[test]
