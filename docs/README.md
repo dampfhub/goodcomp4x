@@ -7,7 +7,7 @@
 | [controls.md](controls.md) | Every key and mouse action, for players | current; update with every input change |
 | [ui-system.md](ui-system.md) | How screen-space panels are built, docked and hit-tested | current; read before adding UI |
 | [text.md](text.md) | The game's text files (`text/`): the format, placeholders and icons, and the tests that check them | current; stages 1-4 of #341 (the menus; the status bar, top bar, Debug panel and window titles; the units) |
-| [city-system.md](city-system.md) | The design direction for cities | proposal; parts are implemented, see game-rules.md |
+| [city-system.md](city-system.md) | The first design draft for cities | historical; for the current rules see game-rules.md |
 | [multiplayer.md](multiplayer.md) | Network play: hosting and joining, lockstep, the transport, and its security | first cut; 2-7 players on a generated world, AI on the rest |
 | [rts-economy.md](rts-economy.md) | The stockpile economy experiment: model, numbers, findings, next tests | experiment; built on `claude/rts-economy`, rules in game-rules.md |
 | [economy/round6-tempo-report.md](economy/round6-tempo-report.md) | The Round 6 tempo report (#239): is the game too fast, and the tuning options measured; with [the rules then](economy/round6-how-it-works.md) and [every knob](economy/round6-knobs.md) | record of `main` at 6f5c4c8; option B was chosen (rts-economy.md, Round 7) |

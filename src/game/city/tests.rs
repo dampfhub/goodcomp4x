@@ -1553,7 +1553,7 @@ fn a_canneries_food_counts_toward_the_food_floor() {
                     .score(g.delivered_goods(0, h, cost), fed);
                 (h, -score)
             })
-            .min_by_key(|&(h, score)| (score, h.q, h.r))
+            .min_by_key(|&(h, score)| (score, super::citizens::tie_key(g.cities[0].pos, h)))
             .map(|(h, _)| h)
             .unwrap()
     };
@@ -1614,6 +1614,55 @@ fn a_new_citizen_takes_the_tile_the_priority_order_ranks_best() {
         assert_eq!(worked[..before.len()], before[..], "{first:?}");
         assert_eq!(score(&g, worked[before.len()]), best, "{first:?}");
     }
+}
+
+/// #401: between tiles worth the same, citizens take the one nearest the
+/// city. A road west makes a tile 4 hexes out deliver all its goods, like
+/// one beside the city; ties used to go by coordinates, so the manager went
+/// out there, at the west edge of the city's reach.
+#[test]
+fn ties_between_equal_tiles_go_nearest_the_city() {
+    let mut g = lone_city_on(|_| Tile::default());
+    let center = g.cities[0].pos;
+    let far = Hex::new(center.q - 4, center.r);
+    for q in -4..=-1 {
+        g.roads.insert(Hex::new(center.q + q, center.r));
+    }
+    let routes = g.routes(0);
+    let goods = |h: Hex| g.delivered_goods(0, h, routes.costs[&h]);
+    assert_eq!(goods(far), goods(center.neighbors()[0]), "a tie");
+    grown(&mut g, 0, 7);
+    let c = &g.cities[0];
+    assert_eq!(c.clusters.len(), 1);
+    assert_eq!(
+        c.clusters[0].manager.distance(center),
+        1,
+        "{:?}",
+        c.clusters
+    );
+    assert!(
+        c.worked().all(|h| h.distance(center) <= 2),
+        "{:?}",
+        c.clusters
+    );
+
+    // Past the distance, no direction comes first everywhere: which of a
+    // city's six neighbors goes first changes with where the city stands.
+    let mut firsts = [0; 6];
+    for q in -10..10 {
+        for r in -10..10 {
+            let center = Hex::new(q, r);
+            let around = center.neighbors();
+            let first = (0..6)
+                .min_by_key(|&i| super::citizens::tie_key(center, around[i]))
+                .unwrap();
+            firsts[first] += 1;
+        }
+    }
+    assert!(
+        firsts.iter().all(|&n| (30..=110).contains(&n)),
+        "{firsts:?}"
+    );
 }
 #[test]
 fn no_citizen_works_a_city_center_or_a_building_tile() {
@@ -2486,7 +2535,7 @@ fn auto_assign_fills_a_cluster_then_starts_the_next_on_the_best_open_land() {
         }
     }
     // A new manager is the open land tile the order ranks best, clear of the
-    // others; ties by coordinates.
+    // others; ties nearest the city.
     grown(&mut g, 0, 7);
     let first = g.cities[0].clusters.clone();
     g.cities[0].population = 8;
@@ -2509,10 +2558,10 @@ fn auto_assign_fills_a_cluster_then_starts_the_next_on_the_best_open_land() {
                 && !g.grid.terrain(h).is_water()
                 && first[0].manager.distance(h) > 1
         })
-        .map(|&h| (-score(h), h.q, h.r))
+        .map(|&h| (-score(h), super::citizens::tie_key(c.pos, h)))
         .min()
         .unwrap();
-    assert_eq!((-score(new), new.q, new.r), best);
+    assert_eq!((-score(new), super::citizens::tie_key(c.pos, new)), best);
 }
 
 #[test]

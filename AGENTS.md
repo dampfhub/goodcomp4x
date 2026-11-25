@@ -1,4 +1,4 @@
-# Hex Combat Sandbox (riskofcivlike)
+# Hex Combat Sandbox (goodcomp4x)
 
 A prototype of combat and city rules for a Civ-like game, in Rust (edition 2024) on raw Vulkan
 (`ash`) with `winit`. Blue (the player) plays an AI Red on a hex map. Turns are simultaneous: both
