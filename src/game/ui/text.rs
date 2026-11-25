@@ -198,3 +198,71 @@ pub(super) fn ability_text(unit: &Unit) -> (&'static str, &'static str) {
         Ability::Lookout => (text!("ability_lookout"), tooltip!("ability_lookout")),
     }
 }
+
+/// Keep costs and work times on buttons, but show keyboard shortcuts only
+/// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
+/// is in its tooltip, so hovering doesn't change a button's text (only a
+/// hover text a text file gives does: `ButtonSpec::hover_text`).
+pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
+    if reveal_shortcut {
+        return hint;
+    }
+    for separator in [" · ", " | "] {
+        if let Some((prefix, rest)) = hint.split_once(separator)
+            && is_shortcut(prefix)
+        {
+            return if is_shortcut(rest) { "" } else { rest };
+        }
+    }
+    if is_shortcut(hint) { "" } else { hint }
+}
+
+fn is_shortcut(text: &str) -> bool {
+    let text = text.trim();
+    if let Some((first, second)) = text.split_once(" / ") {
+        return is_shortcut(first) && is_shortcut(second);
+    }
+    if let Some(rest) = text
+        .strip_prefix("CTRL-")
+        .or_else(|| text.strip_prefix("CTRL+"))
+    {
+        return is_shortcut(rest);
+    }
+    if let Some(rest) = text.strip_prefix("SHIFT+") {
+        return is_shortcut(rest);
+    }
+    matches!(
+        text,
+        "CTRL" | "SHIFT" | "ALT" | "SPACE" | "ESC" | "DEL" | "BACKSPACE" | "RMB"
+    ) || (text.len() == 1
+        && text
+            .bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        || text
+            .strip_prefix('F')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::visible_button_hint;
+
+    #[test]
+    fn shortcuts_wait_for_hover_but_costs_and_work_times_stay_visible() {
+        for (hint, idle) in [
+            ("SPACE", ""),
+            ("V / ESC", ""),
+            ("CTRL-RMB", ""),
+            ("X · RMB", ""),
+            ("7 · 15 PROD", "15 PROD"),
+            ("8 | 20 PROD", "20 PROD"),
+            ("R · 2T", "2T"),
+            ("HORSES · 16", "HORSES · 16"),
+            ("3T", "3T"),
+            ("SEND IT HOME", "SEND IT HOME"),
+        ] {
+            assert_eq!(visible_button_hint(hint, false), idle, "{hint}");
+            assert_eq!(visible_button_hint(hint, true), hint, "{hint}");
+        }
+    }
+}

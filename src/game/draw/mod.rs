@@ -51,6 +51,7 @@ use terrain::*;
 use units::*;
 use workers::*;
 
+pub(super) use city_map::building_badge;
 pub(super) use markers::{push_barracks_house, push_city_tower};
 pub(super) use orders::{attack_arc_points, push_arrow};
 pub(super) use terrain::push_tile_symbols;

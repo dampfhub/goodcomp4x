@@ -1,7 +1,7 @@
 # src/
 
 `main.rs` starts the logger, parses the command line (`cli.rs`: `--scenario`, `--seed`,
-`--screenshot` with `--ui`, `--turns` and `--world-overlay`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
+`--screenshot` with `--ui`, `--turns` and `--world-overlay`, `--view`, `--size`, `--host`/`--port`, `--join`/`--code`), sets up a network game
 (`net/`: hosting listens; joining connects, runs the encrypted handshake and receives the game
 before the window opens), and
 runs the `winit` event loop; its exit code is `App::into_result`. `App` pumps the network
@@ -67,7 +67,8 @@ the window is created (it did once the window was minimized and restored).
   `--screenshot` disables fog, holds the details overlay and zooms all the way out
   to reproduce the worst-case world view. `--ui classic` takes the shot in the classic UI, and
   `--turns N` plays N turns before the window opens, the AI planning every side
-  (`GameState::play_ai_turns`). A failure or the 20 s timeout
+  (`GameState::play_ai_turns`); `--view research` then opens the research view (T), in a
+  screenshot or a game. A failure or the 20 s timeout
   quits through `App::fail`, which `main` turns into a non-zero exit.
 
 ## Invariants

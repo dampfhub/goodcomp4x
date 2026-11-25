@@ -1,20 +1,26 @@
 //! The research view (T, or a city's Research button): the tech tree in
-//! the Selection panel (`research_tray`), its tiers, each tech's state,
-//! price and what it unlocks, and the side's research queue in the queue
-//! panel (`research_queue_panel`); and the research the top bar shows
-//! (`research_spans`). The rules are `game/research.rs`.
+//! the Selection panel (`research_tray`, `tech_tree`: what each card shows
+//! and where the lines go; `tech_tree.rs` lays it out), and the side's
+//! research queue in the queue panel (`research_queue_panel`); and the
+//! research the top bar shows (`research_spans`). The rules are
+//! `game/research.rs`.
 
 use super::builder::{ButtonSpec, PanelBuilder};
+use super::tech_tree::{
+    Link, LinkState, TechCard, TechState, TechTree, UnlockIcon, UnlockMark, arrange,
+};
 use super::text::{cost_hint, turns_text};
 use super::{
-    BOOSTED_TEXT, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, Line, QueueItemSpec, QueueKind,
-    REDUCED_TEXT, SMALL, TEXT, TITLE, Target, WAITING_TEXT,
+    DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, Line, QueueItemSpec, QueueKind, REDUCED_TEXT, SMALL,
+    TEXT, TITLE, Target, WAITING_TEXT,
 };
 use crate::game::GameState;
-use crate::game::city::stock_icons;
+use crate::game::city::{Build, stock_icons};
+use crate::game::draw::building_badge;
 use crate::game::keys::Command;
-use crate::game::research::{ResearchForecast, Tech, names};
+use crate::game::research::{ResearchForecast, Tech, Unlock, names};
 use crate::game::strings::text;
+use crate::game::unit_icons::UnitIcon;
 
 /// Its tier: 1 for a tech that needs none, else one past the highest tier
 /// among those it needs.
@@ -95,58 +101,78 @@ impl GameState {
     }
 
     /// The research view's Selection panel: what's researched now, then the
-    /// tree by tier, a card for each tech and a line of what it unlocks and
-    /// needs.
+    /// tree (`tech_tree`).
     pub(super) fn research_tray(&self, panel: &mut PanelBuilder) {
         let team = self.local_team;
         panel.text(
             TITLE,
             vec![(text!("research_title").to_string(), team.color())],
         );
-        match self.research_forecast(team) {
-            ResearchForecast::Idle => {
-                panel.text(SMALL, vec![(text!("research_idle").to_string(), GOLD_TEXT)]);
-            }
+        let status = match self.research_forecast(team) {
+            ResearchForecast::Idle => (text!("research_idle").to_string(), GOLD_TEXT),
             ResearchForecast::Works { tech, .. } => {
                 let left = self.research_turns_left(team).unwrap_or(0).max(0) as u32;
-                panel.text(
-                    SMALL,
-                    vec![(
-                        text!(
-                            "research_working",
-                            tech = tech.name(),
-                            turns = turns_text(left)
-                        ),
-                        GOLD_TEXT,
-                    )],
-                );
-                let head = self.research(team).queue[0];
-                panel.bar((head.progress as f32 / tech.work() as f32).clamp(0.0, 1.0));
+                let turns = turns_text(left);
+                let line = text!("research_working", tech = tech.name(), turns = turns);
+                (line, GOLD_TEXT)
             }
             ResearchForecast::Waits { tech, short } => {
-                panel.text(
-                    SMALL,
-                    vec![(
-                        text!(
-                            "research_waits",
-                            tech = tech.name(),
-                            short = stock_icons(short)
-                        ),
-                        WAITING_TEXT,
-                    )],
-                );
+                let short = stock_icons(short);
+                let line = text!("research_waits", tech = tech.name(), short = short);
+                (line, WAITING_TEXT)
+            }
+        };
+        panel.text(SMALL, vec![status]);
+        panel.text(SMALL, vec![(text!("research_how").to_string(), DIM_TEXT)]);
+        panel.gap(GAP);
+        panel.tech_tree(self.tech_tree());
+    }
+
+    /// The tree as the side has it: a card for each tech, where it goes
+    /// (`tech_tree::arrange`, by tier), and a line from each tech to each
+    /// that needs it.
+    pub(super) fn tech_tree(&self) -> TechTree {
+        let team = self.local_team;
+        let techs: Vec<Tech> = Tech::all().collect();
+        let index = |tech: Tech| usize::from(tech.0);
+        let columns: Vec<usize> = techs.iter().map(|&tech| tier(tech) - 1).collect();
+        let needs: Vec<Vec<usize>> = techs
+            .iter()
+            .map(|tech| tech.requires().map(index).collect())
+            .collect();
+        let mut links = Vec::new();
+        for (to, parents) in needs.iter().enumerate() {
+            for &from in parents {
+                let state = if self.researched(team, techs[from]) {
+                    LinkState::Done
+                } else if self.research_place(team, techs[from]).is_some()
+                    && self.research_place(team, techs[to]).is_some()
+                {
+                    LinkState::Planned
+                } else {
+                    LinkState::Open
+                };
+                links.push(Link { from, to, state });
             }
         }
-        panel.text(SMALL, vec![(text!("research_how").to_string(), DIM_TEXT)]);
-        let tiers = Tech::all().map(tier).max().unwrap_or(0);
-        for t in 1..=tiers {
-            let techs: Vec<Tech> = Tech::all().filter(|&tech| tier(tech) == t).collect();
-            panel.gap(GAP);
-            panel.heading(&text!("research_tier", tier = numeral(t)));
-            panel.buttons(techs.iter().map(|&tech| self.tech_card(tech)).collect());
-            for &tech in &techs {
-                panel.text(SMALL, self.tech_line(tech));
-            }
+        let tiers = columns.iter().max().map_or(0, |&c| c + 1);
+        let longest = techs.iter().map(|t| t.turns()).max().unwrap_or(0).max(0) as u32;
+        TechTree {
+            cards: techs
+                .iter()
+                .map(|&tech| (self.tech_card(tech), self.tech_card_view(tech)))
+                .collect(),
+            slots: arrange(&columns, &needs),
+            links,
+            headings: (1..=tiers)
+                .map(|t| text!("research_tier", tier = numeral(t)))
+                .collect(),
+            tags: vec![
+                text!("research_card_queued", place = techs.len()),
+                text!("research_card_left", turns = turns_text(longest)),
+                text!("research_card_waits").to_string(),
+            ],
+            names: true,
         }
     }
 
@@ -178,27 +204,68 @@ impl GameState {
             .short(short)
     }
 
-    /// The line under the tier's cards for `tech`: its name, what it
-    /// unlocks, and the techs it needs that the side hasn't researched.
-    fn tech_line(&self, tech: Tech) -> Line {
+    /// What a tech's card shows: where it stands, its price and turns (or
+    /// RESEARCHED) and its tag, what it unlocks, and its progress while
+    /// it's researched.
+    fn tech_card_view(&self, tech: Tech) -> TechCard {
         let team = self.local_team;
-        let done = self.researched(team, tech);
-        let mut line = vec![
-            (format!("{}: ", tech.name()), LABEL_TEXT),
-            (tech.unlocks_text(), if done { BOOSTED_TEXT } else { TEXT }),
-        ];
-        let missing: Vec<&str> = tech
-            .requires()
-            .filter(|&r| !self.researched(team, r))
-            .map(|r| r.name())
+        let place = self.research_place(team, tech);
+        let state = if self.researched(team, tech) {
+            TechState::Researched
+        } else {
+            match (place, self.research_forecast(team)) {
+                (Some(0), ResearchForecast::Waits { .. }) => TechState::Waits,
+                (Some(0), _) => TechState::Researching,
+                (Some(_), _) => TechState::Queued,
+                (None, _) if tech.requires().all(|r| self.researched(team, r)) => {
+                    TechState::Available
+                }
+                (None, _) => TechState::Locked,
+            }
+        };
+        let tag = match state {
+            TechState::Researching => {
+                let left = self.research_turns_left(team).unwrap_or(0).max(0) as u32;
+                Some(text!("research_card_left", turns = turns_text(left)))
+            }
+            TechState::Waits => Some(text!("research_card_waits").to_string()),
+            TechState::Queued => place.map(|i| text!("research_card_queued", place = i + 1)),
+            _ => None,
+        };
+        let detail = match state {
+            TechState::Researched => text!("research_card_done").to_string(),
+            _ => cost_hint(tech.price(), tech.turns()),
+        };
+        let progress = (state == TechState::Researching).then(|| {
+            let head = self.research(team).queue[0];
+            (head.progress as f32 / tech.work() as f32).clamp(0.0, 1.0)
+        });
+        let unlocks = tech
+            .unlocks()
+            .iter()
+            .map(|&unlock| UnlockMark {
+                icon: match unlock {
+                    Unlock::Unit(unit) => UnlockIcon::Unit(
+                        UnitIcon::of_build(Build::Unit(unit)).expect("a unit has a pictogram"),
+                    ),
+                    Unlock::Building(building) => {
+                        let (letter, color) = building_badge(building);
+                        UnlockIcon::Building(letter, color)
+                    }
+                },
+                name: unlock.name(),
+            })
             .collect();
-        if !missing.is_empty() {
-            line.push((
-                format!(" · {}", text!("research_needs", techs = names(missing))),
-                DIM_TEXT,
-            ));
+        TechCard {
+            tech,
+            state,
+            detail,
+            tag,
+            unlocks,
+            progress,
+            short: place.is_none() && !self.expected_stock(team).covers(tech.price()),
+            names: true,
         }
-        line
     }
 
     /// The research queue panel: its title with Clear, and a row for each

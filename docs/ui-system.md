@@ -163,6 +163,22 @@ research queue (`research_queue_panel`, rows of `QueueKind::Research`, dragged a
 city's are) the queue slot, in both presentations, so it needs no slot of its own. It shows
 only while nothing else is selected (`research_view`), and anything opened over it closes it
 (`close_research_behind`, each frame). It has no captured (boxed) form.
+The tree is one row, `Row::TechTree` (`ui/tech_tree.rs`, built by `GameState::tech_tree` from
+`TECHS`, so it grows with the table): a card per tech (its `ButtonSpec`, which decides
+availability as any button does, and a `TechCard`, what the card shows), each card's column (its
+tier) and place down it (`arrange`: a card moves toward the middle of the cards it's linked to,
+keeping a card's room from its neighbors), and the prerequisite lines (`Link`, drawn as elbows
+in the room between columns, the brightest last). `TechTree::place` lays it out in the width it
+has from a presentation's measurements (`metrics`): the columns side by side when they fit,
+else the tiers stacked under their headings, without lines, cards wrapping to the width.
+Classic places each card as a button that draws itself (`Button::card`,
+`tech_tree::draw_tech_card`) and the lines as `Shape::Fill`; its row is as wide as the
+columns, and `fit_height` drops the unlocks' names (keeping their icons in a row) when the tree
+is taller than the screen has room for. A queue that doesn't fit over the tree docks beside it.
+ImGui (`imgui/tech_tree.rs`) draws each card over an invisible button, which takes the click and
+shows the tooltip, and gives the Selection slot the tree's width (`tree_panel_width`) and the
+queue beside it a narrower one (`RESEARCH_QUEUE_WIDTH`). `--view research` opens the view
+as the game starts, for a screenshot.
 **Text files.** The menus' words come from `text/menus.ini`, and the status and
 top bars', the Debug panel's and the window titles' from `text/ui.ini`, and the
 units' (trays, orders, abilities) from `text/units.ini`, through

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::game::Scenario;
+use crate::game::{GameState, Scenario};
 
 pub const USAGE: &str = "\
 Usage: vulkan_engine [OPTIONS]
@@ -19,6 +19,8 @@ Options:
                        to FILE as a PNG, and exit
   --world-overlay     with --screenshot: disable fog, show resource yields,
                        and zoom all the way out (F10 + Alt + zoom out)
+  --view <NAME>        open a view as the game starts: research (the tech
+                       tree, T), so a screenshot can show it
   --ui <NAME>          with --screenshot: imgui (the default) or classic,
                        the UI F11 switches to
   --turns <N>          with --screenshot: play N turns first, the AI on
@@ -45,6 +47,8 @@ pub struct Options {
     /// Screenshot mode: where to write the PNG.
     pub screenshot: Option<PathBuf>,
     pub world_overlay: bool,
+    /// A view to open as the game starts (`--view`).
+    pub view: Option<View>,
     /// Screenshot mode: the classic UI (`--ui classic`) rather than ImGui.
     pub classic_ui: bool,
     /// Screenshot mode: turns the AI plays on every side before the shot.
@@ -54,6 +58,22 @@ pub struct Options {
     /// A multiplayer game to host or join.
     pub network: Option<Network>,
     pub help: bool,
+}
+
+/// A view `--view` opens as the game starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    /// The research view, the tech tree (T).
+    Research,
+}
+
+impl View {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "research" => Some(Self::Research),
+            _ => None,
+        }
+    }
 }
 
 /// `--host` (with `--port`) or `--join`.
@@ -72,6 +92,7 @@ impl Default for Options {
             seed: None,
             screenshot: None,
             world_overlay: false,
+            view: None,
             classic_ui: false,
             turns: 0,
             size: None,
@@ -82,6 +103,15 @@ impl Default for Options {
 }
 
 impl Options {
+    /// Readies a new game as asked: the AI plays the turns (`--turns`),
+    /// then the view opens (`--view`), so nothing selected in them closes it.
+    pub fn prepare(&self, game: &mut GameState) {
+        game.play_ai_turns(self.turns);
+        if let Some(View::Research) = self.view {
+            game.toggle_research();
+        }
+    }
+
     /// Parses the arguments after the program name.
     pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
         let mut options = Self::default();
@@ -114,6 +144,13 @@ impl Options {
                 }
                 "--screenshot" => options.screenshot = Some(value()?.into()),
                 "--world-overlay" => options.world_overlay = true,
+                "--view" => {
+                    let name = value()?;
+                    options.view = Some(
+                        View::from_name(&name)
+                            .with_context(|| format!("no view called {name:?}: try research"))?,
+                    );
+                }
                 "--ui" => {
                     options.classic_ui = match value()?.as_str() {
                         "classic" => true,
@@ -304,5 +341,17 @@ mod tests {
             "the default scenario has no seed"
         );
         assert!(parse(&["--help"]).unwrap().help);
+    }
+
+    #[test]
+    fn view_opens_the_research_view() {
+        assert_eq!(
+            parse(&["--screenshot", "out.png", "--view", "research"])
+                .unwrap()
+                .view,
+            Some(View::Research)
+        );
+        assert!(parse(&["--view", "moon"]).is_err());
+        assert!(parse(&["--view"]).is_err());
     }
 }

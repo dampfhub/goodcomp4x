@@ -185,9 +185,12 @@ center enters the interior map; its clicks control only the interior copies.
 | F9 in the research view | Debug: research the first queued tech now, paid if the stockpile can |
 | Escape / Space | Close the research view (so does opening a city, Barracks or unit) |
 
-A card names its tech's price and turns, or where it stands: QUEUED and its place, the turns
-left for the one researched now, WAITS while the stockpile is short, or RESEARCHED (dimmed).
-Under each tier's cards a line per tech names what it unlocks and the techs it still needs.
+The tree has a column per tier, with a line from each tech to the techs that need it. A card
+shows its tech's price and turns and what it unlocks (each unit's or building's icon and name),
+and where it stands: RESEARCHED (green), the turns left and a progress bar for the one researched
+now (gold), WAITS while the stockpile is short (red), QUEUED and its place (a gold rim), ready to
+research, or dimmed while a tech it needs isn't researched (a click still queues both). Hover a
+card for its tooltip. A panel too narrow for the columns stacks the tiers instead.
 A city, Barracks or building card your side hasn't researched is dimmed and names the tech
 (NEEDS TECH I-A). The top bar shows the tech researched now and its turns left, red with WAITS
 while it waits, or NO RESEARCH.
@@ -315,6 +318,7 @@ them.
 | `--world-overlay` | With `--screenshot`: disable fog, show tile yields and zoom all the way out, for reproducible rendering checks |
 | `--ui <name>` | With `--screenshot`: `imgui` (the default) or the `classic` UI |
 | `--turns <n>` | With `--screenshot`: play `n` turns first, the AI on every side |
+| `--view <name>` | Open a view as the game starts: `research`, the research view (T), so a screenshot can show it |
 | `--screenshot <file>` | Draw the scenario's first moments in a hidden window, save a frame as a PNG (1600x900 unless `--size`), and exit; for checking visual changes without playing |
 | `--host` | Host a network game on a new world (you're Blue, the AI plays the sides nobody does) and show its join code (`multiplayer.md`); the settings menu's Multiplayer page does the same |
 | `--players <n>` | With `--host`: how many people play, you included (2-7; 2 unless given) |

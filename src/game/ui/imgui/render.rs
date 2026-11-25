@@ -270,7 +270,7 @@ impl GameState {
 
     /// The tooltip of the panel button just drawn, for the unit or city of
     /// its panel (`subject`), while it's hovered (dimmed or not).
-    fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec, subject: Subject) {
+    pub(super) fn button_tooltip(&self, ui: &Ui, spec: &ButtonSpec, subject: Subject) {
         if !ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
             return;
         }
@@ -372,6 +372,7 @@ impl GameState {
                 Row::Buttons(buttons, compact) => {
                     self.render_buttons(frame, panel, buttons, *compact, None, panel_scope)
                 }
+                Row::TechTree(tree) => self.render_tech_tree(frame, tree, panel_scope),
                 Row::Reorder(kind, buttons) => {
                     self.render_buttons(frame, panel, buttons, true, Some(*kind), panel_scope)
                 }

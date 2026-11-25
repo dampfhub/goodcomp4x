@@ -263,7 +263,7 @@ impl App {
         network: Option<(Session, GameState)>,
         read: impl Fn(&str) -> Option<String>,
     ) -> Self {
-        let screenshot = options.screenshot.map(Screenshot::new);
+        let screenshot = options.screenshot.clone().map(Screenshot::new);
         let remember = screenshot.is_none();
         let load = |name| if remember { read(name) } else { None };
         let settings =
@@ -284,7 +284,7 @@ impl App {
             None => options.scenario.new_game(&settings),
         });
         game.set_settings(settings);
-        game.play_ai_turns(options.turns);
+        options.prepare(&mut game);
         if options.world_overlay {
             game.toggle_fog();
             game.set_details(true);

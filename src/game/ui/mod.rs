@@ -34,7 +34,9 @@ mod queue;
 mod research;
 mod roster;
 pub(in crate::game) use roster::RosterKey;
+use roster::{ChipIcon, RosterChip};
 mod settings_menu;
+mod tech_tree;
 mod text;
 mod tooltips;
 mod trays;
@@ -42,7 +44,6 @@ mod trays;
 use glam::{Mat4, Vec2, Vec3};
 
 use super::city::{BuildUnit, Building, Good};
-use super::draw::UnitLook;
 use super::hex::Hex;
 use super::orders::ClickMode;
 use super::research::Tech;
@@ -344,6 +345,9 @@ struct Button {
     faded: bool,
     min: Vec2,
     max: Vec2,
+    /// A tech's card in the research view's tree, which draws itself
+    /// (`tech_tree::draw_tech_card`).
+    card: Option<Box<tech_tree::TechCard>>,
 }
 
 impl Button {
@@ -407,32 +411,12 @@ enum Shape {
         max: Vec2,
         chip: RosterChip,
     },
-}
-
-/// A chip in the turn strip: what it stands for, its picture, whether it's
-/// selected (its units, or its city open), and how many units or workers it
-/// counts (shown when more than one).
-#[derive(Clone, Copy)]
-pub(super) struct RosterChip {
-    pub(super) key: RosterKey,
-    pub(super) icon: ChipIcon,
-    pub(super) color: Color,
-    pub(super) selected: bool,
-    pub(super) count: usize,
-    /// Flagged in the waiting red: an idle queue's chip
-    /// (`RosterKey::Waiting`).
-    pub(super) warning: bool,
-}
-
-/// A turn strip chip's picture.
-#[derive(Clone, Copy)]
-pub(super) enum ChipIcon {
-    /// A unit's (or worker's) token, as on the map.
-    Unit(UnitLook),
-    /// A city's tower.
-    City,
-    /// A Barracks, as on the map.
-    Barracks,
+    /// A filled rectangle: a stretch of a line in the tech tree.
+    Fill {
+        min: Vec2,
+        max: Vec2,
+        color: Color,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -900,8 +884,14 @@ impl GameState {
         tray.fit_height(layout.remaining_height(Zone::BottomLeft, tray.size().x));
         let tray_size = tray.size();
         layout.dock_panel(tray, Zone::BottomLeft);
-        let queue_visible =
+        let mut queue_visible =
             queue_items_that_fit(layout.remaining_height(Zone::BottomLeft, tray_size.x));
+        if self.research_view() && queue_visible < self.research(self.local_team).queue.len() {
+            // The tree is tall: a queue that doesn't fit over it docks
+            // beside it, in a column of its own, leaving room for the rest.
+            let column = layout.remaining_height(Zone::BottomRight, 1.0) / 2.0;
+            queue_visible = queue_visible.max(queue_items_that_fit(column));
+        }
         if let Some(city) = self.selected_city {
             let mut queue = PanelBuilder::default();
             self.city_queue_panel(city, queue_visible, &mut queue);

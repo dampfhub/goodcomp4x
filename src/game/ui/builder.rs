@@ -3,6 +3,7 @@
 use super::action_icons::{self, CLASSIC_ICON_COLUMNS, ICON_BUTTON_SIZE};
 use super::network_menu::NetField;
 use super::settings_menu::classic_setting_rows;
+use super::tech_tree::TechTree;
 use super::{
     BODY, BUILDING_LIST_VISIBLE, BUTTON_HEIGHT, BUTTON_MIN_WIDTH, BUTTON_PADDING,
     BuildingScrollRegion, Button, ButtonState, END_TURN_HEIGHT, GAP, GOLD_TEXT, GROWTH_BAR_HEIGHT,
@@ -116,26 +117,9 @@ impl ButtonSpec {
             faded,
             min,
             max,
+            card: None,
         }
     }
-}
-
-/// Keep costs and work times on buttons, but show keyboard shortcuts only
-/// where `reveal_shortcut` asks (the Debug panel): elsewhere a button's key
-/// is in its tooltip, so hovering doesn't change a button's text (only a
-/// hover text a text file gives does: `ButtonSpec::hover_text`).
-pub(super) fn visible_button_hint(hint: &str, reveal_shortcut: bool) -> &str {
-    if reveal_shortcut {
-        return hint;
-    }
-    for separator in [" · ", " | "] {
-        if let Some((prefix, rest)) = hint.split_once(separator)
-            && is_shortcut(prefix)
-        {
-            return if is_shortcut(rest) { "" } else { rest };
-        }
-    }
-    if is_shortcut(hint) { "" } else { hint }
 }
 
 pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
@@ -143,32 +127,6 @@ pub(super) fn icon_row(buttons: &[ButtonSpec]) -> bool {
         && buttons
             .iter()
             .all(|button| action_icons::for_button(button.target, &button.label).is_some())
-}
-
-fn is_shortcut(text: &str) -> bool {
-    let text = text.trim();
-    if let Some((first, second)) = text.split_once(" / ") {
-        return is_shortcut(first) && is_shortcut(second);
-    }
-    if let Some(rest) = text
-        .strip_prefix("CTRL-")
-        .or_else(|| text.strip_prefix("CTRL+"))
-    {
-        return is_shortcut(rest);
-    }
-    if let Some(rest) = text.strip_prefix("SHIFT+") {
-        return is_shortcut(rest);
-    }
-    matches!(
-        text,
-        "CTRL" | "SHIFT" | "ALT" | "SPACE" | "ESC" | "DEL" | "BACKSPACE" | "RMB"
-    ) || (text.len() == 1
-        && text
-            .bytes()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
-        || text
-            .strip_prefix('F')
-            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|c| c.is_ascii_digit()))
 }
 
 #[derive(Clone)]
@@ -211,6 +169,9 @@ pub(super) enum Row {
     /// at the row's left and compact buttons of equal width at its right
     /// end.
     LabeledButtons(Line, Vec<ButtonSpec>),
+    /// The research view's tech tree (`tech_tree.rs`): its columns side by
+    /// side, or stacked when they don't fit the width.
+    TechTree(TechTree),
 }
 
 impl Row {
@@ -391,9 +352,18 @@ impl PanelBuilder {
     /// Makes the panel no taller than `height`, if it can, by showing less of
     /// what scrolls within it: first its scroll lists, down to two rows'
     /// room, then its building catalogue, down to two cards, then the
-    /// lists down to one row. Classic uses it before docking a panel that
-    /// may have grown past the screen (ImGui's windows scroll instead).
+    /// lists down to one row. A tech tree's cards drop their unlocks' names,
+    /// keeping the icons. Classic uses it before docking a panel that may
+    /// have grown past the screen (ImGui's windows scroll instead).
     pub(super) fn fit_height(&mut self, height: f32) {
+        for i in 0..self.rows.len() {
+            if self.size().y <= height.round() {
+                break;
+            }
+            if let Row::TechTree(tree) = &mut self.rows[i] {
+                tree.names = false;
+            }
+        }
         for (list_rows, catalog_cards) in [(2.0, BUILDING_LIST_VISIBLE), (2.0, 2), (1.0, 2)] {
             for i in 0..self.rows.len() {
                 if !matches!(self.rows[i], Row::ScrollList(_) | Row::BuildingCatalog(..)) {
@@ -418,6 +388,11 @@ impl PanelBuilder {
                 }
             }
         }
+    }
+
+    /// The research view's tech tree.
+    pub(super) fn tech_tree(&mut self, tree: TechTree) {
+        self.rows.push(Row::TechTree(tree));
     }
 
     /// A row of unit tokens, each clickable.
@@ -491,6 +466,10 @@ impl PanelBuilder {
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
             Row::ScrollList(list) => list.window(),
+            Row::TechTree(tree) => {
+                let metrics = tree.classic_metrics();
+                tree.place(tree.width(&metrics), &metrics).size.y
+            }
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -538,6 +517,7 @@ impl PanelBuilder {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
+            Row::TechTree(tree) => tree.width(&tree.classic_metrics()),
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -812,6 +792,7 @@ fn place_row(layout: &mut Layout, row: Row, top_left: Vec2, inner_width: f32, fa
                 layout.roster_chips.push((min, max, chip.key));
             }
         }
+        Row::TechTree(tree) => tree.place_classic(layout, top_left, inner_width, faded),
         Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
             unreachable!("expanded by classic_rows")
         }
@@ -995,28 +976,4 @@ pub(super) fn push_text_row(layout: &mut Layout, left_middle: Vec2, px: u32, lin
 
 pub(super) fn line_width(face: &Face, line: &Line) -> f32 {
     line.iter().map(|(span, _)| face.width(span)).sum()
-}
-
-#[cfg(test)]
-mod hint_tests {
-    use super::visible_button_hint;
-
-    #[test]
-    fn shortcuts_wait_for_hover_but_costs_and_work_times_stay_visible() {
-        for (hint, idle) in [
-            ("SPACE", ""),
-            ("V / ESC", ""),
-            ("CTRL-RMB", ""),
-            ("X · RMB", ""),
-            ("7 · 15 PROD", "15 PROD"),
-            ("8 | 20 PROD", "20 PROD"),
-            ("R · 2T", "2T"),
-            ("HORSES · 16", "HORSES · 16"),
-            ("3T", "3T"),
-            ("SEND IT HOME", "SEND IT HOME"),
-        ] {
-            assert_eq!(visible_button_hint(hint, false), idle, "{hint}");
-            assert_eq!(visible_button_hint(hint, true), hint, "{hint}");
-        }
-    }
 }
