@@ -1,0 +1,4 @@
+#!/bin/sh
+# Runs CI's checks without the tests before a push (tools/check.mjs --fast).
+# Opt in with: git config core.hooksPath tools/hooks. Skip once with: git push --no-verify
+exec node tools/check.mjs --fast

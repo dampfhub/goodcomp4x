@@ -6,7 +6,7 @@
 
 <!-- Commands run and their results; for visual changes, the test or screenshot that shows it. -->
 
-- [ ] `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` pass
+- [ ] `node tools/check.mjs` passes (`cargo fmt --check`, clippy with `-D warnings`, `cargo test` and the tool checks)
 - [ ] Docs updated where behavior changed (`docs/game-rules.md`, `docs/controls.md`, `AGENTS.md`)
 - [ ] Player-facing text added or changed is checked for brevity and plain, non-AI wording (`docs/text.md`, "Writing it: short and plain"), and listed here, or there is none
 

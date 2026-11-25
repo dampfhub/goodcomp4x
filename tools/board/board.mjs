@@ -1079,7 +1079,7 @@ function cmdSelftest() {
   check('sibling files do not clash', sharedPaths('src/game/ai.rs', 'src/game/ui.rs'), []);
 
   check('a replaced Files names what was dropped',
-    replacedReport({ fields: { Files: 'a.rs; b.rs' } }, [['Files', 'a.rs']]).at(-1), '    *** 1 NO LONGER PRESENT: b.rs');
+    replacedReport({ fields: { Files: 'a.rs; b.rs' } }, [['Files', 'a.rs']]).slice(-1)[0], '    *** 1 NO LONGER PRESENT: b.rs');
   check('an unchanged value reports nothing', replacedReport({ fields: { Files: 'a.rs' } }, [['Files', 'a.rs']]), []);
 
   const node = (number, repo) => ({ id: `n${number}`, content: number ? { number, repository: { nameWithOwner: repo } } : {} });
