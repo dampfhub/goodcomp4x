@@ -20,6 +20,22 @@ const CENTER_FOOD: i32 = 8;
 /// A tile a citizen might take, with its delivered food, wood and metal.
 type Candidate = (Hex, (i32, i32, i32));
 
+/// How a citizen of a city at `center` breaks a tie between tiles of equal
+/// value, lowest first (#401): the tile nearest the city, then a number that
+/// looks random from the tile's hex (SplitMix64's mixer), so no direction
+/// comes first everywhere, then its coordinates. Ties used to go by
+/// coordinates alone, which sent citizens to the city's far west edge
+/// whenever that delivered as well as next door (along a road, say).
+pub(super) fn tie_key(center: Hex, hex: Hex) -> (i32, u64, i32, i32) {
+    let mut x = u64::from(hex.q as u32).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ u64::from(hex.r as u32).wrapping_mul(0xD6E8_FEB8_6659_FD93);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    (center.distance(hex), x ^ (x >> 31), hex.q, hex.r)
+}
+
 /// Trims `clusters` to `capacity` citizens and `allowed` managers: the
 /// last cluster's last worker goes first, and a manager only once its
 /// cluster has no workers left.
@@ -222,7 +238,7 @@ impl GameState {
 
     /// Fills `city`'s open slots one citizen at a time, each on the open
     /// tile worth the most by its priority order (`Priorities::score`,
-    /// food first until the city is fed; ties go by hex coordinates): a
+    /// food first until the city is fed; ties go nearest the city): a
     /// worker, beside a manager with room (the first such cluster takes
     /// it), or, once no manager has room or an open tile beside it, a new
     /// manager, on land clear of its other managers, while its population
@@ -267,7 +283,7 @@ impl GameState {
 
     /// Of `tiles` that `allowed` lets it take, the one `city`'s next
     /// citizen takes: the most by its priority order, food first while
-    /// `food` doesn't feed it, ties by hex coordinates.
+    /// `food` doesn't feed it, ties nearest the city (`tie_key`).
     fn best_tile(
         &self,
         city: usize,
@@ -277,11 +293,12 @@ impl GameState {
     ) -> Option<usize> {
         let priorities = self.cities[city].priorities;
         let fed = self.is_fed(city, food);
+        let center = self.cities[city].pos;
         tiles
             .iter()
             .enumerate()
             .filter(|(_, (h, _))| allowed(*h))
-            .min_by_key(|(_, (h, goods))| (-priorities.score(*goods, fed), h.q, h.r))
+            .min_by_key(|(_, (h, goods))| (-priorities.score(*goods, fed), tie_key(center, *h)))
             .map(|(i, _)| i)
     }
 
