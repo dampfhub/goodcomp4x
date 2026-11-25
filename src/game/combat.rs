@@ -2,7 +2,7 @@
 //! attacker's attack and the target's defense (boosted by the terrain it
 //! stands on). There is no random spread: the same fight always deals the
 //! same damage, so the attack preview (`attack_preview`, drawn on the health
-//! bars by `draw.rs`) calls these same functions.
+//! bars by `draw/units.rs`) calls these same functions.
 
 use super::GameState;
 use super::ability::{Ability, VOLLEY_DAMAGE};

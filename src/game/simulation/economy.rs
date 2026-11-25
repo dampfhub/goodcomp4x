@@ -58,7 +58,7 @@ const REPORT_TURNS: u32 = 60;
 /// The games played unless `REPORT_GAMES` says otherwise.
 const DEFAULT_GAMES: &str = "cities,world1,world4,world5,world6";
 /// Turns the tables show a row for (those within the game's length).
-const ROWS: [u32; 10] = [1, 5, 10, 15, 20, 30, 40, 50, 60, 80];
+const ROWS: [u32; 11] = [1, 5, 10, 15, 20, 30, 40, 50, 60, 80, 100];
 /// A side has met another once a unit or city of each stands this close.
 const CONTACT_RANGE: i32 = 3;
 /// The army sizes whose first turn is an event.

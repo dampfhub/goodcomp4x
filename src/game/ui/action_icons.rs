@@ -121,7 +121,7 @@ pub(super) fn push_icon(
         ActionIcon::Guard => {
             unit_icons::push_pictogram(center, radius, UnitIcon::Shield, color, out)
         }
-        // A sight's reticle, as alert units wear on the map (`draw.rs`).
+        // A sight's reticle, as alert units wear on the map (`draw/units.rs`).
         ActionIcon::Alert => {
             mesh::polygon_outline(center, 0.52 * radius, 0.13 * radius, 24, 0.0, color, out);
             for (inner, outer) in [
