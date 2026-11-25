@@ -1347,7 +1347,13 @@ impl GameState {
     ///   nearest forest in its workers' reach that no city works;
     /// - improving the tiles it works, the improvement that adds most first
     ///   (food counting twice: a farm, then a mine or pasture, then a lumber
-    ///   mill), then roads on them.
+    ///   mill);
+    /// - rich (wood for an improvement past `AI_RESERVE`), making a farm or
+    ///   pasture its Cannery would collect from, of the best three it could
+    ///   (`ai_cannery_tiles`), the best first;
+    /// - roads on the tiles it works;
+    /// - rich, improving ahead of its citizens: the tiles in its workers'
+    ///   reach that no city works, as above, the nearest first on a tie.
     ///
     /// None where `unsafe_tile` says an animal would attack (`animals.rs`),
     /// and only on ground its side has seen.
@@ -1401,11 +1407,46 @@ impl GameState {
                     .into_iter()
                     .map(|(_, hex)| WorkerJob::on_tile(hex, JobKind::Improve)),
             );
+            let rich = stock.covers(JobKind::Improve.price() + super::ai::AI_RESERVE);
+            if rich && let Some(cannery) = c.placed_site(Building::Cannery) {
+                let best = self.ai_cannery_tiles(city, cannery, &unsafe_tile);
+                jobs.extend(
+                    best.into_iter()
+                        .take(3)
+                        .filter(|&(_, _, improvable)| improvable)
+                        .map(|(_, hex, _)| WorkerJob::on_tile(hex, JobKind::Improve)),
+                );
+            }
             jobs.extend(
                 worked
                     .iter()
                     .map(|&hex| WorkerJob::on_tile(hex, JobKind::Road)),
             );
+            if rich {
+                let seen = &self.side_memory[team.index()];
+                let mut ahead: Vec<(i32, Hex)> = super::ai::within(c.pos, WORKER_REACH)
+                    .filter(|&hex| {
+                        hex != c.pos
+                            && self.grid.contains(hex)
+                            && seen.contains_key(&hex)
+                            && !unsafe_tile(hex)
+                            && !self.cities.iter().any(|other| other.works(hex))
+                    })
+                    .filter_map(|hex| {
+                        let (food, production, _) = self.improvement(hex).ok()?;
+                        let (bare_food, wood, metal) = self.grid.unimproved_yield(hex);
+                        Some((2 * (food - bare_food) + production - (wood + metal), hex))
+                    })
+                    .collect();
+                ahead.sort_by_key(|&(gain, hex)| {
+                    (std::cmp::Reverse(gain), hex.distance(c.pos), hex.q, hex.r)
+                });
+                jobs.extend(
+                    ahead
+                        .into_iter()
+                        .map(|(_, hex)| WorkerJob::on_tile(hex, JobKind::Improve)),
+                );
+            }
             let job = jobs.into_iter().find(|&job| {
                 stock.covers(job.kind.price())
                     && self.job_problem(city, job).is_none()
