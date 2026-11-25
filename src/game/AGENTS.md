@@ -59,7 +59,12 @@ behavior.
 | `ui/builder.rs`, `ui/paint.rs`, `ui/dock.rs` | `PanelBuilder` (rows, measuring, placement); drawing shapes and buttons to vertices; `dock.rs` places panels by screen zone |
 | `ui/trays.rs`, `ui/panels.rs`, `ui/queue.rs`, `ui/roster.rs`, `ui/settings_menu.rs`, `ui/network_menu.rs` | the command tray (unit, group, city, Barracks); top bar, debug panel, structure hover panel; queue panels with scrolling, drag to reorder and a Clear button, and each row's turns left or what it waits for (`queue_status`); the turn strip of everything needing orders (cities, idle queues, unit groups); the settings menu (a heading per group, a control per `Setting`) and its Multiplayer page (host, join, leave; typed fields) |
 | `ui/tooltips.rs`, `ui/text.rs` | button and tile tooltips (`tooltip_lines`, and `subject_tooltip_lines` for a given unit or city, `unit_action_text`; `classic_tooltip_at` picks classic's); number and text formatting (`quantity`, `ability_text`, `wrap`) |
-| `ui/imgui.rs` | dockable ImGui presentation using the shared panel content |
+| `ui/imgui/mod.rs` | the dockable ImGui presentation of the shared panel content: `draw_imgui` (a frame: the panels measured, planned and drawn, then their actions carried out), the slots (`slot_titles`, `PLAN_ORDER`), and `ImGuiFrame`, what a frame's windows are drawn with |
+| `ui/imgui/native.rs` | every call into ImGui's C API (`imgui::sys`), so all of the presentation's `unsafe`: native windows and dock nodes, the game window's dock tree (`game_dock_tree`, `build_game_dock`), queued docks and undocks, a double-click on a title bar or grip |
+| `ui/imgui/layout_state.rs`, `ui/imgui/views.rs`, `ui/imgui/dock_tree.rs` | `ImGuiLayoutState`, where each panel goes (`plan`, `record`, `sync_native_window`); the layout views (Default, City / Building, Troop) and what follows them (Debug's place, `update_game_dock`, the dock relations); docking as data (`DockTree`, `EdgeDock`, `QueueDockRelation`) |
+| `ui/imgui/boxes.rs`, `ui/imgui/pins.rs`, `ui/imgui/persist.rs` | boxes (+ BOX, `draw_outer_boxes`); captured panels (`PinnedPanel`, `render_pinned_panel`, `activate_pinned`); saving the layout (`to_text`, `from_text`) |
+| `ui/imgui/windows.rs`, `ui/imgui/render.rs`, `ui/imgui/measure.rs`, `ui/imgui/widgets.rs`, `ui/imgui/style.rs` | a slot's window (`render_imgui_window`), the status bar and the game window's dockspace; a panel's rows as widgets (`render_imgui_panel`, `render_setting`); measuring them as drawn (`measure_panel`, `button_grid`, `wrap_spans`); text and buttons with icons (`rich_text`, `rich_button`, `split_button`), chips and tooltips; the fonts and style (`style_imgui`) |
+| `ui/imgui/test_hooks.rs`, `ui/imgui/tests.rs`, `ui/imgui/tests/` | what the drawing notes for the tests (`DRAWN_BUTTONS`, `DRAWN_MARKS`, `one_context_at_a_time`); the layout's own tests: views, boxes and captured panels, then saving and `plan` (`tests/layout.rs`) |
 | `ui/research.rs` | the research view (T): the tree by tier in the Selection panel (`research_tray`, a card and a line per tech), the research queue in the queue panel (`research_queue_panel`, `QueueKind::Research`), the top bar's research (`research_spans`); opening and closing it (`toggle_research`, `research_view`: it shows only with nothing else selected, and closes behind anything opened over it) |
 | `ui/tests.rs` | the UI's layout, hit-test and tooltip tests |
 | `sprites.rs` | world icon and terrain sprite atlas, baked once from vector artwork; padded premultiplied RGBA mipmaps and one quad per placement |
@@ -138,7 +143,7 @@ behavior.
   fields (measured on a 4x raster), which the shader thresholds so outlines stay sharp at any
   zoom. Distance-field glyphs carry `u` shifted up by 1 so the shader can tell them apart.
   UI text may hold the icon characters of `map_icons.rs`: `font::Face` (classic) and ImGui's
-  `rich_text` / `rich_button` (`ui/imgui.rs`) draw each as its icon, so put resources and
+  `rich_text` / `rich_button` (`ui/imgui/widgets.rs`) draw each as its icon, so put resources and
   turns in text with `stock_icons` and `turns_icon`, and draw any new game text in ImGui
   through those helpers, not `ui.text`.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05.

@@ -38,15 +38,7 @@ impl ImGuiLayoutState {
         self.pinned_box.insert(pin, box_id);
         self.pinned_outside_frames.insert(pin, 0);
         self.pending_pin_dock.push((pin, box_id));
-        let window = native_window(title);
-        if !window.is_null() {
-            unsafe {
-                ::imgui::sys::igDockContextQueueUndockWindow(
-                    ::imgui::sys::igGetCurrentContext(),
-                    window,
-                )
-            };
-        }
+        undock(title);
     }
 
     pub(super) fn track_captured_panels(&mut self) {
@@ -72,7 +64,7 @@ impl ImGuiLayoutState {
             self.pinned_box.remove(&pin);
             self.pinned_outside_frames.remove(&pin);
             if pin.kind == PinnedKind::Group {
-                self.pinned_groups.remove(&pin.city_id);
+                self.pinned_groups.remove(&pin.id);
             }
         }
     }
@@ -80,15 +72,7 @@ impl ImGuiLayoutState {
     pub(super) fn remove_outer_box(&mut self, box_id: u32) {
         for title in slot_titles() {
             if self.outer_box_for_window(title) == Some(box_id) {
-                let window = native_window(title);
-                if !window.is_null() {
-                    unsafe {
-                        ::imgui::sys::igDockContextQueueUndockWindow(
-                            ::imgui::sys::igGetCurrentContext(),
-                            window,
-                        )
-                    };
-                }
+                undock(title);
                 if title == slot_titles()[DEBUG] {
                     self.reposition[DEBUG] = true;
                 }
@@ -103,21 +87,13 @@ impl ImGuiLayoutState {
             .filter_map(|(pin, id)| (*id == box_id).then_some(*pin))
             .collect();
         for pin in captured {
-            let window = native_window(&pin.title());
-            if !window.is_null() {
-                unsafe {
-                    ::imgui::sys::igDockContextQueueUndockWindow(
-                        ::imgui::sys::igGetCurrentContext(),
-                        window,
-                    )
-                };
-            }
+            undock(&pin.title());
             self.pinned.retain(|item| *item != pin);
             self.pinned_geometry.remove(&pin);
             self.pinned_box.remove(&pin);
             self.pinned_outside_frames.remove(&pin);
             if pin.kind == PinnedKind::Group {
-                self.pinned_groups.remove(&pin.city_id);
+                self.pinned_groups.remove(&pin.id);
             }
         }
         self.pending_pin_dock.retain(|(_, id)| *id != box_id);
@@ -146,27 +122,11 @@ impl ImGuiLayoutState {
     /// Releases every captured panel, keeping the boxes.
     pub(super) fn clear_captured_panels(&mut self) {
         for pin in &self.pinned {
-            let window = native_window(&pin.title());
-            if !window.is_null() {
-                unsafe {
-                    ::imgui::sys::igDockContextQueueUndockWindow(
-                        ::imgui::sys::igGetCurrentContext(),
-                        window,
-                    )
-                };
-            }
+            undock(&pin.title());
         }
         for title in [slot_titles()[SELECTION], slot_titles()[QUEUE]] {
             if self.outer_box_for_window(title).is_some() {
-                let window = native_window(title);
-                if !window.is_null() {
-                    unsafe {
-                        ::imgui::sys::igDockContextQueueUndockWindow(
-                            ::imgui::sys::igGetCurrentContext(),
-                            window,
-                        )
-                    };
-                }
+                undock(title);
             }
         }
         self.pinned.clear();
@@ -240,25 +200,15 @@ impl ImGuiLayoutState {
     /// Whether `title`'s window is docked in a box shown in `view`, or goes
     /// back to one as it shows again.
     pub(super) fn in_box_of_view(&self, title: &str, view: ViewScope) -> bool {
-        let node = unsafe { ::imgui::sys::igDockBuilderGetNode(panel_dock_id(title)) };
-        !node.is_null()
-            && self.outer_boxes.iter().any(|outer| {
-                (outer.scope == BoxScope::Outer || outer.scope == BoxScope::View(view))
-                    && outer.dock_id != 0
-                    && unsafe {
-                        let root = ::imgui::sys::igDockBuilderGetNode(outer.dock_id);
-                        !root.is_null() && node_contains(root, node)
-                    }
-            })
+        self.outer_boxes.iter().any(|outer| {
+            (outer.scope == BoxScope::Outer || outer.scope == BoxScope::View(view))
+                && outer.dock_id != 0
+                && panel_in_dock(title, outer.dock_id)
+        })
     }
 
     pub(super) fn outer_box_for_window(&self, title: &str) -> Option<u32> {
-        let window = native_window(title);
-        if window.is_null() {
-            return None;
-        }
-        let node = unsafe { (*window).DockNode };
-        if node.is_null() {
+        if !docked(title) {
             return None;
         }
         self.outer_boxes
@@ -268,44 +218,34 @@ impl ImGuiLayoutState {
                 if outer.dock_id == 0 {
                     return None;
                 }
-                let root = unsafe { ::imgui::sys::igDockBuilderGetNode(outer.dock_id) };
-                (!root.is_null() && unsafe { node_contains(root, node) }).then_some(outer.id)
+                window_in_dock(title, outer.dock_id).then_some(outer.id)
             })
     }
 }
 
-pub(super) fn draw_outer_boxes(
-    ui: &Ui,
-    layout: &mut ImGuiLayoutState,
-    viewport: Vec2,
-    arranging: bool,
-    actions: &mut Vec<Action>,
-) {
+pub(super) fn draw_outer_boxes(frame: &mut ImGuiFrame, layout: &mut ImGuiLayoutState) {
+    let (ui, viewport) = (frame.ui, frame.viewport);
     for outer in &mut layout.outer_boxes {
         if outer.scope != BoxScope::Outer && outer.scope != BoxScope::View(layout.active_view) {
             // Keep native dock nodes alive while their view is inactive.
             if outer.dock_id != 0 {
-                unsafe {
-                    ::imgui::sys::igDockSpace(
-                        outer.dock_id,
-                        ::imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-                        ::imgui::sys::ImGuiDockNodeFlags_KeepAliveOnly as i32,
-                        std::ptr::null(),
-                    )
-                };
+                dockspace(
+                    outer.dock_id,
+                    ::imgui::sys::ImGuiDockNodeFlags_KeepAliveOnly as i32,
+                );
             }
             continue;
         }
         let title = outer.title();
-        let native = native_window(&title);
-        if !native.is_null() {
-            let native = unsafe { &*native };
-            outer.geometry.docked = !native.DockNode.is_null();
-            outer.geometry.pos = Vec2::new(native.Pos.x, native.Pos.y);
-            outer.geometry.size = Vec2::new(native.SizeFull.x, native.SizeFull.y);
+        if let Some(native) = native_state(&title) {
+            outer.geometry.docked = native.docked;
+            outer.geometry.pos = native.pos;
+            outer.geometry.size = native.size;
         }
         let mut window = ui.window(&title).flags(
-            panel_chrome(arranging, false) | WindowFlags::NO_COLLAPSE | WindowFlags::NO_DOCKING,
+            panel_chrome(frame.arranging, false)
+                | WindowFlags::NO_COLLAPSE
+                | WindowFlags::NO_DOCKING,
         );
         if !outer.geometry.docked && !layout.defer_geometry {
             window = window
@@ -323,20 +263,13 @@ pub(super) fn draw_outer_boxes(
             ui.text(outer.scope.box_name(outer.id));
             ui.same_line();
             if ui.small_button(format!("X##outer-{}", outer.id)) {
-                actions.push(Action::RemoveOuterBox(outer.id));
+                frame.actions.push(Action::RemoveOuterBox(outer.id));
             }
-            outer.dock_id = unsafe { ::imgui::sys::igGetID_Str(c"Contents".as_ptr()) };
-            unsafe {
-                ::imgui::sys::igDockSpace(
-                    outer.dock_id,
-                    ::imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
-                    0,
-                    std::ptr::null(),
-                )
-            };
+            outer.dock_id = item_id(c"Contents");
+            dockspace(outer.dock_id, 0);
             outer.geometry.pos = Vec2::from_array(ui.window_pos());
             outer.geometry.size = Vec2::from_array(ui.window_size());
-            outer.geometry.docked = unsafe { ::imgui::sys::igIsWindowDocked() };
+            outer.geometry.docked = current_window_docked();
         });
     }
 }

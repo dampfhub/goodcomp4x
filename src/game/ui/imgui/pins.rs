@@ -16,7 +16,9 @@ pub(super) enum PinnedKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) struct PinnedPanel {
     pub(super) kind: PinnedKind,
-    pub(super) city_id: u32,
+    /// The stable id of what it shows: a city's (the city, its Barracks or
+    /// either queue), a unit's, or a hash of a group's members' ids.
+    pub(super) id: u32,
 }
 
 impl PinnedPanel {
@@ -24,31 +26,31 @@ impl PinnedPanel {
         match self.kind {
             PinnedKind::City => format!(
                 "{}###PinnedCity-{}",
-                text!("window_city", city = self.city_id + 1),
-                self.city_id
+                text!("window_city", city = self.id + 1),
+                self.id
             ),
             PinnedKind::Barracks => format!(
                 "{}###PinnedBarracks-{}",
-                text!("window_barracks", city = self.city_id + 1),
-                self.city_id
+                text!("window_barracks", city = self.id + 1),
+                self.id
             ),
             PinnedKind::Unit => format!(
                 "{}###PinnedUnit-{}",
-                text!("window_unit", unit = self.city_id),
-                self.city_id
+                text!("window_unit", unit = self.id),
+                self.id
             ),
             PinnedKind::Group => {
-                format!("{}###PinnedGroup-{}", text!("window_group"), self.city_id)
+                format!("{}###PinnedGroup-{}", text!("window_group"), self.id)
             }
             PinnedKind::CityQueue => format!(
                 "{}###PinnedCityQueue-{}",
-                text!("window_city_queue", city = self.city_id + 1),
-                self.city_id
+                text!("window_city_queue", city = self.id + 1),
+                self.id
             ),
             PinnedKind::BarracksQueue => format!(
                 "{}###PinnedBarracksQueue-{}",
-                text!("window_barracks_queue", city = self.city_id + 1),
-                self.city_id
+                text!("window_barracks_queue", city = self.id + 1),
+                self.id
             ),
         }
     }
@@ -71,18 +73,18 @@ impl GameState {
         self.selected_city
             .map(|i| PinnedPanel {
                 kind: PinnedKind::City,
-                city_id: self.cities[i].id,
+                id: self.cities[i].id,
             })
             .or_else(|| {
                 self.selected_barracks.map(|i| PinnedPanel {
                     kind: PinnedKind::Barracks,
-                    city_id: self.cities[i].id,
+                    id: self.cities[i].id,
                 })
             })
             .or_else(|| {
                 self.selected.map(|i| PinnedPanel {
                     kind: PinnedKind::Unit,
-                    city_id: self.units[i].id,
+                    id: self.units[i].id,
                 })
             })
             .or_else(|| {
@@ -94,7 +96,7 @@ impl GameState {
                     });
                     PinnedPanel {
                         kind: PinnedKind::Group,
-                        city_id: id,
+                        id,
                     }
                 })
             })
@@ -104,12 +106,12 @@ impl GameState {
         self.selected_city
             .map(|i| PinnedPanel {
                 kind: PinnedKind::CityQueue,
-                city_id: self.cities[i].id,
+                id: self.cities[i].id,
             })
             .or_else(|| {
                 self.selected_barracks.map(|i| PinnedPanel {
                     kind: PinnedKind::BarracksQueue,
-                    city_id: self.cities[i].id,
+                    id: self.cities[i].id,
                 })
             })
     }
@@ -119,7 +121,7 @@ impl GameState {
             return None;
         }
         self.cities.iter().position(|city| {
-            city.id == pin.city_id
+            city.id == pin.id
                 && city.team == self.local_team
                 && (matches!(pin.kind, PinnedKind::City | PinnedKind::CityQueue)
                     || city.barracks.is_some())
@@ -131,7 +133,7 @@ impl GameState {
             .then(|| {
                 self.units
                     .iter()
-                    .position(|unit| unit.id == pin.city_id && unit.team == self.local_team)
+                    .position(|unit| unit.id == pin.id && unit.team == self.local_team)
             })
             .flatten()
     }
@@ -152,7 +154,7 @@ impl GameState {
                 .map(|i| PinFocus::Units(vec![i])),
             PinnedKind::Group => {
                 let members: Vec<_> = groups
-                    .get(&pin.city_id)?
+                    .get(&pin.id)?
                     .iter()
                     .filter_map(|id| {
                         self.units
@@ -254,18 +256,14 @@ impl GameState {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_pinned_panel(
         &self,
-        ui: &Ui,
+        frame: &mut ImGuiFrame,
         layout: &mut ImGuiLayoutState,
         pin: PinnedPanel,
         index: usize,
-        viewport: Vec2,
-        fonts: &[FontId; 3],
-        arranging: bool,
-        actions: &mut Vec<Action>,
     ) {
+        let (ui, viewport, fonts) = (frame.ui, frame.viewport, frame.fonts);
         let Some(focus) = self.pin_focus(pin, &layout.pinned_groups) else {
             return;
         };
@@ -277,7 +275,7 @@ impl GameState {
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
                     kind: PinnedKind::CityQueue,
-                    city_id: pin.city_id,
+                    id: pin.id,
                 }) {
                     self.city_queue_panel(city, usize::MAX, &mut queue);
                 }
@@ -291,7 +289,7 @@ impl GameState {
                 let mut queue = PanelBuilder::default();
                 if !layout.pinned.contains(&PinnedPanel {
                     kind: PinnedKind::BarracksQueue,
-                    city_id: pin.city_id,
+                    id: pin.id,
                 }) {
                     self.barracks_queue_panel(city, usize::MAX, &mut queue);
                 }
@@ -351,28 +349,21 @@ impl GameState {
             if let Some(outer) = layout.outer_boxes.iter().find(|b| b.id == box_id)
                 && outer.dock_id != 0
             {
-                unsafe {
-                    ::imgui::sys::igSetNextWindowDockID(
-                        outer.dock_id,
-                        ::imgui::sys::ImGuiCond_Always as i32,
-                    )
-                };
+                set_next_dock_id(outer.dock_id);
                 layout.pending_pin_dock.remove(request);
                 docking_now = true;
             }
         }
         let geometry = layout.pinned_geometry.entry(pin).or_default();
-        let native = native_window(&title);
-        if !native.is_null() {
-            let native = unsafe { &*native };
-            geometry.docked = !native.DockNode.is_null();
-            geometry.collapsed = native.Collapsed;
-            geometry.pos = Vec2::new(native.Pos.x, native.Pos.y);
-            geometry.size = Vec2::new(native.SizeFull.x, native.SizeFull.y);
+        if let Some(native) = native_state(&title) {
+            geometry.docked = native.docked;
+            geometry.collapsed = native.collapsed;
+            geometry.pos = native.pos;
+            geometry.size = native.size;
         }
         let mut window = ui
             .window(&title)
-            .flags(panel_chrome(arranging, geometry.collapsed));
+            .flags(panel_chrome(frame.arranging, geometry.collapsed));
         if !geometry.docked && !layout.defer_geometry && !docking_now {
             window = window
                 .position(default_pos, Condition::FirstUseEver)
@@ -386,10 +377,14 @@ impl GameState {
                 );
         }
         window.build(|| {
-            self.render_imgui_panel(ui, &panel, fonts, Some(pin), subject, actions);
+            let scope = PanelScope {
+                pin: Some(pin),
+                subject,
+            };
+            self.render_imgui_panel(frame, &panel, scope);
             geometry.pos = Vec2::from_array(ui.window_pos());
             geometry.size = Vec2::from_array(ui.window_size());
-            geometry.docked = unsafe { ::imgui::sys::igIsWindowDocked() };
+            geometry.docked = current_window_docked();
             if !geometry.docked {
                 geometry.floating_pos = geometry.pos;
                 geometry.floating_size = geometry.size;

@@ -3,10 +3,193 @@
 
 use super::*;
 
-pub(super) fn native_window(title: &str) -> *mut ::imgui::sys::ImGuiWindow {
+fn native_window(title: &str) -> *mut ::imgui::sys::ImGuiWindow {
     let name = std::ffi::CString::new(title).expect("ImGui window title");
     unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) }
 }
+
+/// A window as ImGui has it (`native_state`).
+#[derive(Clone, Copy)]
+pub(super) struct NativeState {
+    /// In a dock node.
+    pub(super) docked: bool,
+    pub(super) collapsed: bool,
+    pub(super) pos: Vec2,
+    /// Its size uncollapsed.
+    pub(super) size: Vec2,
+}
+
+/// `title`'s window as ImGui has it, if it has been drawn.
+pub(super) fn native_state(title: &str) -> Option<NativeState> {
+    let native = native_window(title);
+    (!native.is_null()).then(|| {
+        let native = unsafe { &*native };
+        NativeState {
+            docked: !native.DockNode.is_null(),
+            collapsed: native.Collapsed,
+            pos: Vec2::new(native.Pos.x, native.Pos.y),
+            size: Vec2::new(native.SizeFull.x, native.SizeFull.y),
+        }
+    })
+}
+
+/// Whether `title`'s window has been drawn and is in a dock node.
+pub(super) fn docked(title: &str) -> bool {
+    native_state(title).is_some_and(|window| window.docked)
+}
+
+/// Whether `title`'s window is docked in the dockspace `dockspace` (an id).
+pub(super) fn window_in_dockspace(title: &str, dockspace: u32) -> bool {
+    let window = native_window(title);
+    !window.is_null() && in_dockspace(unsafe { &*window }, dockspace)
+}
+
+/// Whether `title`'s window is docked in the dock node `root` (an id) or a
+/// node under it.
+pub(super) fn window_in_dock(title: &str, root: u32) -> bool {
+    let window = native_window(title);
+    if window.is_null() {
+        return false;
+    }
+    unsafe {
+        let node = (*window).DockNode;
+        let root = ::imgui::sys::igDockBuilderGetNode(root);
+        !node.is_null() && !root.is_null() && node_contains(root, node)
+    }
+}
+
+/// Whether the dock node `title`'s window is docked in, or goes back to
+/// (`panel_dock_id`), is the node `root` (an id) or under it.
+pub(super) fn panel_in_dock(title: &str, root: u32) -> bool {
+    unsafe {
+        let node = ::imgui::sys::igDockBuilderGetNode(panel_dock_id(title));
+        let root = ::imgui::sys::igDockBuilderGetNode(root);
+        !node.is_null() && !root.is_null() && node_contains(root, node)
+    }
+}
+
+/// Asks ImGui to take `title`'s window out of its dock as the next frame
+/// begins, if it has been drawn.
+pub(super) fn undock(title: &str) {
+    let window = native_window(title);
+    if !window.is_null() {
+        unsafe {
+            ::imgui::sys::igDockContextQueueUndockWindow(
+                ::imgui::sys::igGetCurrentContext(),
+                window,
+            )
+        };
+    }
+}
+
+/// Asks ImGui to dock `payload`'s window beside `target`'s at `direction`,
+/// the split's first part taking `ratio` (`split_ratio`), as a drop there
+/// would, as the next frame begins: beside `target`'s dock node, or with
+/// `group`, beside the node `target` shares with `group`'s window. Whether
+/// both windows have been drawn, so it could.
+pub(super) fn queue_dock(
+    target: &str,
+    payload: &str,
+    group: Option<&str>,
+    direction: ::imgui::sys::ImGuiDir,
+    ratio: f32,
+) -> bool {
+    let (target, payload) = (native_window(target), native_window(payload));
+    if target.is_null() || payload.is_null() {
+        return false;
+    }
+    unsafe {
+        let mut node = (*target).DockNode;
+        if let Some(group) = group {
+            let other = native_window(group);
+            if !other.is_null() && !(*other).DockNode.is_null() {
+                node = shared_dock_node(node, (*other).DockNode);
+            }
+        }
+        ::imgui::sys::igDockContextQueueDock(
+            ::imgui::sys::igGetCurrentContext(),
+            target,
+            node,
+            payload,
+            direction,
+            ratio,
+            false,
+        );
+    }
+    true
+}
+
+/// Docks the next window begun in the dock node `id`.
+pub(super) fn set_next_dock_id(id: u32) {
+    unsafe { ::imgui::sys::igSetNextWindowDockID(id, ::imgui::sys::ImGuiCond_Always as i32) };
+}
+
+/// Whether the window being drawn is docked.
+pub(super) fn current_window_docked() -> bool {
+    unsafe { ::imgui::sys::igIsWindowDocked() }
+}
+
+/// The id ImGui gives `name` in the window being drawn.
+pub(super) fn item_id(name: &std::ffi::CStr) -> u32 {
+    unsafe { ::imgui::sys::igGetID_Str(name.as_ptr()) }
+}
+
+/// A dockspace, the dock node `id`, filling the rest of the window being
+/// drawn, with `flags` (`ImGuiDockNodeFlags`).
+pub(super) fn dockspace(id: u32, flags: i32) {
+    unsafe {
+        ::imgui::sys::igDockSpace(
+            id,
+            ::imgui::sys::ImVec2 { x: 0.0, y: 0.0 },
+            flags,
+            std::ptr::null(),
+        )
+    };
+}
+
+/// Runs `draw` with the window's draw list filling shapes unfeathered
+/// (`fill_shapes`).
+pub(super) fn unfeathered(draw: impl FnOnce()) {
+    let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
+    let flags = unsafe { (*list).Flags };
+    let feathered = ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
+    unsafe { (*list).Flags = flags & !feathered };
+    draw();
+    unsafe { (*list).Flags = flags };
+}
+
+/// Tests only: the panel (root window) being drawn, and the corners of its
+/// draw list's clip rectangle now (`note_mark`).
+#[cfg(test)]
+pub(super) fn current_clip() -> (String, [f32; 2], [f32; 2]) {
+    unsafe {
+        let window = ::imgui::sys::igGetCurrentWindow();
+        let root = (*window).RootWindow;
+        let name = std::ffi::CStr::from_ptr((*root).Name)
+            .to_string_lossy()
+            .into_owned();
+        let list = ::imgui::sys::igGetWindowDrawList();
+        let mut min = ::imgui::sys::ImVec2::zero();
+        let mut max = ::imgui::sys::ImVec2::zero();
+        ::imgui::sys::ImDrawList_GetClipRectMin(&mut min, list);
+        ::imgui::sys::ImDrawList_GetClipRectMax(&mut max, list);
+        (name, [min.x, min.y], [max.x, max.y])
+    }
+}
+
+/// Tests only: sizes `title`'s window `size` at once, as dragging its grip
+/// would (`resize_panel`). It must have been drawn.
+#[cfg(test)]
+pub(super) fn set_full_size(title: &str, size: Vec2) {
+    let native = native_window(title);
+    assert!(!native.is_null(), "{title} has been drawn");
+    let full = ::imgui::sys::ImVec2::new(size.x, size.y);
+    unsafe {
+        (*native).SizeFull = full;
+        (*native).Size = full;
+    }
+}
+
 /// Where `other` is docked beside `anchor`, when the two share a dock
 /// node outside the game window's dockspace (`dockspace`, its id). Panels
 /// docked in the game window stay where they are when they hide and show
@@ -86,7 +269,7 @@ pub(super) fn dock_relation(
     })
 }
 
-pub(super) fn shared_dock_node(
+fn shared_dock_node(
     anchor: *mut ::imgui::sys::ImGuiDockNode,
     other: *mut ::imgui::sys::ImGuiDockNode,
 ) -> *mut ::imgui::sys::ImGuiDockNode {
@@ -97,7 +280,7 @@ pub(super) fn shared_dock_node(
     node
 }
 
-pub(super) unsafe fn node_contains(
+unsafe fn node_contains(
     ancestor: *mut ::imgui::sys::ImGuiDockNode,
     node: *mut ::imgui::sys::ImGuiDockNode,
 ) -> bool {
@@ -112,7 +295,7 @@ pub(super) unsafe fn node_contains(
 }
 
 /// Whether `window` is docked in the dockspace `dockspace` (an id).
-pub(super) fn in_dockspace(window: &::imgui::sys::ImGuiWindow, dockspace: u32) -> bool {
+fn in_dockspace(window: &::imgui::sys::ImGuiWindow, dockspace: u32) -> bool {
     let mut node = window.DockNode;
     if node.is_null() || dockspace == 0 {
         return false;
@@ -155,7 +338,7 @@ pub(super) fn panel_dock_id(title: &str) -> u32 {
 /// Whether the dock node `id` is in the game window's dockspace
 /// (`dockspace`, its id), and with `leaf`, a leaf of it, one that can hold
 /// windows.
-fn in_game_dock_node(id: u32, dockspace: u32, leaf: bool) -> bool {
+pub(super) fn in_game_dock_node(id: u32, dockspace: u32, leaf: bool) -> bool {
     if id == 0 || dockspace == 0 {
         return false;
     }
@@ -166,27 +349,6 @@ fn in_game_dock_node(id: u32, dockspace: u32, leaf: bool) -> bool {
         }
         (*::imgui::sys::igDockNodeGetRootNode(node)).ID == dockspace
     }
-}
-
-/// Whether `title`'s window is docked in the game window (`dockspace`),
-/// or goes back there as it shows again.
-pub(super) fn in_game_dock(title: &str, dockspace: u32) -> bool {
-    in_game_dock_node(panel_dock_id(title), dockspace, false)
-}
-
-/// Whether `title`'s window, hidden a while, goes back to its place docked
-/// in the game window (`dockspace`) as it shows again: ImGui keeps its
-/// empty node there and docks it back as it begins, unless it's given a
-/// position, which would undock it.
-pub(super) fn returns_to_game_dock(title: &str, dockspace: u32) -> bool {
-    if dockspace == 0 {
-        return false;
-    }
-    let window = native_window(title);
-    if !window.is_null() && unsafe { !(*window).DockNode.is_null() } {
-        return false;
-    }
-    in_game_dock_node(panel_dock_id(title), dockspace, true)
 }
 
 /// The game window's dockspace `dockspace` and its central node, the map,
@@ -547,33 +709,6 @@ pub(super) fn clipped_to(min: [f32; 2], max: [f32; 2], draw: impl FnOnce()) {
     unsafe { ::imgui::sys::igPopClipRect() };
 }
 
-/// Tests only: docks the window titled `other` beside the one titled
-/// `anchor` ("down": below it), with `share` of the pair's room, as a drop
-/// there with the split then dragged would; ImGui does it as the next frame
-/// begins. Both must have been drawn, `anchor` floating.
-#[cfg(test)]
-pub(in crate::game::ui) fn dock_beside(anchor: &str, other: &str, side: &str, share: f32) {
-    let direction = match side {
-        "left" => ::imgui::sys::ImGuiDir_Left,
-        "right" => ::imgui::sys::ImGuiDir_Right,
-        "up" => ::imgui::sys::ImGuiDir_Up,
-        _ => ::imgui::sys::ImGuiDir_Down,
-    };
-    let (anchor, other) = (native_window(anchor), native_window(other));
-    assert!(!anchor.is_null() && !other.is_null(), "both drawn");
-    unsafe {
-        ::imgui::sys::igDockContextQueueDock(
-            ::imgui::sys::igGetCurrentContext(),
-            anchor,
-            (*anchor).DockNode,
-            other,
-            direction,
-            split_ratio(direction, share),
-            false,
-        );
-    }
-}
-
 /// Tests only: ImGui forgets where the window titled `title` was docked,
 /// as it may for a hidden window whose split it drops.
 #[cfg(test)]
@@ -581,19 +716,4 @@ pub(in crate::game::ui) fn forget_docking(title: &str) {
     let window = native_window(title);
     assert!(!window.is_null(), "{title} has been drawn");
     unsafe { ::imgui::sys::igSetWindowDock(window, 0, ::imgui::sys::ImGuiCond_Always as i32) };
-}
-
-/// Tests only: where the window titled `title` is, how big, and whether
-/// it's collapsed, as ImGui has it.
-#[cfg(test)]
-pub(in crate::game::ui) fn native_geometry(title: &str) -> Option<(Vec2, Vec2, bool)> {
-    let native = native_window(title);
-    (!native.is_null()).then(|| unsafe {
-        let window = &*native;
-        (
-            Vec2::new(window.Pos.x, window.Pos.y),
-            Vec2::new(window.SizeFull.x, window.SizeFull.y),
-            window.Collapsed,
-        )
-    })
 }

@@ -170,19 +170,19 @@ impl GameState {
     /// with `reorder`, each can be dragged onto another to reorder that
     /// queue, index by index (`Row::Reorder`), and a click is still its
     /// own target.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_buttons(
         &self,
-        ui: &Ui,
+        frame: &mut ImGuiFrame,
         panel: &PanelBuilder,
         buttons: &[ButtonSpec],
         compact: bool,
         reorder: Option<QueueKind>,
-        fonts: &[FontId; 3],
-        scope: Option<PinnedPanel>,
-        subject: Subject,
-        actions: &mut Vec<Action>,
+        PanelScope {
+            pin: scope,
+            subject,
+        }: PanelScope,
     ) {
+        let (ui, fonts, actions) = (frame.ui, frame.fonts, &mut frame.actions);
         if buttons.is_empty() {
             return;
         }
@@ -285,18 +285,19 @@ impl GameState {
         );
     }
 
-    /// Draws `panel`'s rows. `scope` is the captured panel they're in, if
-    /// any, and `subject` the unit or city its buttons act on.
-    #[allow(clippy::too_many_arguments)]
+    /// Draws `panel`'s rows, for `panel_scope`: the captured panel they're
+    /// in, if any, and the unit or city its buttons act on.
     pub(super) fn render_imgui_panel(
         &self,
-        ui: &Ui,
+        frame: &mut ImGuiFrame,
         panel: &PanelBuilder,
-        fonts: &[FontId; 3],
-        scope: Option<PinnedPanel>,
-        subject: Subject,
-        actions: &mut Vec<Action>,
+        panel_scope: PanelScope,
     ) {
+        let (ui, fonts) = (frame.ui, frame.fonts);
+        let PanelScope {
+            pin: scope,
+            subject,
+        } = panel_scope;
         let label_width = setting_label_width(ui, panel, fonts[1]);
         for row in flat_rows(&panel.rows) {
             match row {
@@ -308,11 +309,11 @@ impl GameState {
                 }
                 Row::Setting(setting, value) => {
                     let _font = ui.push_font(fonts[1]);
-                    render_setting(ui, *setting, *value, label_width, scope, actions);
+                    render_setting(ui, *setting, *value, label_width, scope, &mut frame.actions);
                 }
                 Row::Field(field, text, _) => {
                     let _font = ui.push_font(fonts[1]);
-                    render_field(ui, *field, text, label_width, actions);
+                    render_field(ui, *field, text, label_width, &mut frame.actions);
                 }
                 Row::Text(px, line) => {
                     let font = match *px {
@@ -347,7 +348,9 @@ impl GameState {
                         draw_roster_chip(ui, ui.item_rect_min(), ui.item_rect_max(), chip, hovered);
                         note_drawn_button(ui, Target::RosterSelect(chip.key));
                         if clicked {
-                            actions.push(Action::Button(scope, roster_target(chip.key, mode)));
+                            frame
+                                .actions
+                                .push(Action::Button(scope, roster_target(chip.key, mode)));
                         }
                         if hovered {
                             let target = Target::RosterSelect(chip.key);
@@ -366,20 +369,12 @@ impl GameState {
                         .overlay_text("")
                         .build(ui);
                 }
-                Row::Buttons(buttons, compact) => self.render_buttons(
-                    ui, panel, buttons, *compact, None, fonts, scope, subject, actions,
-                ),
-                Row::Reorder(kind, buttons) => self.render_buttons(
-                    ui,
-                    panel,
-                    buttons,
-                    true,
-                    Some(*kind),
-                    fonts,
-                    scope,
-                    subject,
-                    actions,
-                ),
+                Row::Buttons(buttons, compact) => {
+                    self.render_buttons(frame, panel, buttons, *compact, None, panel_scope)
+                }
+                Row::Reorder(kind, buttons) => {
+                    self.render_buttons(frame, panel, buttons, true, Some(*kind), panel_scope)
+                }
                 Row::TitleWithButton(line, spec) => {
                     let label = title_button_label(spec, panel.faded);
                     let width = rich_width(ui, &label) + 2.0 * ui.clone_style().frame_padding[0];
@@ -410,7 +405,7 @@ impl GameState {
                     let label = hovered_spec(spec, &id)
                         .map_or(label, |shown| title_button_label(&shown, panel.faded));
                     if rich_button(ui, &id, &[label], [width, 0.0], false) {
-                        actions.push(Action::Button(scope, spec.target));
+                        frame.actions.push(Action::Button(scope, spec.target));
                     }
                     note_drawn_button(ui, spec.target);
                     self.button_tooltip(ui, spec, subject);
@@ -449,7 +444,7 @@ impl GameState {
                                 let price = short_price(spec);
                                 let size = [width, 28.0];
                                 if split_button(ui, &id, &spec.label, indent, (hint, price), size) {
-                                    actions.push(Action::Button(scope, spec.target));
+                                    frame.actions.push(Action::Button(scope, spec.target));
                                 }
                                 note_drawn_button(ui, spec.target);
                                 if let Some(icon) = action_icons::production_unit_icon(spec.target)
@@ -487,7 +482,7 @@ impl GameState {
                         [width, queue_row_height(ui, lines.len())],
                         true,
                     ) {
-                        actions.push(Action::Button(
+                        frame.actions.push(Action::Button(
                             scope,
                             Target::QueueItem(item.kind, item.index),
                         ));
@@ -520,7 +515,7 @@ impl GameState {
                                 target.accept_payload::<usize, _>(&name, DragDropFlags::empty())
                                 && payload.delivery
                             {
-                                actions.push(Action::Reorder(
+                                frame.actions.push(Action::Reorder(
                                     scope,
                                     item.kind,
                                     payload.data,
@@ -535,7 +530,7 @@ impl GameState {
                         ui.push_style_color(StyleColor::Button, [0.23, 0.13, 0.13, 1.0]);
                     let remove = item.kind.remove_target(item.index);
                     if ui.small_button(format!("X##remove-{:?}-{}", item.kind, item.index)) {
-                        actions.push(Action::Button(scope, remove));
+                        frame.actions.push(Action::Button(scope, remove));
                     }
                     note_button_label(ui, "X");
                     note_drawn_button(ui, remove);

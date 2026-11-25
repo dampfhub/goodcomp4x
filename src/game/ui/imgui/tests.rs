@@ -168,10 +168,10 @@ fn restoring_a_debug_docking_a_reset_forgot_stops_instead_of_panicking() {
         .insert(SelectionKind::Interior, beside());
     let ui = context.frame();
     // Both windows there, apart.
-    ui.window("Selection")
+    ui.window(slot_titles()[SELECTION])
         .position([20.0, 100.0], ::imgui::Condition::Always)
         .build(|| {});
-    ui.window("Debug")
+    ui.window(slot_titles()[DEBUG])
         .position([900.0, 100.0], ::imgui::Condition::Always)
         .build(|| {});
     // Interior opens: two tries to dock Debug beside Selection again.
@@ -266,7 +266,7 @@ fn captured_unit_action_targets_its_stable_unit_id() {
         .unwrap();
     let pin = PinnedPanel {
         kind: PinnedKind::Unit,
-        city_id: game.units[index].id,
+        id: game.units[index].id,
     };
     game.selected = None;
     game.activate_pinned(
@@ -303,7 +303,7 @@ fn player_units(game: &GameState) -> Vec<usize> {
 fn unit_pin(game: &GameState, unit: usize) -> PinnedPanel {
     PinnedPanel {
         kind: PinnedKind::Unit,
-        city_id: game.units[unit].id,
+        id: game.units[unit].id,
     }
 }
 
@@ -373,7 +373,7 @@ fn a_captured_group_down_to_one_member_selects_it_as_one_unit() {
     let ids: Vec<u32> = units[..2].iter().map(|&i| game.units[i].id).collect();
     let pin = PinnedPanel {
         kind: PinnedKind::Group,
-        city_id: 7,
+        id: 7,
     };
     let mut groups = PinnedGroups::default();
     groups.insert(7, ids.clone());
@@ -455,7 +455,7 @@ fn pinned_panel_geometry_reserves_room_for_floating_panels() {
     let mut layout = ImGuiLayoutState::default();
     let pin = PinnedPanel {
         kind: PinnedKind::City,
-        city_id: 1,
+        id: 1,
     };
     layout.pinned_geometry.insert(
         pin,

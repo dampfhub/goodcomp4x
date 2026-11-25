@@ -143,21 +143,18 @@ pub(super) fn draw_production_icon(
 /// these are drawn unfeathered, crisp and whole.
 fn fill_shapes(draw: &::imgui::DrawListMut, center: [f32; 2], vertices: &[Vertex]) {
     let at = |v: &Vertex| [center[0] + v.pos[0], center[1] - v.pos[1]];
-    let list = unsafe { ::imgui::sys::igGetWindowDrawList() };
-    let flags = unsafe { (*list).Flags };
-    let feathered = ::imgui::sys::ImDrawListFlags_AntiAliasedFill as ::imgui::sys::ImDrawListFlags;
-    unsafe { (*list).Flags = flags & !feathered };
-    for triangle in vertices.as_chunks::<3>().0 {
-        draw.add_triangle(
-            at(&triangle[0]),
-            at(&triangle[1]),
-            at(&triangle[2]),
-            triangle[0].color,
-        )
-        .filled(true)
-        .build();
-    }
-    unsafe { (*list).Flags = flags };
+    unfeathered(|| {
+        for triangle in vertices.as_chunks::<3>().0 {
+            draw.add_triangle(
+                at(&triangle[0]),
+                at(&triangle[1]),
+                at(&triangle[2]),
+                triangle[0].color,
+            )
+            .filled(true)
+            .build();
+        }
+    });
     #[cfg(test)]
     if !vertices.is_empty() {
         let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);

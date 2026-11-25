@@ -220,27 +220,24 @@ impl ImGuiLayoutState {
     }
 
     pub(super) fn sync_native_window(&mut self, slot: usize, title: &str) {
-        let name = std::ffi::CString::new(title).expect("ImGui window title");
-        let native = unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) };
-        if native.is_null() {
+        let Some(native) = native_state(title) else {
             return;
-        }
-        let native = unsafe { &*native };
-        let docked = !native.DockNode.is_null();
+        };
+        let docked = native.docked;
         if self.windows[slot].docked && !docked {
             self.windows[slot].place_by_player();
         }
         self.windows[slot].docked = docked;
-        self.windows[slot].collapsed = native.Collapsed;
+        self.windows[slot].collapsed = native.collapsed;
         // Taken out of the game window by the layout (`update_game_dock`):
         // it keeps where it last floated until drawn there.
         let restoring = slot != DEBUG && self.reposition[slot] && !docked;
         if restoring {
             return;
         }
-        self.windows[slot].pos = Vec2::new(native.Pos.x, native.Pos.y);
-        if !native.Collapsed {
-            self.windows[slot].size = Vec2::new(native.SizeFull.x, native.SizeFull.y);
+        self.windows[slot].pos = native.pos;
+        if !native.collapsed {
+            self.windows[slot].size = native.size;
             if slot == DEBUG && self.reposition[DEBUG] && !docked {
                 let remembered = self.windows[slot].floating_pos;
                 if remembered != Vec2::ZERO {
@@ -496,7 +493,7 @@ impl ImGuiLayoutState {
     }
 
     pub(super) fn record(&mut self, slot: usize, ui: &Ui, arranging: bool) {
-        let docked = unsafe { ::imgui::sys::igIsWindowDocked() };
+        let docked = current_window_docked();
         if self.windows[slot].docked && !docked {
             self.windows[slot].place_by_player();
         }

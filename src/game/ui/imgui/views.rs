@@ -172,8 +172,7 @@ impl ImGuiLayoutState {
         // Docked in the game window: dragged out later, a panel stays where
         // it's dropped.
         for (slot, title) in slot_titles().iter().enumerate() {
-            let window = native_window(title);
-            if !window.is_null() && unsafe { in_dockspace(&*window, dockspace) } {
+            if window_in_dockspace(title, dockspace) {
                 self.reposition[slot] = false;
             }
         }
@@ -284,14 +283,8 @@ impl ImGuiLayoutState {
                 b.scope == BoxScope::Outer
                     && Some(b.id) == self.outer_box_for_window(slot_titles()[DEBUG])
             });
-        let debug = native_window(slot_titles()[DEBUG]);
-        if !shared && !debug.is_null() && unsafe { !(*debug).DockNode.is_null() } {
-            unsafe {
-                ::imgui::sys::igDockContextQueueUndockWindow(
-                    ::imgui::sys::igGetCurrentContext(),
-                    debug,
-                )
-            };
+        if !shared && docked(slot_titles()[DEBUG]) {
+            undock(slot_titles()[DEBUG]);
         }
         false
     }
@@ -412,32 +405,23 @@ impl ImGuiLayoutState {
     }
 
     fn release_debug_from_context(&mut self) {
-        let debug = native_window(slot_titles()[DEBUG]);
-        if debug.is_null() || unsafe { (*debug).DockNode.is_null() } {
+        let debug = slot_titles()[DEBUG];
+        if !docked(debug) {
             return;
         }
         if let Some((pin, relation)) = self.debug_outer_relation
             && self.pinned.contains(&pin)
+            && queue_dock(
+                &pin.title(),
+                debug,
+                None,
+                relation.direction,
+                split_ratio(relation.direction, relation.fraction),
+            )
         {
-            let outer = native_window(&pin.title());
-            if !outer.is_null() {
-                unsafe {
-                    ::imgui::sys::igDockContextQueueDock(
-                        ::imgui::sys::igGetCurrentContext(),
-                        outer,
-                        (*outer).DockNode,
-                        debug,
-                        relation.direction,
-                        split_ratio(relation.direction, relation.fraction),
-                        false,
-                    )
-                };
-                return;
-            }
+            return;
         }
-        unsafe {
-            ::imgui::sys::igDockContextQueueUndockWindow(::imgui::sys::igGetCurrentContext(), debug)
-        };
+        undock(debug);
         self.reposition[DEBUG] = true;
     }
 
@@ -487,35 +471,18 @@ impl ImGuiLayoutState {
             // Docked in the game window, Debug stays where the view has it
             // there (`update_game_dock`), and a Selection docked there
             // takes no Debug beside it this way.
-            let in_game_window = |title: &str| {
-                let window = native_window(title);
-                !window.is_null() && in_dockspace(unsafe { &*window }, self.game_dock_id)
-            };
+            let in_game_window = |title: &str| window_in_dockspace(title, self.game_dock_id);
             if in_game_window(slot_titles()[DEBUG]) || in_game_window(slot_titles()[SELECTION]) {
                 self.debug_restore_attempts = 0;
                 return;
             }
-            let selection = native_window(slot_titles()[SELECTION]);
-            let debug = native_window(slot_titles()[DEBUG]);
-            if !selection.is_null() && !debug.is_null() {
-                unsafe {
-                    let mut target_node = (*selection).DockNode;
-                    if relation.anchor_group {
-                        let queue = native_window(slot_titles()[QUEUE]);
-                        if !queue.is_null() && !(*queue).DockNode.is_null() {
-                            target_node = shared_dock_node(target_node, (*queue).DockNode);
-                        }
-                    }
-                    ::imgui::sys::igDockContextQueueDock(
-                        ::imgui::sys::igGetCurrentContext(),
-                        selection,
-                        target_node,
-                        debug,
-                        relation.direction,
-                        split_ratio(relation.direction, relation.fraction),
-                        false,
-                    );
-                }
+            if queue_dock(
+                slot_titles()[SELECTION],
+                slot_titles()[DEBUG],
+                relation.anchor_group.then_some(slot_titles()[QUEUE]),
+                relation.direction,
+                split_ratio(relation.direction, relation.fraction),
+            ) {
                 self.debug_restore_attempts -= 1;
             }
         } else if self.debug_attached {
@@ -548,20 +515,21 @@ impl ImGuiLayoutState {
         let Some(relation) = self.queue_dock_relation else {
             return;
         };
-        let selection = native_window(slot_titles()[SELECTION]);
-        let queue = native_window(slot_titles()[QUEUE]);
-        if selection.is_null() || queue.is_null() {
+        let (selection, queue) = (slot_titles()[SELECTION], slot_titles()[QUEUE]);
+        let (Some(selection_window), Some(queue_window)) =
+            (native_state(selection), native_state(queue))
+        else {
             return;
-        }
+        };
         // Either docked in the game window: ImGui puts them back there.
-        if unsafe {
-            in_dockspace(&*selection, self.game_dock_id) || in_dockspace(&*queue, self.game_dock_id)
-        } {
+        if window_in_dockspace(selection, self.game_dock_id)
+            || window_in_dockspace(queue, self.game_dock_id)
+        {
             self.queue_restore_attempts = 0;
             return;
         }
-        let queue_has_node = unsafe { !(*queue).DockNode.is_null() };
-        let selection_has_node = unsafe { !(*selection).DockNode.is_null() };
+        let queue_has_node = queue_window.docked;
+        let selection_has_node = selection_window.docked;
         let (target, payload, direction, share) = if queue_has_node && !selection_has_node {
             (
                 queue,
@@ -574,17 +542,13 @@ impl ImGuiLayoutState {
         };
         // Use the same request queue as a successful ImGui drag/drop. This
         // restores a split after its windows have temporarily disappeared.
-        unsafe {
-            ::imgui::sys::igDockContextQueueDock(
-                ::imgui::sys::igGetCurrentContext(),
-                target,
-                (*target).DockNode,
-                payload,
-                direction,
-                split_ratio(direction, share),
-                false,
-            );
-        }
+        queue_dock(
+            target,
+            payload,
+            None,
+            direction,
+            split_ratio(direction, share),
+        );
         self.queue_restore_attempts -= 1;
     }
 }
@@ -622,4 +586,24 @@ impl GameState {
         self.selection_kind()
             .map_or(ViewScope::Default, |(kind, _)| kind.view())
     }
+}
+
+/// Whether `title`'s window is docked in the game window (`dockspace`),
+/// or goes back there as it shows again.
+fn in_game_dock(title: &str, dockspace: u32) -> bool {
+    in_game_dock_node(panel_dock_id(title), dockspace, false)
+}
+
+/// Whether `title`'s window, hidden a while, goes back to its place docked
+/// in the game window (`dockspace`) as it shows again: ImGui keeps its
+/// empty node there and docks it back as it begins, unless it's given a
+/// position, which would undock it.
+pub(super) fn returns_to_game_dock(title: &str, dockspace: u32) -> bool {
+    if dockspace == 0 {
+        return false;
+    }
+    if docked(title) {
+        return false;
+    }
+    in_game_dock_node(panel_dock_id(title), dockspace, true)
 }

@@ -50,11 +50,11 @@ use widgets::*;
 use windows::*;
 
 #[cfg(test)]
-pub(super) use native::{dock_beside, forget_docking, native_geometry};
+pub(super) use native::forget_docking;
 #[cfg(test)]
 pub(super) use test_hooks::{
     DRAWN_BUTTONS, DRAWN_MARKS, DrawnControl, DrawnMark, SHORT_BUTTONS, SHOWN_NOTICE,
-    SHOWN_TOOLTIPS, STATUS_CONTROLS, one_context_at_a_time,
+    SHOWN_TOOLTIPS, STATUS_CONTROLS, dock_beside, native_geometry, one_context_at_a_time,
 };
 
 enum Action {
@@ -67,29 +67,30 @@ enum Action {
     RemoveOuterBox(u32),
 }
 
+/// What every window of one frame is drawn with, and the actions its
+/// buttons ask for, which `draw_imgui` carries out once all are drawn.
+struct ImGuiFrame<'a> {
+    ui: &'a Ui,
+    /// The screen, in ImGui's logical pixels.
+    viewport: Vec2,
+    /// The small, body and title fonts (`style_imgui`).
+    fonts: &'a [FontId; 3],
+    /// Ctrl held: the panels show their title bars and grips.
+    arranging: bool,
+    actions: Vec<Action>,
+}
+
+/// Whom a panel's buttons act for: the captured panel they're in, if any,
+/// and the unit or city their tooltips describe.
+#[derive(Clone, Copy)]
+struct PanelScope {
+    pin: Option<PinnedPanel>,
+    subject: Subject,
+}
+
 const PANEL_MARGIN: f32 = 14.0;
-/// Room kept between the status bar's notice and End Turn after it.
-const NOTICE_GAP: f32 = 16.0;
-/// Where the tooltip holding a shortened notice in full wraps.
-const NOTICE_TOOLTIP_WIDTH: f32 = 480.0;
 const PANEL_GAP: f32 = 8.0;
 pub(super) const STATUS_HEIGHT: f32 = 52.0;
-/// Where the status bar's second line starts (Menu), and the room after
-/// Menu, before the view's layout controls.
-const STATUS_MENU_X: f32 = 15.0;
-const STATUS_MENU_GAP: f32 = 24.0;
-/// Room before the notice, after the stockpile.
-const STATUS_NOTICE_GAP: f32 = 24.0;
-/// The top status bar is a fixed strip: its second row of small buttons
-/// reaches a few pixels past `STATUS_HEIGHT` with the window padding, which
-/// must not turn into a scrollbar.
-const STATUS_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
-    .union(WindowFlags::NO_RESIZE)
-    .union(WindowFlags::NO_MOVE)
-    .union(WindowFlags::NO_DOCKING)
-    .union(WindowFlags::NO_SAVED_SETTINGS)
-    .union(WindowFlags::NO_SCROLLBAR)
-    .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
 /// Height of a progress bar row (`Row::Bar`).
 const BAR_HEIGHT: f32 = 12.0;
 /// The settings menu's width, before a narrow screen takes some off.
@@ -151,7 +152,13 @@ impl GameState {
         }
         layout.switch_layout_scope(self.layout_view());
         layout.apply_pending_view_reset();
-        let mut actions = Vec::new();
+        let mut frame = ImGuiFrame {
+            ui,
+            viewport,
+            fonts,
+            arranging,
+            actions: Vec::new(),
+        };
         let valid_groups: Vec<_> = layout
             .pinned_groups
             .iter()
@@ -168,195 +175,13 @@ impl GameState {
             .collect();
         layout.pinned.retain(|pin| {
             self.valid_pin(*pin)
-                && (pin.kind != PinnedKind::Group || valid_groups.contains(&pin.city_id))
+                && (pin.kind != PinnedKind::Group || valid_groups.contains(&pin.id))
         });
         layout
             .pinned_geometry
             .retain(|pin, _| layout.pinned.contains(pin));
-        let turn = self.shown_turn();
-        // The stockpile and supply beside the turn number: all of it, or
-        // without the stockpile's change a turn when that won't fit.
-        let status_lines = [self.status_line(), self.brief_status_line()].map(|mut line| {
-            if let Some((first, _)) = line.first_mut() {
-                first.insert_str(0, "   ");
-            }
-            line
-        });
-        // The status bar's buttons act on no unit or city.
-        let no_subject = Subject::default();
-        ui.window("Status")
-            .flags(STATUS_FLAGS)
-            .position([0.0, 0.0], Condition::Always)
-            .size([viewport.x, STATUS_HEIGHT], Condition::Always)
-            .build(|| {
-                let end_width = 220.0;
-                // Everything else on either line stops short of End Turn.
-                let end_x = (viewport.x - end_width).max(8.0);
-                let limit = end_x - NOTICE_GAP;
-                let turn_color = self.turn_number_color(ui.style_color(StyleColor::Text));
-                rich_text(ui, &text!("status_turn", turn = turn), turn_color);
-                let mut first_bottom = ui.item_rect_max()[1];
-                // The player's stockpile and supply, as much as fits (all
-                // of it in any window the game allows), then the notice in
-                // what's left. Each goes on the line only if drawn: a
-                // `same_line` with nothing after it would take Menu's line
-                // up to this one.
-                let line_width = |line: &Line| -> f32 {
-                    line.iter().map(|(text, _)| rich_width(ui, text)).sum()
-                };
-                let left = ui.window_pos()[0];
-                let mut x = ui.item_rect_max()[0] - left;
-                let stockpile = status_lines
-                    .iter()
-                    .find(|line| x + line_width(line) <= limit)
-                    .unwrap_or(&status_lines[1]);
-                let mut cut = false;
-                for (text, color) in stockpile {
-                    if x + rich_width(ui, text) > limit {
-                        cut = true;
-                        break;
-                    }
-                    ui.same_line_with_spacing(0.0, 0.0);
-                    rich_text(ui, text, *color);
-                    first_bottom = first_bottom.max(ui.item_rect_max()[1]);
-                    x = ui.item_rect_max()[0] - left;
-                }
-                // The notice has the rest of the line, up to End Turn,
-                // shortened to what fits (none if the stockpile was cut);
-                // hovering shows all of it.
-                let notice = self.shown_notice();
-                let room = if cut {
-                    0.0
-                } else {
-                    limit - x - STATUS_NOTICE_GAP
-                };
-                let shown = fit_text(notice, room, |t| rich_width(ui, t));
-                if !shown.is_empty() {
-                    ui.same_line_with_spacing(0.0, STATUS_NOTICE_GAP);
-                    rich_text(ui, &shown, NOTICE_TEXT);
-                    first_bottom = first_bottom.max(ui.item_rect_max()[1]);
-                    note_shown_notice(&shown, ui.item_rect_min(), ui.item_rect_max(), limit);
-                    if shown != notice && ui.is_item_hovered() {
-                        ui.tooltip(|| {
-                            let _wrap = ui.push_text_wrap_pos_with_pos(NOTICE_TOOLTIP_WIDTH);
-                            rich_text(ui, notice, NOTICE_TEXT);
-                        });
-                    }
-                }
-                // The second line, below the first: Menu, then the view's
-                // layout controls, so the notice above has the width of
-                // the bar. The view's name goes first when there's room,
-                // shortened or left to the layer button's tooltip when
-                // there isn't.
-                let spacing = ui.clone_style().item_spacing[0];
-                let pad = ui.clone_style().frame_padding[0];
-                let button_width = |label: &str| ui.calc_text_size(label)[0] + 2.0 * pad;
-                let name = layout.active_view.label();
-                let (layer, layer_hover, layer_tip) = if layout.editing_outer {
-                    (
-                        text!("view_edit_outer"),
-                        hover_text!("view_edit_outer"),
-                        tooltip!("view_edit_outer", view = name),
-                    )
-                } else {
-                    (
-                        text!("view_edit_view"),
-                        hover_text!("view_edit_view"),
-                        tooltip!("view_edit_view", view = name),
-                    )
-                };
-                let (add_box, reset_label) = (text!("view_add_box"), text!("view_reset"));
-                let menu = self.menu_button();
-                let reset = layout.active_view != ViewScope::Default && !layout.editing_outer;
-                let mut controls = STATUS_MENU_X + button_width(&menu.label) + STATUS_MENU_GAP;
-                controls += button_width(layer) + spacing + button_width(add_box);
-                if reset {
-                    controls += spacing + button_width(reset_label);
-                }
-                let view = [text!("view_name", view = name), name.to_string()]
-                    .into_iter()
-                    .find(|view| controls + ui.calc_text_size(view)[0] + spacing <= limit);
-                // A control's label: its hover text while the cursor is on
-                // it, if a text file gives it one; ImGui knows it by `id`.
-                let shown = |label: &'static str, hover: Option<&'static str>, id: &str| {
-                    let shown = hover.filter(|_| hovered_last_frame(id)).unwrap_or(label);
-                    (shown, format!("{shown}###{id}"))
-                };
-                let second_line = (first_bottom - ui.window_pos()[1] + 2.0).ceil();
-                ui.set_cursor_pos([STATUS_MENU_X, second_line]);
-                let menu_shown =
-                    hovered_spec(&menu, "Menu").map_or(menu.label.clone(), |s| s.label);
-                clear_status_controls();
-                if ui.small_button(format!("{menu_shown}###Menu")) {
-                    actions.push(Action::Button(None, Target::OpenSettings));
-                }
-                note_status_control(ui, &menu_shown);
-                note_drawn_button(ui, Target::OpenSettings);
-                if ui.is_item_hovered() {
-                    let lines = self.subject_tooltip_lines(
-                        Target::OpenSettings,
-                        &menu.label,
-                        None,
-                        no_subject,
-                    );
-                    show_tooltip(ui, &lines);
-                }
-                ui.same_line_with_spacing(0.0, STATUS_MENU_GAP);
-                if let Some(view) = &view {
-                    ui.text(view);
-                    note_status_control(ui, view);
-                    ui.same_line();
-                }
-                let (layer_shown, layer_id) = shown(layer, layer_hover, "Layer");
-                if ui.small_button(layer_id) {
-                    actions.push(Action::ToggleLayoutLayer);
-                }
-                note_status_control(ui, layer_shown);
-                if ui.is_item_hovered() {
-                    ui.tooltip_text(layer_tip);
-                }
-                ui.same_line();
-                let (box_shown, box_id) = shown(add_box, hover_text!("view_add_box"), "AddBox");
-                if ui.small_button(box_id) {
-                    actions.push(Action::CreateBox);
-                }
-                note_status_control(ui, box_shown);
-                if reset {
-                    ui.same_line();
-                    let (reset_shown, reset_id) =
-                        shown(reset_label, hover_text!("view_reset"), "Reset");
-                    if ui.small_button(reset_id) {
-                        layout.request_reset_active_view();
-                    }
-                    note_status_control(ui, reset_shown);
-                    if ui.is_item_hovered() {
-                        let key = Command::ResetLayout.key_in_words();
-                        ui.tooltip_text(tooltip!("view_reset", key = key));
-                    }
-                }
-                ui.set_cursor_pos([end_x, 7.0]);
-                // Waiting for the others' plans, it takes this side's back.
-                let end_turn = self.end_turn_button();
-                let _disabled = ui.begin_disabled(end_turn.unavailable.is_some());
-                let end_size = [end_width - 15.0, 29.0];
-                let end_shown =
-                    hovered_spec(&end_turn, "EndTurn").map_or(end_turn.label.clone(), |s| s.label);
-                if ui.button_with_size(format!("{end_shown}###EndTurn"), end_size) {
-                    actions.push(Action::Button(None, Target::EndTurn));
-                }
-                note_drawn_button(ui, Target::EndTurn);
-                if ui.is_item_hovered_with_flags(ItemHoveredFlags::ALLOW_WHEN_DISABLED) {
-                    let lines = self.subject_tooltip_lines(
-                        Target::EndTurn,
-                        &end_turn.label,
-                        end_turn.unavailable.as_deref(),
-                        no_subject,
-                    );
-                    show_tooltip(ui, &lines);
-                }
-            });
-
-        draw_outer_boxes(ui, layout, viewport, arranging, &mut actions);
+        self.draw_status_bar(&mut frame, layout);
+        draw_outer_boxes(&mut frame, layout);
 
         let selected_pin = self.selected_pin();
         let selection_is_pinned = selected_pin.is_some_and(|pin| layout.pinned.contains(&pin));
@@ -482,119 +307,33 @@ impl GameState {
             if !layout.pin_visible(pin) {
                 continue;
             }
-            self.render_pinned_panel(
-                ui,
-                layout,
-                pin,
-                index,
-                viewport,
-                fonts,
-                arranging,
-                &mut actions,
-            );
+            self.render_pinned_panel(&mut frame, layout, pin, index);
         }
         let positions = layout.plan(viewport, &mut sizes);
         let pair_visible = positions[SELECTION].is_some() && positions[QUEUE].is_some();
 
-        if let (Some(position), Some(size)) = (positions[SELECTION], sizes[SELECTION]) {
-            self.render_imgui_window(
-                ui,
-                layout,
-                SELECTION,
-                slot_titles()[SELECTION],
-                position,
-                size,
-                viewport,
-                &tray,
-                fonts,
-                arranging,
-                reset_selection_scroll,
-                &mut actions,
-            );
-        }
-        if let (Some(position), Some(size)) = (positions[QUEUE], sizes[QUEUE]) {
-            self.render_imgui_window(
-                ui,
-                layout,
-                QUEUE,
-                slot_titles()[QUEUE],
-                position,
-                size,
-                viewport,
-                &queue,
-                fonts,
-                arranging,
-                false,
-                &mut actions,
-            );
-        }
-        if let (Some(position), Some(size)) = (positions[DEBUG], sizes[DEBUG]) {
-            self.render_imgui_window(
-                ui,
-                layout,
-                DEBUG,
-                slot_titles()[DEBUG],
-                position,
-                size,
-                viewport,
-                &debug,
-                fonts,
-                arranging,
-                false,
-                &mut actions,
-            );
-        }
-        if let (Some(position), Some(size)) = (positions[INSPECT], sizes[INSPECT]) {
-            self.render_imgui_window(
-                ui,
-                layout,
-                INSPECT,
-                slot_titles()[INSPECT],
-                position,
-                size,
-                viewport,
-                &hover,
-                fonts,
-                arranging,
-                false,
-                &mut actions,
-            );
-        }
-        if let (Some(position), Some(size), Some(units)) =
-            (positions[UNITS], sizes[UNITS], units.as_ref())
-        {
-            self.render_imgui_window(
-                ui,
-                layout,
-                UNITS,
-                slot_titles()[UNITS],
-                position,
-                size,
-                viewport,
-                units,
-                fonts,
-                arranging,
-                false,
-                &mut actions,
-            );
-        }
-        if let (Some(position), Some(size), Some(settings)) =
-            (positions[SETTINGS], sizes[SETTINGS], settings.as_ref())
-        {
-            self.render_imgui_window(
-                ui,
-                layout,
-                SETTINGS,
-                slot_titles()[SETTINGS],
-                position,
-                size,
-                viewport,
-                settings,
-                fonts,
-                arranging,
-                false,
-                &mut actions,
-            );
+        let panels = [
+            Some(&tray),
+            Some(&queue),
+            Some(&debug),
+            Some(&hover),
+            units.as_ref(),
+            settings.as_ref(),
+        ];
+        for slot in 0..SLOT_COUNT {
+            if let (Some(position), Some(size), Some(panel)) =
+                (positions[slot], sizes[slot], panels[slot])
+            {
+                let reset_scroll = slot == SELECTION && reset_selection_scroll;
+                self.render_imgui_window(
+                    &mut frame,
+                    layout,
+                    slot,
+                    (position, size),
+                    panel,
+                    reset_scroll,
+                );
+            }
         }
         layout.maintain_queue_dock(pair_visible);
         if !layout.editing_outer {
@@ -610,7 +349,7 @@ impl GameState {
         {
             if pin.kind == PinnedKind::Group {
                 layout.pinned_groups.insert(
-                    pin.city_id,
+                    pin.id,
                     self.group.iter().map(|&i| self.units[i].id).collect(),
                 );
             }
@@ -627,7 +366,7 @@ impl GameState {
             layout.capture_panel(pin, box_id, slot_titles()[QUEUE]);
         }
         layout.last_queue_outer_box = queue_box;
-        for action in actions {
+        for action in frame.actions {
             match action {
                 Action::Button(Some(pin), target) => {
                     self.activate_pinned(pin, &layout.pinned_groups, target)

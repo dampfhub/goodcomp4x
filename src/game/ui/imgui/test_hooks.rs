@@ -135,19 +135,7 @@ pub(super) fn note_mark(
 ) {
     #[cfg(test)]
     {
-        let (window, mut clip_min, mut clip_max) = unsafe {
-            let window = ::imgui::sys::igGetCurrentWindow();
-            let root = (*window).RootWindow;
-            let name = std::ffi::CStr::from_ptr((*root).Name)
-                .to_string_lossy()
-                .into_owned();
-            let list = ::imgui::sys::igGetWindowDrawList();
-            let mut min = ::imgui::sys::ImVec2::zero();
-            let mut max = ::imgui::sys::ImVec2::zero();
-            ::imgui::sys::ImDrawList_GetClipRectMin(&mut min, list);
-            ::imgui::sys::ImDrawList_GetClipRectMax(&mut max, list);
-            (name, [min.x, min.y], [max.x, max.y])
-        };
+        let (window, mut clip_min, mut clip_max) = current_clip();
         if let Some((min, max)) = _inside {
             clip_min = [clip_min[0].max(min[0]), clip_min[1].max(min[1])];
             clip_max = [clip_max[0].min(max[0]), clip_max[1].min(max[1])];
@@ -211,7 +199,7 @@ impl ImGuiLayoutState {
         let pin = game.selected_pin().expect("something selected");
         if pin.kind == PinnedKind::Group {
             self.pinned_groups.insert(
-                pin.city_id,
+                pin.id,
                 game.group.iter().map(|&i| game.units[i].id).collect(),
             );
         }
@@ -230,14 +218,7 @@ impl ImGuiLayoutState {
             .iter()
             .position(|slot| *slot == title)
             .expect("a panel's title");
-        let name = std::ffi::CString::new(title).expect("ImGui window title");
-        let native = unsafe { ::imgui::sys::igFindWindowByName(name.as_ptr()) };
-        assert!(!native.is_null(), "{title} has been drawn");
-        let full = ::imgui::sys::ImVec2::new(size.x, size.y);
-        unsafe {
-            (*native).SizeFull = full;
-            (*native).Size = full;
-        }
+        set_full_size(title, size);
         let window = &mut self.windows[slot];
         window.place_by_player();
         window.size = size;
@@ -280,4 +261,30 @@ impl ImGuiLayoutState {
         self.view_docks
             .contains_key(&view_from_text(view).expect("a view"))
     }
+}
+
+/// Tests only: docks the window titled `other` beside the one titled
+/// `anchor` ("down": below it), with `share` of the pair's room, as a drop
+/// there with the split then dragged would; ImGui does it as the next frame
+/// begins. Both must have been drawn, `anchor` floating.
+#[cfg(test)]
+pub(in crate::game::ui) fn dock_beside(anchor: &str, other: &str, side: &str, share: f32) {
+    let direction = match side {
+        "left" => ::imgui::sys::ImGuiDir_Left,
+        "right" => ::imgui::sys::ImGuiDir_Right,
+        "up" => ::imgui::sys::ImGuiDir_Up,
+        _ => ::imgui::sys::ImGuiDir_Down,
+    };
+    let ratio = split_ratio(direction, share);
+    assert!(
+        queue_dock(anchor, other, None, direction, ratio),
+        "both drawn"
+    );
+}
+
+/// Tests only: where the window titled `title` is, how big, and whether
+/// it's collapsed, as ImGui has it.
+#[cfg(test)]
+pub(in crate::game::ui) fn native_geometry(title: &str) -> Option<(Vec2, Vec2, bool)> {
+    native_state(title).map(|window| (window.pos, window.size, window.collapsed))
 }

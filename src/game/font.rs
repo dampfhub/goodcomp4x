@@ -37,7 +37,7 @@ const PADDING: usize = 1 << (MIP_LEVELS - 1);
 
 /// The characters beyond printable ASCII that game text may use, which
 /// both presentations' fonts carry: this font (`characters`) and ImGui's
-/// (`IMGUI_GLYPHS`, `imgui.rs`). A new one goes here;
+/// (`IMGUI_GLYPHS`, `ui/imgui/style.rs`). A new one goes here;
 /// `ui_text_uses_only_the_shared_glyphs` finds any the source uses that
 /// isn't.
 pub(in crate::game) const UI_PUNCTUATION: [char; 4] = ['·', '—', '×', '…'];
