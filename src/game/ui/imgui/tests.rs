@@ -493,4 +493,5 @@ fn pinned_panel_geometry_reserves_room_for_floating_panels() {
     assert!(!selected.overlaps(pinned, 0.0));
 }
 
+mod frames;
 mod layout;
