@@ -110,12 +110,14 @@ file holds.
 ## Verifying
 
 `tests.rs` covers layout and hit-testing without a window, in both presentations: classic through
-`layout()` and `handle_click`, ImGui through `ImGuiScreen`, a headless ImGui context that draws
-the real panels and clicks a button where ImGui drew it (`imgui::DRAWN_BUTTONS`, filled by
-`note_drawn_button` for panel buttons and catalogue cards; the notes are in
-`imgui/test_hooks.rs`). `imgui` allows one context per process, so any test that makes one holds
-`imgui::one_context_at_a_time()`. `imgui/tests.rs` has the views', boxes' and captured panels'
-tests, and `imgui/tests/layout.rs` the saved layout's and the dock plan's. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
+`layout()` and `handle_click`, ImGui through `ImGuiScreen` (`imgui/screen.rs`), a headless ImGui
+context that draws the real panels with `draw_imgui` and clicks a button where ImGui drew it
+(`imgui::DRAWN_BUTTONS`, filled by `note_drawn_button` for panel buttons and catalogue cards; the
+notes are in `imgui/test_hooks.rs`). `imgui` allows one context per process, so any test that makes
+one holds `imgui::one_context_at_a_time()` (`ImGuiScreen` does). `imgui/tests.rs` has the views',
+boxes' and captured panels' tests, `imgui/tests/layout.rs` the saved layout's and the dock plan's,
+and `imgui/tests/frames.rs` draws every kind of selection in every scenario, a few frames each;
+a new kind of selection or view goes in its `selections`. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
 `imgui::DRAWN_MARKS` holds each piece of text and icon drawn, with what clips it.
 After UI changes run `cargo build --release` and look at a screenshot
 (`cargo run -- --screenshot out.png --scenario cities`); screenshot mode shows ImGui, and the
