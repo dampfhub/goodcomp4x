@@ -13,7 +13,7 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Format | `cargo fmt` (CI runs `cargo fmt --check`) |
 | Play | `cargo run --release` (release skips Vulkan validation) |
 | Debug with validation | `cargo run` (the validation layer comes with the Vulkan SDK; without it the game warns and runs unvalidated) |
-| Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
+| Screenshot | `cargo run --release -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
 | Everything CI checks | `node tools/check.mjs` (`--fast` skips the tests, `--list` prints the steps) |
 | Git hooks (opt-in) | `git config core.hooksPath tools/hooks`: lints commit messages, runs `check.mjs --fast` before a push |
@@ -87,13 +87,14 @@ PR) and `glslc`: `build.rs` compiles `shaders/` with
   replays exactly that game (`$env:SIM_SEED=<seed>` first in PowerShell), and `SIM_SEEDS=<n>`
   plays seeds `0..n` to hunt for failures.
 - Anything visual: take a screenshot and look at it (an agent can open the PNG with its
-  image-reading tool): `cargo run -- --screenshot out.png --scenario <combat|cities|frontier|world>`
+  image-reading tool): `cargo run --release -- --screenshot out.png --scenario <combat|cities|frontier|world>`
   renders the scenario in a hidden window (no input, no focus), waits about a second for it to
   settle, writes one frame as a PNG and exits 0 (non-zero, with the reason, if it fails or takes
   over 20 s). `--seed N` fixes the world's map and `--size 1280x720` the window size (default
   1600x900); the same arguments give the same image, so before/after shots compare directly.
-  Write screenshots outside the repo (or delete them). It's a debug build, so check its log for
-  validation errors too. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
+  Write screenshots outside the repo (or delete them). Use a release build: a debug one starts the
+  validation layer, which can take longer than the 20 s limit. For a validation check, see
+  `src/renderer/AGENTS.md`. `--ui classic` shows the classic UI instead of ImGui, and `--turns N`
   plays N turns first, the AI on every side (the same game every run). UI layout and click
   targets are testable without a window (see `src/game/ui/tests.rs`).
 - In-game testing aids: F1-F4 restart a scenario (F4 generates a new map), F6/F7 save and load a
