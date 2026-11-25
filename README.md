@@ -1,4 +1,4 @@
-# riskofcivlike
+# goodcomp4x
 
 A prototype for experimenting with combat and city rules for a Civ-like game, written in Rust on
 raw Vulkan. You play Blue against an AI-controlled Red on a small hex map. Turns are

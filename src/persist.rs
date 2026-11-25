@@ -1,8 +1,11 @@
 //! Keeping the player's settings and layout between sessions: small text
 //! files in the game's config folder (`%APPDATA%\riskofcivlike` on Windows,
 //! `$XDG_CONFIG_HOME/riskofcivlike` or `~/.config/riskofcivlike` elsewhere).
-//! Each file is written whole, through a temporary file and a rename, so a
-//! crash mid-write can't leave half of one. Reading a missing or unreadable
+//! Each file is written whole to a temporary file, synced, then renamed over
+//! the old one, so a crash mid-write leaves the old file or the new one, not
+//! half of one, and a failed temporary write leaves the old file as it was.
+//! Only where the file system refuses the rename is the file written in
+//! place, and there a crash can still cut it short. Reading a missing or unreadable
 //! file gives `None`, and the game starts with its defaults; a failed write
 //! is logged and otherwise ignored. What goes in each file is up to its
 //! owner: `Settings::to_text` (`settings.txt`), `ImGuiLayoutState::to_text`

@@ -1,6 +1,6 @@
-//! Testing aids: switching between the scenario pages (F1-F4; pressing the
-//! current one's key again restarts it, on a new map for the F4 world), and a
-//! savestate (F6 saves, F7 loads) holding a snapshot of the whole game. The
+//! Testing aids: switching between the scenario pages (F1-F4 and F12 Siege,
+//! plus Naval, which only the Debug panel starts; pressing the current one's
+//! key again restarts it, on a new map for the F4 world), and a savestate (F6 saves, F7 loads) holding a snapshot of the whole game. The
 //! savestate survives switching pages, and loading it can be repeated to
 //! retry the same situation.
 
@@ -11,7 +11,8 @@ use super::settings::Settings;
 use super::strings::{hover_text, text, tooltip};
 use super::{GameRng, GameState};
 
-/// The test scenarios F1-F4 switch between.
+/// The test scenarios: F1-F4 and F12 (Siege) switch between them, and the
+/// Debug panel also starts Naval, which has no key.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Scenario {
     /// The original small combat map.
@@ -24,6 +25,8 @@ pub enum Scenario {
     World,
     /// A ready-to-play attack on the Red city's interior.
     Siege,
+    /// Two coastal cities across a strait, with ships and shore batteries
+    /// already out. Only the Debug panel starts it: it has no key.
     Naval,
 }
 
