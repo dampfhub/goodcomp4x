@@ -56,7 +56,7 @@ tools/               board/ (work-board wrapper + config), commit-msg-lint.mjs
 World and classic UI vertices are rebuilt from `GameState` each frame, into buffers `App`
 keeps between frames (a busy map is over 100k vertices, and filling fresh memory each frame cost
 as much as building it). Per-hex layers draw only hexes the camera may show (`may_show`,
-`draw.rs`); map icons and unit pictograms are triangulated once and then placed
+`draw/mod.rs`); map icons and unit pictograms are triangulated once and then placed
 (`mesh::place`). Barrier edges and route labels are emitted in coordinate order so
 shared wall posts keep a stable painter order. ImGui retains window
 layout state so the player's panel positions survive view changes.
@@ -72,6 +72,13 @@ of the game (savestate, a network turn's start) starts settled, and with no time
 `cargo test --release perf_report -- --ignored --nocapture` (`src/game/perf.rs`) times each
 stage of a frame and a turn on a busy six-AI world; run it before and after a change that might
 cost frame time.
+
+`game/draw/` builds the world's geometry: `mod.rs` puts the layers together back to front
+(`build_scene_staged`), and each other file draws one concern (terrain, fog, clouds, cities,
+workers, yields, orders, units, markers, a city interior; `palette.rs` holds shared colors),
+taking the imports and sizes they share from `mod.rs` with `use super::*`. Before and after a
+refactor of the drawing, run `cargo test --release golden_scenes -- --ignored`: it hashes every
+scenario's scenes, which a refactor must leave the same.
 While a city interior is open, `build_vertices` draws its tactical grid and
 copies in place of the exterior world; the exterior camera is restored on exit.
 

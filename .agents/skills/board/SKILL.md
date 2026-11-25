@@ -109,7 +109,7 @@ is unchanged, so AGENTS.md rule 3's doc updates don't apply beyond paths that mo
 | WORKERS | `src/game/workers.rs` (Worker units, jobs, roads, structures, passability) |
 | AI | `src/game/ai.rs` |
 | UI | `src/game/ui/`, `city/view.rs`, `camera.rs`, `settings.rs`, `scenario.rs` (F-key scenes, snapshots) |
-| RENDER | `src/renderer/`, `shaders/`, `src/game/draw.rs`, `mesh.rs`, `font.rs`, `map_icons.rs`, `unit_icons.rs` |
+| RENDER | `src/renderer/`, `shaders/`, `src/game/draw/`, `mesh.rs`, `font.rs`, `map_icons.rs`, `unit_icons.rs` |
 | MAP | `src/game/hex.rs`, `terrain.rs`, `mapgen.rs`, `fog.rs`, `ruins.rs` |
 | PLATFORM | `src/app.rs`, `main.rs`, `cli.rs`, `persist.rs`, `icon.rs`, `icon_art.rs`, `screenshot.rs`, `build.rs` (window, input, key map, CLI, saved files) |
 | TOOLING | `tools/`, `.github/`, `.agents/`, `.claude/`, `Cargo.toml`, `src/game/simulation.rs` and test support |
