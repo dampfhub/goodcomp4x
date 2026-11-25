@@ -16,8 +16,9 @@ sides queue orders, then the turn resolves in a fixed order by unit type. One bi
 | Screenshot | `cargo run -- --screenshot out.png --scenario cities` (hidden window, writes one frame, exits; needs a GPU) |
 | Repo tool self-tests | `node tools/board/board.mjs selftest`, `node tools/commit-msg-lint.mjs --self-test` |
 
-Building needs rustup, which installs the Rust pinned in `rust-toolchain.toml` (so local
-clippy matches CI's; a newer Rust is its own PR), and `glslc`: `build.rs` compiles `shaders/` with
+Building needs Rust 1.88+ (locally, any stable you have; CI pins 1.100.0 in
+`.github/workflows/ci.yml`, so a new Rust's lints don't break main, and moving it is its own
+PR) and `glslc`: `build.rs` compiles `shaders/` with
 `$VULKAN_SDK/bin/glslc`, falling back to `PATH`. Logging goes through `log`/`env_logger` at
 `info` by default, which includes the combat log; `RUST_LOG` changes it.
 

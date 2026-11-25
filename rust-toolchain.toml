@@ -1,8 +1,0 @@
-# The Rust that CI and every checkout build and lint with; rustup installs it on first use.
-# Pinned so a new stable's lints can't turn main red with no code change. Moving to a newer
-# Rust is its own PR: change the version here and fix what its clippy reports.
-# The oldest Rust the crate still builds with is `rust-version` in Cargo.toml.
-[toolchain]
-channel = "1.100.0"
-components = ["clippy", "rustfmt"]
-profile = "minimal"
