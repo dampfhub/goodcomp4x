@@ -226,7 +226,7 @@ pub struct GameState {
     /// Units that acted in the latest step, highlighted until `highlight_timer` runs out.
     recent_actors: Vec<u32>,
     highlight_timer: f32,
-    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw.rs`):
+    /// Seconds the fog's clouds have drifted (`animate_clouds`, `draw/clouds.rs`):
     /// the presentation clock, which also pulses the attack preview.
     cloud_time: f32,
     /// The turn transition playing: units and workers gliding to where a

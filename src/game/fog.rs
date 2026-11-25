@@ -7,7 +7,7 @@
 //!   improvements, roads, structures, and other sides' construction
 //!   (`SeenJob`). Units and workers move, so they aren't remembered: out of
 //!   sight, none is known to be anywhere;
-//! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw.rs`).
+//! - unexplored: never seen, covered by clouds (`push_cloud_banks`, `draw/clouds.rs`).
 //!
 //! Every side sees and remembers by the same rules, in one of two memories:
 //! - the player's (`fog()`, `GameState::memory`): this machine's view of

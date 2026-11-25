@@ -69,7 +69,7 @@ impl UnitIcon {
     }
 
     /// The pictogram of what `build` turns out, if it's a unit or a worker:
-    /// a production card's and a map production tag's (`draw.rs`). A
+    /// a production card's and a map production tag's (`draw/markers.rs`). A
     /// Settler is its flag, not the Melee body it walks in.
     pub(super) fn of_build(build: Build) -> Option<Self> {
         match build {
