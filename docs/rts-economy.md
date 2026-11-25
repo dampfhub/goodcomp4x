@@ -46,8 +46,8 @@ more citizens and everything else that eats it (troops, workers).
   never passes what an item needs: none carries over to the next. A Workshop halves the time
   of an adjacent building instead of its cost.
 - **Barracks** (`city/barracks.rs`, second round): the primary military building. It trains
-  land troops in their listed turns, whatever the manager does; a city center takes twice as
-  long (`CITY_TRAINING_SLOWDOWN`), so it can still raise a Melee in an emergency. Only a
+  land troops in their listed turns, whatever the manager does, and since #423 it is the only
+  place they train: a city center trains none (it took twice as long, until then). Only a
   Barracks trains Cavalry and Armored, and only one drawing on a deposit: Horses or Iron under
   it (or on or beside a Stable or Forge next to it). Each deposit a side's Barracks use allows
   `UNITS_PER_DEPOSIT` (3) of that troop. A deposit an enemy unit stands on counts for nothing,
@@ -74,8 +74,7 @@ more citizens and everything else that eats it (troops, workers).
   (the income it counted on didn't come) is emptied, at no cost as they're unpaid, and planned
   again, so an AI city never stands idle waiting. With a worker it places a Barracks for its workers to build, sited on a
   Horses or Iron deposit within 3 hexes when there is one (`ai_barracks_site`) and paid when
-  placed. Until it has a Barracks it trains
-  Melee itself (slowly) while the side has fewer than 2 units per city. An idle AI Barracks
+  placed. Its troops all come from its Barracks (#423). An idle AI Barracks
   trains Cavalry or Armored when its cap and stockpile allow, else Melee, or Ranged for every two
   Melee. The AI's builds are paid by the same `work_queues` as the player's, so
   `simulation.rs` checks that no stockpile ever goes negative, that no unpaid item has work, and
@@ -1240,4 +1239,55 @@ this change. Medians, per side:
   seeds. `simulation.rs`'s bar for it (`SCOUT_MIN_SEEN`) goes from 10% to 9%.
 
 `PROTOCOL_VERSION` 43. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
+
+## Troops train only at a Barracks (#423)
+
+The user's decision: a city center trains no troops; every land troop comes from a Barracks
+(`game-rules.md`, Cities). Until now a city center trained them at half a Barracks' pace, and
+queueing one there was a trap (#400, Round 13). Now:
+- A city's own queue builds Workers, Settlers, Scouts, Grows and Gathers, and ships with a
+  Harbor, which stay at the city: there's no Barracks for ships. Its tray has no troop card; one
+  with no Barracks says TROOPS: PLACE A BARRACKS (5), or BARRACKS GOING UP. Keys 1-3 queue at
+  the open city's Barracks.
+- The AI's city no longer trains a Melee while it has no Barracks, and `AI_ARMY_PER_CITY` is
+  gone. `CITY_TRAINING_SLOWDOWN` is gone too. A snapshot (F6) holding a troop in a city's queue
+  loses it on loading, refunded if paid.
+- `REPORT_ARMY_FIRST` is gone: it trained a Melee at the city center, and an idle AI Barracks
+  already trains whatever the side can pay for. `REPORT_QUEUE_AHEAD` stays, as a player queueing
+  ahead now does it: a Melee in every idle Barracks, and a Grow where the city would gather, each
+  waiting for its price.
+
+`economy_report`, 100 turns, seeds 0-23, on `main` at 814a249 and this change. Per side:
+
+| | Before | After |
+|---|---|---|
+| World 4 AI: first troop (median) | 8 | 8 |
+| World 4 AI: army at turn 20 / 40 / 60 / 100 | 3.9 / 4.9 / 5.4 / 15.4 | 3.9 / 4.9 / 5.4 / 15.4 |
+| World 4 AI: population at turn 20 / 40 / 60 / 100 | 2.2 / 3.7 / 6.1 / 16.8 | 2.2 / 3.7 / 6.1 / 16.8 |
+| World 1 AI: army at turn 20 / 40 / 60 / 100 | 3.9 / 5.5 / 6.7 / 18.8 | the same |
+| World 5 AI: army at turn 20 / 40 / 60 / 100 | 3.8 / 4.8 / 5.6 / 15.8 | the same |
+| World 6 AI: army at turn 20 / 40 / 60 / 100 | 3.8 / 4.7 / 5.7 / 16.0 | the same |
+| Cities: army at turn 20 / 40 / 60 / 100 | 3.5 / 6.5 / 8.5 / 8.5 | the same |
+| World 4, queueing ahead: first troop | 6 | 8 |
+| World 4, queueing ahead: army at turn 20 / 40 / 60 / 100 | 2.9 / 3.5 / 3.6 / 10.1 | 3.9 / 4.9 / 5.5 / 15.0 |
+| World 4, queueing ahead: population at turn 20 / 40 / 60 / 100 | 1.9 / 3.6 / 5.1 / 13.0 | 2.2 / 3.7 / 6.2 / 16.5 |
+| World 4, queueing ahead: Barracks idle | 74% | 15% (all at the supply cap) |
+
+Population is the same in every world, before and after, but for World 6 at turn 100
+(17.5 → 17.6). First troops are at turn 8 in every world.
+
+### What it shows
+
+- **The AI loses nothing.** Its cities had all but stopped training troops already: 1 to 3
+  city Melee in 24 games a world, as its workers place a Barracks on turn 1 and build it by turn
+  5, and a city building one doesn't train a Melee (Round 11). So the first troop, the army and
+  the population don't move.
+- **A player who queues ahead gains a third of an army.** Before, the Melee it kept queued at
+  the city center took the metal first and trained at half pace, and the Barracks sat idle 74%
+  of its turns. Now it queues at the Barracks, which trains 85% of its turns and idles only at the
+  supply cap: an army of 5.5 at turn 60, against 3.6, and as much as the AI's. Its first troop
+  comes 2 turns later, as nothing trains before the Barracks is built.
+
+`PROTOCOL_VERSION` 44. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.

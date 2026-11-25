@@ -1,9 +1,8 @@
-//! Barracks as the side's military building (`docs/rts-economy.md`): they
-//! train troops faster than a city center (`CITY_TRAINING_SLOWDOWN`), and
-//! only they train Cavalry and Armored, which draw on Horses and Iron
-//! deposits: a Barracks on the deposit (or beside a Stable or Forge on or
-//! next to it) can train `UNITS_PER_DEPOSIT` of them per deposit its side
-//! holds. By default the cap counts those alive and queued, so a deposit
+//! Barracks as the side's military building (`docs/rts-economy.md`): only they
+//! train land troops (a city center trains none, #423). Cavalry and Armored
+//! draw on Horses and Iron deposits: a Barracks on the deposit (or beside a
+//! Stable or Forge on or next to it) can train `UNITS_PER_DEPOSIT` of them
+//! per deposit its side holds. By default the cap counts those alive and queued, so a deposit
 //! keeps its worth all game and a lost unit can be replaced; the Debug
 //! panel's lifetime cap counts every one ever trained instead.
 use std::collections::BTreeSet;
@@ -18,9 +17,6 @@ use crate::game::unit::Team;
 /// Cavalry or Armored a side may have per Horses or Iron deposit its
 /// Barracks use.
 pub(in crate::game) const UNITS_PER_DEPOSIT: usize = 3;
-/// How many times longer a city center takes to train a land troop than a
-/// Barracks.
-pub(in crate::game) const CITY_TRAINING_SLOWDOWN: i32 = 2;
 
 impl GameState {
     /// The deposits of `resource` city `city`'s Barracks draws on: the one

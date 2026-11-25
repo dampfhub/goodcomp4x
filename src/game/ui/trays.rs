@@ -11,9 +11,9 @@ use super::{
 };
 use crate::game::GameState;
 use crate::game::city::{
-    Build, BuildUnit, Building, CITY_TRAINING_SLOWDOWN, CORE_HP, GATHER_SHORTCUT, GATHER_YIELD,
-    GROW_SHORTCUT, Lane, MAX_CITY_POPULATION, SUPPLY_FULL_HINT, Stock, UNITS_PER_DEPOSIT,
-    WORKERS_PER_MANAGER, manager_label, resource_icon, stock_icons, turns_icon,
+    Build, BuildUnit, Building, CORE_HP, GATHER_SHORTCUT, GATHER_YIELD, GROW_SHORTCUT, Lane,
+    MAX_CITY_POPULATION, SUPPLY_FULL_HINT, Stock, UNITS_PER_DEPOSIT, WORKERS_PER_MANAGER,
+    manager_label, resource_icon, stock_icons, turns_icon,
 };
 use crate::game::keys::Command;
 use crate::game::orders::ClickMode;
@@ -652,7 +652,7 @@ impl GameState {
         let spare = self.card_spare(i);
         let card = |target, label: String, build: Build, head: bool| {
             let price = self.queue_price(i, build);
-            let hint = cost_hint(price, self.city_build_turns(i, build));
+            let hint = cost_hint(price, build.turns());
             let short = self.build_shortfall(spare, i, build) != Stock::default();
             ButtonSpec::new(target, label, hint)
                 .queued(head)
@@ -693,36 +693,28 @@ impl GameState {
         panel.compact_buttons(vec![grow, gather]);
 
         panel.gap(GAP);
-        let builds: Vec<BuildUnit> =
+        // Troops train only at a Barracks (#423): a city trains ships, with
+        // a Harbor.
+        let ships: &[BuildUnit] =
             if self.city_is_coastal(i) && city.placed_site(Building::Harbor).is_some() {
-                vec![
-                    BuildUnit::Melee,
-                    BuildUnit::Pikeman,
-                    BuildUnit::Ranged,
-                    BuildUnit::Siege,
+                &[
                     BuildUnit::PatrolGalley,
                     BuildUnit::LandingCraft,
                     BuildUnit::BombardShip,
                 ]
             } else {
-                vec![
-                    BuildUnit::Melee,
-                    BuildUnit::Pikeman,
-                    BuildUnit::Ranged,
-                    BuildUnit::Siege,
-                ]
+                &[]
             };
-        // The side's supply, which every troop, ship and Scout card below
-        // uses, on one line with the Barracks' pace.
+        // The side's supply, which every ship and Scout card below uses, and
+        // for a city with no Barracks, how it gets troops.
         let mut line = self.supply_spans(city.team);
-        line.push((
-            format!(" · A BARRACKS TRAINS {CITY_TRAINING_SLOWDOWN}× FASTER"),
-            DIM_TEXT,
-        ));
+        if let Some(how) = self.troops_hint(i) {
+            line.push((format!(" · {how}"), DIM_TEXT));
+        }
         panel.text(SMALL, line);
         // Dimmed, saying why, when the city can't queue one
-        // (`city_build_issue`): a troop, ship or Scout needs supply, a
-        // Settler needs citizens, and a Scout is one at a time.
+        // (`city_build_issue`): a ship or Scout needs supply, a Settler needs
+        // citizens, and a Scout is one at a time.
         let unit_card = |target, build: Build| {
             let card = card(target, build.name().into(), build, first == Some(build));
             match self.city_build_issue(i, build) {
@@ -734,9 +726,9 @@ impl GameState {
                 None => card,
             }
         };
-        let unit_buttons: Vec<_> = builds
-            .into_iter()
-            .map(|build| unit_card(Target::Build(build), Build::Unit(build)))
+        let unit_buttons: Vec<_> = ships
+            .iter()
+            .map(|&build| unit_card(Target::Build(build), Build::Unit(build)))
             .chain(
                 [
                     (Target::BuildScout, Build::Scout),

@@ -411,26 +411,26 @@ mod tests {
 
     #[test]
     fn a_city_waiting_for_the_stockpile_shows_what_it_lacks_over_its_tower() {
-        use crate::game::city::{Build, BuildUnit, Queued, Stock, WaitsFor};
+        use crate::game::city::{Build, Queued, Stock, WaitsFor};
         let mut game = GameState::city_scenario();
         game.units.clear();
         game.selected = None;
         let rim = |game: &GameState| count_color(&game.build_vertices(), WAITING_TAG_RIM);
         assert_eq!(rim(&game), 0, "nothing queued");
-        // Broke: a Melee at the head of the queue waits for metal.
+        // Broke: a Grow at the head of the queue waits for food.
         game.stockpiles[Team::Blue.index()] = Stock::default();
-        game.cities[0].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        game.cities[0].queue = vec![Queued::new(Build::Grow)];
         let forecast = game.forecast(Team::Blue);
         let wait = game.head_waits(&forecast)[0];
         let WaitsFor::Stock(short) = wait.waits_for else {
             panic!("{wait:?}")
         };
-        assert!(short.metal > 0, "{short:?}");
+        assert!(short.food > 0, "{short:?}");
         assert!(rim(&game) > 0, "the tag shows");
         // Its text is the shortfall, each resource's icon and amount.
         let text = map_wait_text(wait.waits_for);
         assert!(
-            text.starts_with(&format!("-{}", crate::game::map_icons::METAL_ICON)),
+            text.starts_with(&format!("-{}", crate::game::map_icons::FOOD_ICON)),
             "{text}"
         );
         let one = rim(&game);
@@ -443,7 +443,7 @@ mod tests {
         // Another side's waiting city shows nothing: its stockpile isn't
         // the player's to see.
         game.stockpiles[Team::Red.index()] = Stock::default();
-        game.cities[1].queue = vec![Queued::new(Build::Unit(BuildUnit::Melee))];
+        game.cities[1].queue = vec![Queued::new(Build::Worker)];
         game.explore();
         assert_eq!(rim(&game), 0);
     }
@@ -531,7 +531,7 @@ mod tests {
         game.cities[0].queue.clear();
         game.cities[0].barracks_queue.clear();
         game.set_details(true);
-        game.cities[1].queue = vec![Queued::prepaid(Build::Unit(BuildUnit::Melee))];
+        game.cities[1].queue = vec![Queued::prepaid(Build::Worker)];
         game.stockpiles[Team::Red.index()] = Stock::default();
         game.cities[1].barracks = Some(game.cities[1].pos);
         game.cities[1].barracks_queue = vec![Queued::new(BuildUnit::Melee)];

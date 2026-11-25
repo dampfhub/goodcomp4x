@@ -103,9 +103,7 @@ fn play_out(game: &mut GameState) {
         let Some(city) = game.cities.get(i) else {
             continue;
         };
-        let holding = queue
-            .iter()
-            .any(|q| q.paid && q.progress >= game.city_build_work(i, q.build));
+        let holding = queue.iter().any(|q| q.paid && q.progress >= q.build.work());
         if city.team != *team || holding {
             continue;
         }
@@ -125,25 +123,26 @@ fn play_out(game: &mut GameState) {
     }
 }
 
-/// The cities of `team` queue ahead, as a player would: a city queue left only to gather
-/// trains a Melee instead (or, where it can't, grows), whatever the stockpile holds, and
-/// waits for it, gathering by itself meanwhile (`auto_gather`).
+/// The cities of `team` queue ahead, as a player would, whatever the stockpile holds: an
+/// idle Barracks trains a Melee, and a city queue left only to gather grows instead. Each
+/// waits for its price, the city gathering by itself meanwhile (`auto_gather`).
 fn queue_ahead(game: &mut GameState, team: Team) {
-    let melee = Build::Unit(BuildUnit::Melee);
     for city in 0..game.cities.len() {
         let c = &game.cities[city];
-        if c.team != team || c.queue.len() != 1 || c.queue[0] != Queued::new(Build::Gather) {
+        if c.team != team {
             continue;
         }
-        let build = if game.city_build_issue(city, melee).is_none() {
-            melee
-        } else if game.can_grow(city) {
-            Build::Grow
-        } else {
-            continue;
-        };
-        game.take_queue_item(city, 0);
-        game.queue_build(city, build);
+        if c.barracks.is_some()
+            && c.barracks_queue.is_empty()
+            && game.barracks_lock(city, BuildUnit::Melee).is_none()
+        {
+            game.queue_barracks(city, BuildUnit::Melee);
+        }
+        let c = &game.cities[city];
+        if c.queue.len() == 1 && c.queue[0] == Queued::new(Build::Gather) && game.can_grow(city) {
+            game.take_queue_item(city, 0);
+            game.queue_build(city, Build::Grow);
+        }
     }
 }
 
@@ -334,6 +333,14 @@ fn check_invariants(game: &GameState, context: &str) {
                 build.name()
             );
         }
+        // Troops train only at a Barracks (#423): none queued at a city.
+        let troop =
+            |q: &Queued<Build>| matches!(q.build, Build::Unit(u) if !u.unit_type().is_naval());
+        let at = (city.team, city.id + 1);
+        assert!(
+            !city.queue.iter().any(troop),
+            "{context}: {at:?} queued a troop"
+        );
     }
     let jobs = game
         .cities
@@ -709,38 +716,26 @@ fn check_invariants(game: &GameState, context: &str) {
                 );
             }
         }
-        // A finished unit waits, done, only while no safe spawn is open.
-        let finished = city.queue.iter().find(|q| {
-            matches!(q.build, Build::Unit(_)) && q.progress >= game.city_build_work(i, q.build)
-        });
-        let Some(&Queued {
-            build: Build::Unit(unit),
-            ..
-        }) = finished
-        else {
+        // A finished ship (the only troop a city builds) waits, done, only
+        // while no water by its Harbor is open.
+        let finished = city
+            .queue
+            .iter()
+            .find(|q| matches!(q.build, Build::Unit(_)) && q.progress >= q.build.work());
+        let Some(ship) = finished else {
             continue;
         };
-        let naval = unit.unit_type().is_naval();
-        let origin = if naval {
-            city.placed_site(Building::Harbor).unwrap_or(city.pos)
-        } else {
-            city.pos
-        };
+        let harbor = city.placed_site(Building::Harbor).unwrap_or(city.pos);
         assert!(
-            origin.neighbors().into_iter().all(|hex| {
-                let open_ground = if naval {
-                    game.grid.contains(hex)
-                        && matches!(game.grid.terrain(hex), Terrain::Coast | Terrain::Ocean)
-                } else {
-                    game.grid.is_passable(hex) && !game.field_workers.iter().any(|w| w.pos == hex)
-                };
-                !open_ground
-                    || !game.spawn_clear_of_enemy_civilians(hex, city.team)
+            harbor.neighbors().into_iter().all(|hex| {
+                let water = game.grid.contains(hex)
+                    && matches!(game.grid.terrain(hex), Terrain::Coast | Terrain::Ocean);
+                !(water && game.spawn_clear_of_enemy_civilians(hex, city.team))
                     || game.is_occupied(hex)
             }),
-            "{context}: city {} holds a finished {} beside an open hex",
+            "{context}: city {} holds a finished {} beside open water",
             city.id,
-            unit.name()
+            ship.build.name()
         );
     }
     for team in Team::ALL {

@@ -195,8 +195,8 @@ drawn as hollow hexagons with only a move badge; every other unit is a team-colo
 pictogram. Settlers can be ordered to attack, though no badge shows it. Workers aren't units:
 see Workers below. Wolf packs and bears are animals, owned by no side, on tan discs (see
 Animals). Cavalry and
-Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge;
-cities can't queue them. Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
+Armored are built at a Barracks on Horses or Iron, or supported by an adjacent Stable or Forge,
+as every land troop is built at a Barracks (a city center trains none). Stable-trained Cavalry get +1 move; Forge-trained Armored get +20% HP
 and +15% defense. These upgrades stay with the unit, including in city interiors. A Field
 Hospital heals nearby troops (see Buildings). A Harbor in a city whose center touches Coast or Ocean lets it build naval units; a
 Landing Craft can carry four land units. Select a land troop and click an adjacent friendly craft
@@ -790,21 +790,20 @@ only).
   cap of 28, counting every Grow queued.
 - **Paying and the queue:** anything can be queued, whatever the stockpile holds (the other
   limits stay: research for every troop and ship but the Melee, a Harbor for ships, a deposit
-  for Cavalry and Armored, the population cap for Grow, a Barracks for its troops, population 3 for a Settler, one Scout at a time, and
+  for Cavalry and Armored, the population cap for Grow, a Barracks for any land troop, population 3 for a Settler, one Scout at a time, and
   supply for troops, ships and Scouts). A build is paid in full from the stockpile when work on it
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
   paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
   unpaid, and the queue goes back to them as soon as it can pay. Research pays first, then
   **every Barracks**, in city order, then every city's queue, in city order. The stockpile is the
-  side's, so a troop queued at a city center, where it takes twice as long, never takes the goods
-  a Barracks was ready to train with (#400). Each item keeps its own work, which reordering carries with it; an unpaid item has
+  side's, so a city's builds never take the goods a Barracks was ready to train with (#400). Each item keeps its own work, which reordering carries with it; an unpaid item has
   none. A worked item moved out of the active slot shows SAVED on its queue row until it resumes.
   A waiting item's row is tinted red and says what it waits for ("WAITS, SHORT OF" and the
   missing resources, each with how much), the city tray, Barracks tray and hover panel name the
   first item's wait. When that queue works nothing else this turn, so that the item isn't
   getting built (the city **gathers while it waits**, see Gathering by itself; a Barracks is
-  **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS: MELEE WAITS,
+  **idle**), those panels say so in a large red line ("GATHERING WHILE IT WAITS: GROW WAITS,
   SHORT OF" the resources, or "IDLE: RANGED WAITS, ..." for a Barracks), the turn strip adds a
   red-rimmed chip for it, and End Turn counts it as WAITING. On the map, always, a tag rimmed in
   red over the building whose first item waits (the city's tower for its queue, the Barracks
@@ -841,8 +840,7 @@ only).
 - **Gather** (0, or its card beside Grow): free, one turn; when it's done, the side's stockpile
   gets 1 food, 1 wood and half a metal. A city that can't pay for anything, or has nothing it
   wants, gathers instead of standing idle, chosen or by itself (above).
-- **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), at
-  their own pace: the half-speed rule for troops in a city center doesn't apply to them, and
+- **Settlers and Scouts** come from a city's own queue (the town centre, never a Barracks), and
   neither counts as a troop. A **Settler** (S, or its card) is dear and slow: 30 food and 10
   wood, 6 turns, and it takes one of the city's citizens when it's done (the last tile the city
   works is given up). Only a city of population 3 or more queues one (the card is dimmed, saying
@@ -857,23 +855,27 @@ only).
 - **Production speeds builds** (the Debug panel's PROD SPEEDUP, off by default): a city's queue
   also gains a quarter turn of work a turn for each point of production (wood and metal) the city
   delivers, and a Barracks for each point delivered to it; the stockpile still gets those goods.
-- **Prices and turns** (food / wood / metal, turns at a Barracks): Melee 5/0/2, 3; Pikeman
+- **Troops train only at a Barracks** (#423). A city center trains none: its own queue
+  builds Workers, Settlers, Scouts, Grows and Gathers, and ships with a Harbor. A city with no
+  Barracks says how to get troops in its tray, beside its supply: TROOPS: PLACE A BARRACKS (5),
+  or TROOPS: BARRACKS GOING UP while its workers build one. A game saved before this rule (F6)
+  that held a troop in a city's queue loses it on loading, refunded if it was paid.
+- **Prices and turns** (food / wood / metal, turns): Melee 5/0/2, 3; Pikeman
   6/0/0, 3; Ranged
   0/9/2, 3; Cavalry 6/0/5, 4; Siege 0/12/6, 4; Armored 6/0/10, 4; Patrol Galley 0/10/2, 3; Landing
   Craft 0/12/2, 4; Bombard Ship 0/12/6, 4; Scout 2/4/0, 2; Worker 4/2/0, 2; Settler 30/10/0, 6;
   Grow as above, 2; Gather free, 1. A unit costs at most two kinds of goods: every troop and ship
   pays metal, the foot and horse troops with food and those built of timber (Ranged, Siege,
   ships) with wood, so metal is what most often limits an army; the Pikeman, paid in food
-  alone, is the exception. Scouts, Workers and Settlers pay food and wood. A city center
-  trains land troops at half a Barracks' pace (twice the turns: a Melee takes 6); ships, which
-  only a city with a Harbor builds, take their own turns. Barracks 0/10/0,
+  alone, is the exception. Scouts, Workers and Settlers pay food and wood. Ships are built
+  only by a city with a Harbor. Barracks 0/10/0,
   3; Mill, Canoe House and Watchpost 0/10/0, 3; Workshop 0/10/4, 4; Forge 0/6/8, 4; Stable
   2/12/0, 4; Field Hospital 4/10/4, 4; Cannery 0/12/4, 4; Work Camp 2/10/2, 3; Smelter 0/8/8, 4;
   Railhead 0/12/12, 5; Harbor 0/14/0, 4; Coastal Battery 0/8/10, 4. Cards, tooltips, queue rows
   and notices show a price as each resource's icon and amount (the map's wheat, log and ingot)
-  and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege (a city can't queue
-  Cavalry or Armored), 5-7 pick a Barracks, Mill or Workshop to place, 8 a Worker, 9 a Grow
-  and 0 a Gather. The rest are in the city's scrollable production list. One of each building per
+  and the turns after a clock icon. Keys 1-3 queue Melee, Ranged and Siege at the Barracks
+  of the open city or Barracks (with none, they queue nothing and say so), 5-7 pick a
+  Barracks, Mill or Workshop to place, 8 a Worker, 9 a Grow and 0 a Gather. The rest are in the city's scrollable production list. One of each building per
   city.
 - **Buildings:**
   - **Every building** stands on a site, and the city's workers build them there
@@ -886,8 +888,8 @@ only).
     taken off the city's job list (refunded).
   - **Barracks** (`city/barracks.rs`): the side's military building. Its own view and queue
     (Melee, Pikeman, Ranged, Cavalry, Siege, Armored), paid from the stockpile like the city's (when work
-    on an item starts; one it can't pay for waits), training
-    twice as fast as a city center, wherever the city's managers are (with production speeding
+    on an item starts; one it can't pay for waits), the only place troops train,
+    wherever the city's managers are (with production speeding
     builds, each manager beside the barracks adds its cluster's production, times their delivery
     share from the barracks). Only a Barracks trains Cavalry and Armored, and only one drawing
     on a deposit: Horses or Iron under it, or on or beside a Stable or Forge next to it. Each
@@ -964,7 +966,7 @@ only).
   | III-C | II-B, II-C | 8 / 8 / 4 | 5 | Railhead |
 
 - **Free from the start**, as no tech unlocks them: founding cities, and a city's Worker,
-  Settler, Scout, Grow and Gather; the Melee; the Barracks; and every work for the workers
+  Settler, Scout, Grow and Gather; the Barracks, and the Melee it trains; and every work for the workers
   (roads, improvements, cutting a forest, walls, gates, outposts, forts). Everything else
   needs its tech: a city or Barracks card, or a building's, is dimmed and names the tech
   (NEEDS TECH I-A), and so does its tooltip. Nothing a side lacks can be queued or placed.
@@ -1190,9 +1192,8 @@ that turn; a queue whose items all wait anyway (for the stockpile, or for supply
 its supply: at the cap its Barracks stays idle and its cities grow or gather instead. An AI city with an empty queue trains a worker first when it has none. With a worker,
 it places a Barracks for its workers to build, paid like the player's: on a Horses or Iron
 deposit within 3 hexes (a kind it has none of first), else on the nearest open unworked tile
-within 2. Its queue otherwise grows the city. A city without a Barracks (built or going up) trains Melee itself,
-slowly, until the side has 2 units (scouts and settlers aside) per city, growing when it can't
-pay. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted troops
+within 2. Its queue otherwise grows the city, gathering when it can't pay; its troops all come
+from its Barracks. An idle AI Barracks trains a Pikeman while its side sees more enemy mounted troops
 (Cavalry) than it has Pikemen alive and queued; else Cavalry or Armored when its deposits allow and the side can pay,
 else a Siege (below), else Melee, or Ranged for every two Melee (for every Melee once it has
 wood past its reserve, below; whichever of the two the side can pay for, when it can pay for
@@ -1231,8 +1232,7 @@ Ranged's), and spends past it, after its queues have what they start this turn:
 The AI builds Scouts and expands with Settlers:
 - A side with no scout, alive or queued, trains one, after a city's first worker.
 - **Expanding:** a city of population 4 or more whose side has no settler out or queued, can pay
-  for one this turn and knows a site for a city, trains a Settler before it grows (after the
-  Melee a city without a Barracks still wants). A site is a hex its side has seen that the
+  for one this turn and knows a site for a city, trains a Settler before it grows. A site is a hex its side has seen that the
   founding rules allow as far as it knows: open land, no ruins or enemy in sight on it, 6 hexes
   from its own cities and every enemy city it has seen, and within 10 of its nearest city;
   searched up to 14 steps on foot, the best by what the land around it (2 hexes) yields as last

@@ -431,12 +431,6 @@ impl GameState {
             game.next_unit_id += 1;
             game.units.push(Unit::new(id, pos, Team::Blue, kind));
         }
-        for city in &mut game.cities {
-            // Paid for already, as scenario setup: the queue skips the price.
-            city.queue.push(city::Queued::prepaid(city::Build::Unit(
-                city::BuildUnit::Melee,
-            )));
-        }
         game.open_city_interior(1);
         game.notice = "SIEGE: FIGHT ON BOTH MAPS (V) - BREACH POST, THEN OCCUPY IT".into();
         game
@@ -1316,7 +1310,7 @@ mod tests {
         assert!(!game.is_resolving());
         assert_eq!(game.selected_city, Some(0));
 
-        game.queue_selected_city_unit(city::BuildUnit::Melee);
+        game.queue_selected_city_worker();
         assert_eq!(game.pending(), (0, 0));
         // Space closes the city, and then ends the turn.
         game.hold_or_end_turn();

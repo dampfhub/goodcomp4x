@@ -362,7 +362,7 @@ impl GameState {
         match lane {
             Lane::City => {
                 let q = c.queue[index];
-                (q.paid, q.progress, self.city_build_work(city, q.build))
+                (q.paid, q.progress, q.build.work())
             }
             Lane::Barracks => {
                 let q = c.barracks_queue[index];
@@ -461,9 +461,8 @@ impl GameState {
 
     /// The order a turn's queues pay in (`work_queues`, `forecast`): every
     /// Barracks first, in city order, then every city's queue, in city
-    /// order. A side has one stockpile, so a Barracks ready to train
-    /// doesn't sit idle while a city queue takes the metal for a troop that
-    /// takes twice as long there (`CITY_TRAINING_SLOWDOWN`, #400).
+    /// order. A side has one stockpile, and its troops are paid for before
+    /// its cities' builds (#400).
     fn pay_order(&self) -> impl Iterator<Item = (usize, Lane)> + use<> {
         let cities = self.cities.len();
         [Lane::Barracks, Lane::City]

@@ -297,10 +297,6 @@ impl DenPlan {
     }
 }
 
-/// Units (scouts and settlers aside) the AI wants for each of its cities
-/// before it spends on growth.
-const AI_ARMY_PER_CITY: usize = 2;
-
 /// The population from which an AI city trains a Settler to expand.
 const AI_SETTLE_POPULATION: usize = 4;
 /// How far from its side's nearest city an AI settler founds a new one: at
@@ -420,16 +416,15 @@ impl GameState {
     /// they're unpaid, and planned again. Nothing is queued past the side's
     /// supply (`city/supply.rs`): at the cap the Barracks stays idle, and
     /// the city grows or gathers instead. The Barracks is
-    /// the military building (`city/barracks.rs`): an idle one trains a
+    /// the military building and the only one that trains troops
+    /// (`city/barracks.rs`): an idle one trains a
     /// Pikeman, paid in food alone, while its side sees more enemy mounted
     /// troops (Cavalry) than it has Pikemen alive and queued; else
     /// Cavalry or Armored when its deposits allow and the side can pay, else
     /// Melee, or Ranged for one in three (the other when the side can pay
     /// only for it). A city's own queue trains a worker
     /// first if it has none left; its workers then build a Barracks (sited
-    /// by `ai_barracks_site`, paid when placed), and the queue grows; a city
-    /// without a Barracks, built or going up, trains Melee itself, slowly, until the side has
-    /// `AI_ARMY_PER_CITY` units per city, falling back on growth, and
+    /// by `ai_barracks_site`, paid when placed), and the queue grows,
     /// gathering when it can't pay for anything. A side with no scout, alive
     /// or queued, trains one after the worker. A city of
     /// `AI_SETTLE_POPULATION` or more expands, before it grows: it trains a
@@ -499,10 +494,6 @@ impl GameState {
                 .map(|&c| {
                     let c = &self.cities[c];
                     c.barracks_queue.iter().filter(|q| q.build == pike).count()
-                        + c.queue
-                            .iter()
-                            .filter(|q| q.build == Build::Unit(pike))
-                            .count()
                 })
                 .sum::<usize>();
         let siege = BuildUnit::Siege;
@@ -565,7 +556,6 @@ impl GameState {
             if !c.queue.is_empty() {
                 continue;
             }
-            let melee = Build::Unit(BuildUnit::Melee);
             let mut choices = if c.workers == 0 && self.workers_out(city) == 0 {
                 vec![Build::Worker]
             } else {
@@ -573,14 +563,6 @@ impl GameState {
             };
             if !scouting {
                 choices.push(Build::Scout);
-            }
-            // Not while its workers build a Barracks, which trains one
-            // twice as fast.
-            if c.barracks.is_none()
-                && !self.building_job_queued(city, Building::Barracks)
-                && army < AI_ARMY_PER_CITY * cities.len()
-            {
-                choices.push(melee);
             }
             if !settling
                 && c.population >= AI_SETTLE_POPULATION
@@ -606,7 +588,6 @@ impl GameState {
                 if price == Stock::default() || spare.covers(price) {
                     self.queue_build(city, build);
                     spare -= price;
-                    army += usize::from(build == melee);
                     scouting |= build == Build::Scout;
                     settling |= build == Build::Settler;
                     break;

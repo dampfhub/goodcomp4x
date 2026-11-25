@@ -49,16 +49,12 @@ impl GameState {
         }
     }
 
-    /// What `build` queued in `city`'s queue (or its Barracks', with
-    /// `barracks`) costs from the stockpile when work on it starts, and how
-    /// long it takes there: the price's icons, then the clock and the turns.
-    fn price_text(&self, build: Build, barracks: bool, city: Option<usize>) -> String {
+    /// What `build` queued in one of `city`'s queues costs from the
+    /// stockpile when work on it starts, and how long it takes: the price's
+    /// icons, then the clock and the turns.
+    fn price_text(&self, build: Build, city: Option<usize>) -> String {
         let price = city.map_or_else(|| build.price(), |city| self.queue_price(city, build));
-        let turns = match city {
-            Some(city) if !barracks => self.city_build_turns(city, build),
-            _ => build.turns(),
-        };
-        format!("{} {}", stock_icons(price), turns_icon(turns))
+        format!("{} {}", stock_icons(price), turns_icon(build.turns()))
     }
 
     /// For a troop that needs Horses or Iron, how many more its side may
@@ -531,7 +527,7 @@ impl GameState {
                     format!(
                         "{}. {}{}",
                         build.description(),
-                        self.price_text(Build::Unit(build), false, city),
+                        self.price_text(Build::Unit(build), city),
                         self.supply_note(Build::Unit(build))
                     ),
                     self.shortfall_text(Build::Unit(build), city),
@@ -551,11 +547,13 @@ impl GameState {
                 ),
                 Target::BarracksBuild(build) => (
                     format!("TRAIN {}", build.name()),
-                    "BARRACKS".into(),
+                    build
+                        .shortcut()
+                        .map_or_else(|| "CLICK".into(), String::from),
                     format!(
                         "{}. {}{}{}",
                         build.description(),
-                        self.price_text(Build::Unit(build), true, city),
+                        self.price_text(Build::Unit(build), city),
                         self.special_note(build),
                         self.supply_note(Build::Unit(build))
                     ),
@@ -658,7 +656,7 @@ impl GameState {
                     WORKER_SHORTCUT.to_string(),
                     format!(
                         "BUILDS WHAT THE CITY PLACES. {}",
-                        self.price_text(Build::Worker, false, city)
+                        self.price_text(Build::Worker, city)
                     ),
                     self.shortfall_text(Build::Worker, city),
                 ),
@@ -667,7 +665,7 @@ impl GameState {
                     SCOUT_SHORTCUT.to_string(),
                     format!(
                         "SEES FAR, MOVES FAST; NOT A TROOP, SO NO BARRACKS. ONE AT A TIME. {}{}",
-                        self.price_text(Build::Scout, false, city),
+                        self.price_text(Build::Scout, city),
                         self.supply_note(Build::Scout)
                     ),
                     self.shortfall_text(Build::Scout, city),
@@ -678,17 +676,14 @@ impl GameState {
                     format!(
                         "FOUNDS A CITY (F) {MIN_CITY_DISTANCE}+ HEXES FROM ANY OTHER. \
                          NEEDS POPULATION {SETTLER_MIN_POPULATION}. TAKES A CITIZEN WHEN DONE. {}",
-                        self.price_text(Build::Settler, false, city)
+                        self.price_text(Build::Settler, city)
                     ),
                     self.shortfall_text(Build::Settler, city),
                 ),
                 Target::Grow => (
                     "GROW".into(),
                     GROW_SHORTCUT.to_string(),
-                    format!(
-                        "ONE MORE CITIZEN. {}",
-                        self.price_text(Build::Grow, false, city)
-                    ),
+                    format!("ONE MORE CITIZEN. {}", self.price_text(Build::Grow, city)),
                     self.shortfall_text(Build::Grow, city),
                 ),
                 Target::Gather => (
@@ -1143,7 +1138,7 @@ mod tests {
         let mut queued = game.clone();
         queued.cities[red]
             .queue
-            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+            .push(Queued::prepaid(Build::Worker));
         queued.cities[red]
             .barracks_queue
             .push(Queued::prepaid(BuildUnit::Ranged));
@@ -1186,9 +1181,7 @@ mod tests {
         let (mut game, red, smelter, barracks, ..) = enemy_city_half_in_sight();
         // The same city, now the player's.
         game.local_team = Team::Red;
-        game.cities[red]
-            .queue
-            .push(Queued::prepaid(Build::Unit(BuildUnit::Melee)));
+        game.cities[red].queue.push(Queued::prepaid(Build::Worker));
         let city = shown(&game, game.cities[red].pos);
         let delivers = format!("DELIVERS {}", price_hint(game.net_delivery(red)));
         for expected in [delivers.as_str(), "BUILDING ", "QUEUE: "] {

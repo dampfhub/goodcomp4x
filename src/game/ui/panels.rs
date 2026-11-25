@@ -10,7 +10,9 @@ use super::{
     REDUCED_TEXT, SMALL, TEXT, TITLE, TOP_BAR_HEIGHT, Target,
 };
 use crate::game::GameState;
-use crate::game::city::{GATHER_YIELD, Lane, MAX_CITY_POPULATION, Stock, stock_icons, turns_icon};
+use crate::game::city::{
+    Building, GATHER_YIELD, Lane, MAX_CITY_POPULATION, Stock, stock_icons, turns_icon,
+};
 use crate::game::font;
 use crate::game::keys::Command;
 use crate::game::scenario::Scenario;
@@ -181,6 +183,21 @@ impl GameState {
             ..income
         };
         stock_spans(self.stock(self.local_team), Some(change))
+    }
+
+    /// For city `i` with no Barracks, how it gets troops, which train only
+    /// at one (#423): place one, or wait while its workers build it.
+    pub(super) fn troops_hint(&self, i: usize) -> Option<String> {
+        if self.cities[i].barracks.is_some() {
+            None
+        } else if self.building_job_queued(i, Building::Barracks) {
+            Some("TROOPS: BARRACKS GOING UP".into())
+        } else {
+            Some(format!(
+                "TROOPS: PLACE A BARRACKS ({})",
+                Command::BuildBarracks.key()
+            ))
+        }
     }
 
     /// `team`'s supply (`city/supply.rs`): what it uses of what its cities

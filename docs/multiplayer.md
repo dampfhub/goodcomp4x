@@ -177,7 +177,7 @@ can watch or change what's sent. What's in place:
   added (or copied onto another job), only kept or cleared; a side queues and places only what
   it has researched, and researches only techs of the tree, each once, none it has, each after
   what it needs (its research queue kept paid as a city's is); a city queues only what it can
-  train (no Cavalry or Armored, ships only with a Harbor, no growing past the cap, one Scout at a time, and no new
+  train (no land troop, which only a Barracks trains, ships only with a Harbor, no growing past the cap, one Scout at a time, and no new
   Settler below population 3), and founds only where the founding rules allow (open land, no
   ruins, 6 hexes from every city, those it founds that turn included), a Barracks no more Cavalry or
   Armored than its deposits allow; citizens work only tiles in their city's reach, never a city

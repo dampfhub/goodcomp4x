@@ -79,7 +79,7 @@ fn action_toolbar_is_compact_and_every_icon_keeps_its_click_target() {
 fn hovering_a_button_shows_its_tooltip() {
     let mut game = GameState::city_scenario();
     game.select_city();
-    let card = button_cursor(&game, Target::Build(BuildUnit::Siege));
+    let card = button_cursor(&game, Target::BuildScout);
     let plain = game.build_ui(SCREEN, None).len();
     assert!(game.build_ui(SCREEN, Some(card)).len() > plain);
 }
@@ -99,7 +99,7 @@ fn building_catalog_scrolls_with_clickable_cards_inside_the_city_tray() {
         first
             .buttons
             .iter()
-            .any(|button| button.target == Target::Build(BuildUnit::Melee))
+            .any(|button| button.target == Target::BuildWorker)
     );
     assert!(
         !first
@@ -347,18 +347,89 @@ fn debug_panel_saves_loads_and_switches_scenarios() {
     assert_eq!(game.scenario, Scenario::Cities);
 }
 
+/// #423: a city's tray offers no troop card, in either presentation, and
+/// one with no Barracks says how to get troops.
+#[test]
+fn a_city_tray_offers_no_troop_card_and_says_where_troops_train() {
+    let troop = |target: Target| match target {
+        Target::Build(unit) => !unit.unit_type().is_naval(),
+        Target::BarracksBuild(_) => true,
+        _ => false,
+    };
+    let mut game = GameState::city_scenario();
+    game.research_all(Team::Blue);
+    game.open_city(0);
+    // The shared content: every catalogue card.
+    let mut panel = PanelBuilder::default();
+    game.city_tray(0, &mut panel);
+    let cards: Vec<Target> = flat_rows(&panel.rows)
+        .into_iter()
+        .flat_map(|row| match row {
+            Row::BuildingCatalog(_, entries, ..) => entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    CatalogEntry::Card(b) => Some(b.target),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    assert!(cards.contains(&Target::BuildScout), "{cards:?}");
+    assert!(!cards.iter().any(|&t| troop(t)), "{cards:?}");
+    // Classic, scrolled through the whole catalogue, and ImGui.
+    for scroll in 0..cards.len() + 3 {
+        game.cities[0].building_scroll = scroll;
+        let layout = game.layout(SCREEN);
+        assert!(!layout.buttons.iter().any(|b| troop(b.target)), "{scroll}");
+    }
+    game.cities[0].building_scroll = 0;
+    let mut screen = ImGuiScreen::new();
+    screen.settle(&mut game);
+    assert!(
+        screen.button(Target::BuildScout).is_some(),
+        "ImGui draws it"
+    );
+    imgui::DRAWN_BUTTONS.with_borrow(|drawn| {
+        assert!(!drawn.iter().any(|&(target, ..)| troop(target)));
+    });
+    drop(screen);
+    // Where troops come from: place a Barracks, then wait for it.
+    let place = format!(
+        "TROOPS: PLACE A BARRACKS ({})",
+        crate::game::keys::Command::BuildBarracks.key()
+    );
+    assert_shows(&panel_strings(|panel| game.city_tray(0, panel)), &place);
+    game.explore();
+    game.fund(Team::Blue);
+    game.arm_worker_job(crate::game::JobKind::Build(Building::Barracks));
+    let site = Hex::new(-2, 0);
+    assert!(game.place_job_at(site, None), "{}", game.notice);
+    assert_shows(
+        &panel_strings(|panel| game.city_tray(0, panel)),
+        "TROOPS: BARRACKS GOING UP",
+    );
+    // Built, the tray says nothing of it, and 1 queues a Melee there.
+    game.cities[0].worker_jobs.clear();
+    game.cities[0].barracks = Some(site);
+    let tray = panel_strings(|panel| game.city_tray(0, panel));
+    assert!(!tray.iter().any(|s| s.contains("TROOPS:")), "{tray:?}");
+    game.queue_selected_barracks_unit(BuildUnit::Melee);
+    assert_eq!(
+        game.cities[0].barracks_queue,
+        [Queued::new(BuildUnit::Melee)]
+    );
+}
+
 #[test]
 fn build_card_queues_its_unit() {
     let mut game = GameState::city_scenario();
     game.research_all(Team::Blue);
     game.select_city();
-    let siege = Target::Build(BuildUnit::Siege);
-    game.handle_click(button_cursor(&game, siege), SCREEN, ClickMode::Normal);
+    let worker = Target::BuildWorker;
+    game.handle_click(button_cursor(&game, worker), SCREEN, ClickMode::Normal);
     let city = game.selected_city.unwrap();
-    assert_eq!(
-        game.cities[city].queue,
-        [Queued::new(Build::Unit(BuildUnit::Siege))]
-    );
+    assert_eq!(game.cities[city].queue, [Queued::new(Build::Worker)]);
 }
 
 #[test]
@@ -731,7 +802,7 @@ fn mill_and_workshop_cards_are_placed_the_same_way() {
 fn city_queue_scroll_keeps_the_box_bounded_and_targets_the_visible_items() {
     let mut game = city_view();
     for _ in 0..8 {
-        game.queue_selected_city_unit(BuildUnit::Melee);
+        game.queue_selected_city_worker();
     }
     let layout = game.layout(SCREEN);
     let scroll = layout.queue_scrollbars.first().expect("queue scrollbar");
@@ -807,10 +878,7 @@ fn barracks_queue_uses_the_same_scroll_window() {
 fn reordered_builds_show_saved_work_in_city_and_barracks_rows() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Queued::worked(Build::Unit(BuildUnit::Melee), 4),
-        Queued::new(Build::Unit(BuildUnit::Ranged)),
-    ];
+    game.cities[city].queue = vec![Queued::worked(Build::Worker, 4), Queued::new(Build::Scout)];
     game.reorder_queue(QueueKind::City, 0, 1);
     let mut panel = PanelBuilder::default();
     game.city_queue_panel(city, 2, &mut panel);
@@ -855,8 +923,8 @@ fn reordered_builds_show_saved_work_in_city_and_barracks_rows() {
 fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.cities[city].queue = [BuildUnit::Melee, BuildUnit::Ranged, BuildUnit::Siege]
-        .map(|unit| Queued::new(Build::Unit(unit)))
+    game.cities[city].queue = [Build::Worker, Build::Scout, Build::Settler]
+        .map(Queued::new)
         .to_vec();
     let layout = game.layout(SCREEN);
     let row_cursor = |index| {
@@ -879,10 +947,7 @@ fn queue_rows_drag_to_reorder_and_x_removes_without_dragging() {
     game.update_queue_drag_at(to, SCREEN);
     assert_eq!(game.queue_drag.unwrap().target, Some(0));
     game.finish_queue_drag_at(to, SCREEN);
-    assert_eq!(
-        game.cities[city].queue[0].build,
-        Build::Unit(BuildUnit::Siege)
-    );
+    assert_eq!(game.cities[city].queue[0].build, Build::Settler);
     assert!(game.queue_drag.is_none());
 
     let x = button_cursor(&game, Target::CityQueueRemove(1));
@@ -932,7 +997,7 @@ fn barracks_queue_rows_use_the_same_drag_and_remove_targets() {
 fn queue_row_count_tracks_available_screen_height() {
     let mut game = city_view();
     for _ in 0..12 {
-        game.queue_selected_city_unit(BuildUnit::Melee);
+        game.queue_selected_city_worker();
     }
     let mut counts = Vec::new();
     for height in [820.0, 900.0, 1200.0] {
@@ -1491,15 +1556,14 @@ fn find_button(game: &GameState, target: Target) -> Button {
 fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     let mut game = GameState::city_scenario();
     game.open_city(0);
-    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
-    assert_eq!(melee.state(), ButtonState::Ready);
-    let price = stock_icons(BuildUnit::Melee.price());
-    assert!(melee.hint.contains(&price), "{}", melee.hint);
-    // The city center takes twice a Barracks' turns.
+    let worker = find_button(&game, Target::BuildWorker);
+    assert_eq!(worker.state(), ButtonState::Ready);
+    let price = stock_icons(Build::Worker.price());
+    assert!(worker.hint.contains(&price), "{}", worker.hint);
     assert!(
-        melee.hint.ends_with(&format!("{TIME_ICON}6")),
+        worker.hint.ends_with(&format!("{TIME_ICON}2")),
         "{}",
-        melee.hint
+        worker.hint
     );
     let grow = find_button(&game, Target::Grow);
     assert!(grow.label.starts_with("GROW TO 3"), "{}", grow.label);
@@ -1513,7 +1577,7 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     };
     // A queue's cards can be queued whatever the stockpile holds; the
     // tooltip says what it's short of this turn, and that it'll wait.
-    for target in [Target::Build(BuildUnit::Melee), Target::Grow] {
+    for target in [Target::BuildWorker, Target::Grow] {
         let card = find_button(&game, target);
         assert_eq!(card.state(), ButtonState::Ready, "{target:?}");
         let text = tooltip(&game, &card);
@@ -1532,18 +1596,15 @@ fn build_cards_show_prices_and_queue_what_the_stockpile_cannot_pay_yet() {
     // Clicked, the card queues its unit, unpaid, and the row says what it
     // waits for.
     game.handle_click(
-        button_cursor(&game, Target::Build(BuildUnit::Melee)),
+        button_cursor(&game, Target::BuildWorker),
         SCREEN,
         ClickMode::Normal,
     );
-    assert_eq!(
-        game.cities[0].queue,
-        [Queued::new(Build::Unit(BuildUnit::Melee))]
-    );
+    assert_eq!(game.cities[0].queue, [Queued::new(Build::Worker)]);
     assert_eq!(game.stock(Team::Blue), Stock::default());
     let short = game
         .expected_stock(Team::Blue)
-        .shortfall(BuildUnit::Melee.price());
+        .shortfall(Build::Worker.price());
     let layout = game.layout(SCREEN);
     let row = layout
         .shapes
@@ -1573,7 +1634,7 @@ fn build_cards_the_stockpile_cannot_pay_for_are_drawn_short_in_both_presentation
     game.cities[0].built.push(Building::Barracks);
     game.fund(Team::Blue);
     game.open_city(0);
-    let city_cards = [Target::Build(BuildUnit::Melee), Target::Grow];
+    let city_cards = [Target::BuildWorker, Target::Grow];
     let short_rims = |game: &GameState| {
         game.build_ui(SCREEN, None)
             .iter()
@@ -2104,9 +2165,7 @@ fn the_turn_strip_lists_civilian_tasks_first_then_unit_groups() {
     assert!(roster(&game)[0].1 && !roster(&game)[1].1 && !roster(&game)[2].1);
 
     // Once it has a build, it leaves the strip.
-    game.cities[open]
-        .queue
-        .push(Queued::new(Build::Unit(BuildUnit::Melee)));
+    game.cities[open].queue.push(Queued::new(Build::Worker));
     let keys = roster_keys(&game);
     assert!(
         !keys.iter().any(|k| matches!(k, RosterKey::Production(_))),
@@ -2126,21 +2185,20 @@ fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
     game.cities[0].barracks = Some(Hex::new(-2, 0));
     game.cities[0].built.push(Building::Barracks);
     let id = game.cities[0].id;
-    // Broke: a Melee and a Ranged, each first in its queue, wait for metal.
+    // Broke: a Grow and a Ranged, each first in its queue, wait.
     game.stockpiles[Team::Blue.index()] = Stock::default();
-    game.queue_build(0, Build::Unit(BuildUnit::Melee));
+    let price = game.queue_price(0, Build::Grow);
+    game.queue_build(0, Build::Grow);
     game.queue_barracks(0, BuildUnit::Ranged);
-    let short = game
-        .expected_stock(Team::Blue)
-        .shortfall(BuildUnit::Melee.price());
-    assert!(short.metal > 0, "{short:?}");
+    let short = game.expected_stock(Team::Blue).shortfall(price);
+    assert!(short.food > 0, "{short:?}");
     let idle = game.idle_queues();
     assert_eq!(idle.len(), 2, "{idle:?}");
     assert!(idle.iter().all(|wait| wait.idle && wait.city == 0));
 
     // The panels: a large line in the waiting red, with how much is short.
     let warning = format!(
-        "GATHERING WHILE IT WAITS: MELEE WAITS, SHORT OF {}",
+        "GATHERING WHILE IT WAITS: GROW WAITS, SHORT OF {}",
         stock_icons(short)
     );
     let mut tray = PanelBuilder::default();
@@ -2190,7 +2248,7 @@ fn an_idle_queue_is_flagged_in_the_panels_the_turn_strip_and_end_turn() {
     );
     let (title, _, text) = game.roster_tooltip(city_chip);
     assert_eq!(title, "CITY 1 GATHERING WHILE IT WAITS");
-    assert!(text.contains("MELEE WAITS, SHORT OF"), "{text}");
+    assert!(text.contains("GROW WAITS, SHORT OF"), "{text}");
 
     // End Turn: nothing needs orders, so it flags the idle queues, and its
     // tooltip names them.
@@ -2409,7 +2467,7 @@ fn the_settings_menu_opens_centered_over_the_panels_and_its_buttons_work() {
     let unit = GameState::new();
     let mut city = GameState::city_scenario();
     city.select_city();
-    city.queue_selected_city_unit(BuildUnit::Melee);
+    city.queue_selected_city_worker();
     for mut game in [plain, unit, city] {
         assert!(!game.layout(SCREEN).buttons.iter().any(|b| b.target == on));
         game.settings_open = true;
@@ -3031,10 +3089,7 @@ fn imgui_captured_unit_tooltips_describe_that_unit() {
 fn queue_rows_turn_strip_chips_and_end_turn_have_the_same_tooltip_in_both_presentations() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Queued::worked(Build::Unit(BuildUnit::Melee), 4),
-        Queued::new(Build::Unit(BuildUnit::Ranged)),
-    ];
+    game.cities[city].queue = vec![Queued::worked(Build::Worker, 4), Queued::new(Build::Scout)];
     let chip = *roster_keys(&game).first().expect("a turn strip chip");
     let targets = [
         Target::QueueItem(QueueKind::City, 0),
@@ -3088,10 +3143,7 @@ fn queue_rows_turn_strip_chips_and_end_turn_have_the_same_tooltip_in_both_presen
 fn classic_hides_a_queue_rows_tooltip_while_a_row_is_dragged() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.cities[city].queue = vec![
-        Queued::new(Build::Unit(BuildUnit::Melee)),
-        Queued::new(Build::Unit(BuildUnit::Ranged)),
-    ];
+    game.cities[city].queue = vec![Queued::new(Build::Worker), Queued::new(Build::Scout)];
     let layout = game.layout(SCREEN);
     let row = layout
         .queue_items
@@ -3247,12 +3299,9 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
     let mut game = city_view();
     game.stockpiles[Team::Blue.index()] = Stock::default();
     let mut screen = ImGuiScreen::new();
-    screen.click(&mut game, Target::Build(BuildUnit::Siege));
+    screen.click(&mut game, Target::Grow);
     let city = game.selected_city.unwrap();
-    assert_eq!(
-        game.cities[city].queue,
-        [Queued::new(Build::Unit(BuildUnit::Siege))]
-    );
+    assert_eq!(game.cities[city].queue, [Queued::new(Build::Grow)]);
     assert!(game.notice.contains("WAITS, SHORT OF"), "{}", game.notice);
     // The queue's row is drawn, from the shared content that marks it
     // waiting; the tray says what the city waits for.
@@ -3280,7 +3329,7 @@ fn imgui_queues_a_build_the_side_cannot_pay_for_and_shows_it_waiting() {
         _ => None,
     }))
     .join(" ");
-    assert!(text.contains("SIEGE WAITS, SHORT OF"), "{text}");
+    assert!(text.contains("GROW WAITS, SHORT OF"), "{text}");
     // With nothing it can work, it gathers, and the tray, the queue and
     // the hover panel say so; the queue's row is still drawn where it was.
     let gathering = format!("GATHERING {}", stock_icons(GATHER_YIELD));
@@ -3442,13 +3491,13 @@ fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
     for _ in 0..6 {
-        game.queue_selected_city_unit(BuildUnit::Melee);
+        game.queue_selected_city_worker();
     }
     game.queue_selected_city_growth();
     game.queue_selected_city_growth();
     // As turns' economies would leave it: the head paid for and under way,
     // and a Grow paid for.
-    game.cities[city].queue[0] = Queued::worked(Build::Unit(BuildUnit::Melee), 1);
+    game.cities[city].queue[0] = Queued::worked(Build::Worker, 1);
     game.cities[city].queue[6].paid = true;
     let mut one_by_one = game.clone();
     while !one_by_one.cities[city].queue.is_empty() {
@@ -3545,7 +3594,7 @@ fn each_queue_panel_has_a_clear_button_that_refunds_everything() {
 fn the_clear_button_is_dimmed_while_a_turn_plays_out() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
-    game.queue_selected_city_unit(BuildUnit::Melee);
+    game.queue_selected_city_worker();
     game.resolve_turn();
     assert!(game.is_resolving());
     let layout = game.layout(SCREEN);
@@ -3566,7 +3615,7 @@ fn the_imgui_clear_buttons_empty_their_queues() {
     let mut game = city_view();
     let city = game.selected_city.unwrap();
     for _ in 0..4 {
-        game.queue_selected_city_unit(BuildUnit::Ranged);
+        game.queue_selected_city_worker();
     }
     let mut screen = ImGuiScreen::new();
     screen.click(&mut game, Target::ClearCityQueue);
@@ -3608,7 +3657,7 @@ fn waiting_guest() -> GameState {
     guest.fund(team);
     guest.open_city(city);
     guest.queue_selected_city_gather();
-    guest.queue_selected_city_unit(BuildUnit::Ranged);
+    guest.queue_selected_city_worker();
     guest.end_planning();
     assert!(guest.waiting_for_peers(), "{}", guest.notice);
     guest
@@ -3769,15 +3818,15 @@ fn the_waiting_button_takes_the_turn_back_in_both_presentations() {
         let team = game.local_team;
         let city = game.cities.iter().position(|c| c.team == team).unwrap();
         game.open_city(city);
-        let melee = find_button(&game, Target::Build(BuildUnit::Melee));
+        let melee = find_button(&game, Target::BuildWorker);
         assert_ne!(melee.state(), ButtonState::Disabled);
-        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::BuildWorker);
         game.activate_target(Target::EndTurn);
         assert!(game.waiting_for_peers(), "{}", game.notice);
         assert!(matches!(
             &game.take_outbox()[..],
             [crate::game::NetMessage::Plan(plan)]
-                if plan.cities[0].queue.iter().any(|q| q.build == Build::Unit(BuildUnit::Melee))
+                if plan.cities[0].queue.iter().any(|q| q.build == Build::Worker)
         ));
     }
 }
@@ -3889,7 +3938,7 @@ fn a_crowded_city_tray_stays_docked_with_its_list_scrolling_inside_it() {
             }
             // Its buttons, catalogue included, are inside it and clickable.
             for target in [
-                Target::Build(BuildUnit::Melee),
+                Target::BuildScout,
                 Target::Priority(Good::Metal),
                 Target::OpenInterior,
             ] {
@@ -3970,8 +4019,8 @@ fn a_tray_with_room_shows_its_whole_list_and_catalogue() {
         .iter()
         .filter(|b| contains(catalog.min, catalog.max, b.min))
         .count();
-    // Its heading, then cards.
-    assert_eq!(cards, BUILDING_LIST_VISIBLE - 1);
+    // Its heading, the Scout, Settler and Worker, and the next heading.
+    assert_eq!(cards, BUILDING_LIST_VISIBLE - 2);
 }
 
 #[test]
@@ -3997,7 +4046,7 @@ fn a_crowded_imgui_city_panel_scrolls_to_every_row() {
         let mut screen = ImGuiScreen::with_size(size);
         screen.settle(&mut game);
         // The top of the panel shows: how to stop placing, and the cards.
-        for target in [Target::CancelPlacing, Target::Build(BuildUnit::Melee)] {
+        for target in [Target::CancelPlacing, Target::BuildWorker] {
             let at = screen.button(target).expect("drawn");
             assert!(on_screen(at, size), "{target:?} at {at} in {size}");
         }
@@ -4803,7 +4852,7 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
     let city = || {
         let mut game = city_view();
         game.cities[0].population = 3;
-        game.activate_target(Target::Build(BuildUnit::Melee));
+        game.activate_target(Target::BuildWorker);
         game.activate_target(Target::BuildSettler);
         game
     };
@@ -4866,7 +4915,7 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
             let crowded = crowded_marks(window);
             assert!(crowded.is_empty(), "{name} at {width}: {crowded:#?}");
             // The catalogue's cards further down, scrolled to, then back.
-            let Some(card) = screen.button(Target::Build(BuildUnit::Melee)) else {
+            let Some(card) = screen.button(Target::BuildWorker) else {
                 continue;
             };
             let before = screen.button(Target::BuildSettler);
@@ -5013,45 +5062,45 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
             .any(|s| matches!(s, Shape::Text { line, .. } if line.iter().any(|(t, _)| t == count)))
     };
     assert!(drawn(&game, &count), "the classic top bar shows {count}");
-    // A troop card says what it uses.
-    let melee = find_button(&game, Target::Build(BuildUnit::Melee));
-    assert_eq!(melee.state(), ButtonState::Ready);
-    let tooltip = tooltip_text(&game, &melee);
+    // A Scout card says what it uses.
+    let scout = find_button(&game, Target::BuildScout);
+    assert_eq!(scout.state(), ButtonState::Ready);
+    let tooltip = tooltip_text(&game, &scout);
     assert!(
         tooltip
             .replace(' ', "")
             .contains(&format!("USES1SUPPLY:{used}OF{cap}USED")),
         "{tooltip}"
     );
-    // Full: the troop and Scout cards are dimmed and say why, and a click
-    // on a locked card queues nothing.
+    // Full: the Scout card is dimmed and says why, and a click on it
+    // queues nothing.
     while game.supply_used(Team::Blue) < cap {
-        game.queue_selected_city_unit(BuildUnit::Melee);
+        game.cities[0]
+            .barracks_queue
+            .push(Queued::new(BuildUnit::Melee));
     }
     let full = format!("SUPPLY FULL ({cap}/{cap})");
-    for target in [Target::Build(BuildUnit::Melee), Target::BuildScout] {
-        catalog_cursor(&mut game, target);
-        let card = find_button(&game, target);
-        assert_eq!(card.state(), ButtonState::Disabled, "{target:?}");
-        assert_eq!(card.hint, full, "{target:?}");
-        let tooltip = tooltip_text(&game, &card).replace(' ', "");
-        assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
-    }
+    catalog_cursor(&mut game, Target::BuildScout);
+    let card = find_button(&game, Target::BuildScout);
+    assert_eq!(card.state(), ButtonState::Disabled);
+    assert_eq!(card.hint, full);
+    let tooltip = tooltip_text(&game, &card).replace(' ', "");
+    assert!(tooltip.contains(&full.replace(' ', "")), "{tooltip}");
     let queued = game.cities[0].queue.len();
-    let at = catalog_cursor(&mut game, Target::Build(BuildUnit::Melee));
+    let at = catalog_cursor(&mut game, Target::BuildScout);
     game.handle_click(at, SCREEN, ClickMode::Normal);
     assert_eq!(game.cities[0].queue.len(), queued);
     // ImGui: the same card, locked, with the same reason.
     let mut screen = ImGuiScreen::new();
-    let tooltips = screen.tooltips(&mut game, Target::Build(BuildUnit::Melee));
-    assert!(!tooltips.is_empty(), "ImGui shows the Melee card");
+    let tooltips = screen.tooltips(&mut game, Target::BuildScout);
+    assert!(!tooltips.is_empty(), "ImGui shows the Scout card");
     assert!(
         tooltips
             .iter()
             .all(|t| t.replace(' ', "").contains(&full.replace(' ', ""))),
         "{tooltips:?}"
     );
-    screen.click(&mut game, Target::Build(BuildUnit::Melee));
+    screen.click(&mut game, Target::BuildScout);
     assert_eq!(game.cities[0].queue.len(), queued);
     drop(screen);
     // The Barracks: its supply line, and its troops locked.
@@ -5071,14 +5120,12 @@ fn supply_shows_in_the_top_bar_and_a_full_supply_locks_the_cards_in_both_present
 }
 
 #[test]
-fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
+fn a_queued_scout_the_supply_has_no_room_for_waits_for_supply() {
     let mut game = city_view();
     game.extra_supply = [0; Team::ALL.len()];
     game.cities[0].population = 3;
-    while game.supply_used(Team::Blue) < game.supply_cap(Team::Blue) {
-        game.queue_selected_city_unit(BuildUnit::Melee);
-    }
-    game.cities[0].queue.truncate(1);
+    game.queue_selected_city_scout();
+    assert_eq!(game.cities[0].queue.len(), 1);
     // Two citizens lost since it was queued: no room to start it.
     assert!(game.remove_citizen(0) && game.remove_citizen(0));
     let status = game.queue_status(0, crate::game::city::Lane::City);
@@ -5096,7 +5143,7 @@ fn a_queued_troop_the_supply_has_no_room_for_waits_for_supply() {
             .collect()
     };
     assert!(rows[0].contains("WAITS FOR SUPPLY"), "{rows:?}");
-    let waits = "MELEE WAITS FOR SUPPLY";
+    let waits = "SCOUT WAITS FOR SUPPLY";
     assert_eq!(status.head.map(|wait| wait_text(&wait)), Some(waits.into()));
     let tray = panel_strings(|panel| game.city_tray(0, panel));
     assert_shows(&tray, &format!("GATHERING WHILE IT WAITS: {waits}"));
@@ -5496,7 +5543,7 @@ fn imgui_a_floating_debug_goes_where_each_view_has_it() {
 fn imgui_a_queue_docked_under_the_city_tray_keeps_its_share_when_it_comes_back() {
     let mut game = city_view();
     // Something queued, so the queue shows.
-    game.activate_target(Target::Build(BuildUnit::Melee));
+    game.activate_target(Target::BuildWorker);
     let city = game.selected_city.unwrap();
     let unit = player_units(&game)[0];
     let mut screen = ImGuiScreen::new();
@@ -5775,18 +5822,19 @@ fn pikeman_cards_queue_it_in_both_presentations() {
     game.open_city(0);
     let price = stock_icons(pike.price());
     assert!(!price.contains(METAL_ICON) && !price.contains(WOOD_ICON));
-    // Classic: the city's card.
-    let card = catalog_cursor(&mut game, Target::Build(pike));
-    let hint = find_button(&game, Target::Build(pike)).hint;
-    assert!(hint.contains(&price), "{hint}");
-    game.handle_click(card, SCREEN, ClickMode::Normal);
-    assert_eq!(game.cities[0].queue, [Queued::new(Build::Unit(pike))]);
-    // ImGui: the Barracks' card.
+    // Classic: the Barracks' card.
     game.open_barracks(0);
     let hint = find_button(&game, Target::BarracksBuild(pike)).hint;
     assert!(hint.contains(&price), "{hint}");
-    screen_click(&mut game, Target::BarracksBuild(pike));
+    game.handle_click(
+        button_cursor(&game, Target::BarracksBuild(pike)),
+        SCREEN,
+        ClickMode::Normal,
+    );
     assert_eq!(game.cities[0].barracks_queue, [Queued::new(pike)]);
+    // ImGui: the same card.
+    screen_click(&mut game, Target::BarracksBuild(pike));
+    assert_eq!(game.cities[0].barracks_queue, [Queued::new(pike); 2]);
     // Its tray: the bonus against mounted units.
     game.units
         .push(Unit::new(50, Hex::new(2, 2), Team::Blue, UnitType::Pikeman));
