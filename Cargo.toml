@@ -37,3 +37,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
 ] }
+
+# Debug info only for file:line in panics and backtraces: incremental test builds are about a
+# quarter faster, but a debugger can't show locals. Override locally with
+# CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
