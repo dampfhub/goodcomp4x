@@ -142,7 +142,7 @@ to millions of vertices.
    (`GameState::stockpiles`, `city/economy.rs`), feeds the citizens from it, pays for and works each
    side's first tech (`work_research`, `research.rs`: research pays first), has each queue pay
    for the item it starts and gives it a turn's work (`work_queues`: the first item paid for or
-   affordable, city by city in order, each city's queue before its Barracks'; `work_rate`; a
+   affordable, in `pay_order`: every Barracks in city order, then every city's queue; `work_rate`; a
    city whose own queue works nothing gathers by itself, `auto_gather`) and
    completes builds, growth included, and research (`complete_research`); builds were queued unpaid (`queue_build`), by the
    player's clicks or the AI's `plan_ai_cities` (`plan_ai_research` queues its research); each

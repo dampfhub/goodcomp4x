@@ -795,9 +795,10 @@ only).
   starts, not when it is queued. At each turn's economy, after income and upkeep, every queue
   works the first item in it that is already paid for or that the stockpile can pay for then,
   paying for it if it isn't; items before it that the stockpile can't pay for **wait** in place,
-  unpaid, and the queue goes back to them as soon as it can pay. Queues pay in city order, each
-  city's queue before its Barracks', so when several wait on one stockpile the first city's is
-  paid first. Each item keeps its own work, which reordering carries with it; an unpaid item has
+  unpaid, and the queue goes back to them as soon as it can pay. Research pays first, then
+  **every Barracks**, in city order, then every city's queue, in city order. The stockpile is the
+  side's, so a troop queued at a city center, where it takes twice as long, never takes the goods
+  a Barracks was ready to train with (#400). Each item keeps its own work, which reordering carries with it; an unpaid item has
   none. A worked item moved out of the active slot shows SAVED on its queue row until it resumes.
   A waiting item's row is tinted red and says what it waits for ("WAITS, SHORT OF" and the
   missing resources, each with how much), the city tray, Barracks tray and hover panel name the
