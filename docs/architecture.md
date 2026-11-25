@@ -101,7 +101,7 @@ extending beyond hex centers; headless callers keep a conservative default.
 Run `cargo test --release world_overlay_report -- --ignored --nocapture` to measure the
 F4/F10/Alt workload at the default and maximum camera heights. The report excludes first-use
 atlas/layout initialization and measures CPU geometry generation, not total frame time.
-`cargo run -- --screenshot world.png --scenario world --seed 3 --world-overlay --size 2560x1440`
+`cargo run --release -- --screenshot world.png --scenario world --seed 3 --world-overlay --size 2560x1440`
 provides a reproducible GPU check. Geometry-budget tests prevent repeated artwork from returning
 to millions of vertices.
 

@@ -120,6 +120,6 @@ and `imgui/tests/frames.rs` draws every kind of selection in every scenario, a f
 a new kind of selection or view goes in its `selections`. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
 `imgui::DRAWN_MARKS` holds each piece of text and icon drawn, with what clips it.
 After UI changes look at a screenshot of each presentation:
-`cargo run -- --screenshot out.png --scenario cities` shows ImGui, and `--ui classic` the classic
+`cargo run --release -- --screenshot out.png --scenario cities` shows ImGui, and `--ui classic` the classic
 UI. `--turns N` plays N turns first, the AI on every side, for what the opening position
 doesn't show (queues, a later turn's panels).
