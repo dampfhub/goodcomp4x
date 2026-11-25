@@ -2,8 +2,10 @@
 name = "vulkan_engine"
 version = "0.1.0"
 edition = "2024"
-# The oldest Rust that builds this crate and its dependencies (epaint_default_fonts needs 1.92).
-rust-version = "1.92"
+# The oldest Rust that builds this crate and its dependencies: let chains in our code and
+# sha2 0.11 both need 1.88. CI's msrv job checks it. CI lints and tests with a
+# pinned newer Rust (.github/workflows/ci.yml).
+rust-version = "1.88"
 
 [dependencies]
 anyhow = "1.0.104"

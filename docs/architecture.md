@@ -20,8 +20,7 @@ vertex lists. File-level maps and the rules for editing each layer are in `src/A
 ```
 AGENTS.md            agent instructions for the whole repo (nested ones under src/)
 README.md            what this is and how to run it
-Cargo.toml, build.rs crate manifest (rust-version 1.92); build.rs compiles shaders/ with glslc
-src/main.rs          logger, command line, event loop
+Cargo.toml, build.rs crate manifest (rust-version 1.88); build.rs compiles shaders/ with glslcsrc/main.rs          logger, command line, event loop
 src/cli.rs           command-line flags (--scenario, --seed, --screenshot, --size, --host/--join)
 src/net/             a network game's link: TCP, sealed with a key from the join code (docs/multiplayer.md)
 src/app.rs           App: window, input -> GameState calls, frame pacing (monitor rate, at most 165 FPS; 30 unfocused), F5 fullscreen
