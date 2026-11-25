@@ -543,20 +543,50 @@ fn a_queue_skips_what_it_cannot_pay_for_and_goes_back_once_it_can() {
 }
 
 #[test]
-fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
+fn the_barracks_pays_before_its_city_queue() {
+    // #400: a Melee queued at the city center and one at the Barracks, and
+    // metal for one. The Barracks, where it trains in half the turns, pays;
+    // the city's Melee waits, and the city gathers meanwhile.
+    let mut g = GameState::city_scenario();
+    g.units.clear();
+    g.cities[0].clusters.clear();
+    g.cities[0].population = 1;
+    g.cities[0].barracks = Some(Hex::new(-3, 1));
+    g.queue_build(0, Build::Unit(BuildUnit::Melee));
+    g.queue_barracks(0, BuildUnit::Melee);
+    let income = g.side_income(Team::Blue);
+    g.stockpiles[Team::Blue.index()] = Stock {
+        food: 80,
+        wood: 0,
+        metal: BuildUnit::Melee.price().metal - income.metal,
+    };
+    let forecast = g.forecast(Team::Blue);
+    assert_eq!(forecast.lane(0, Lane::Barracks).unwrap().worked, Some(0));
+    assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, None);
+    assert!(g.gathers_this_turn(&forecast, 0));
+
+    g.resolve_economy();
+    assert!(g.cities[0].barracks_queue[0].paid, "the Barracks pays");
+    assert!(!g.cities[0].queue[0].paid, "the city's Melee waits");
+    assert!(g.auto_gathered.contains(&0), "the city gathers");
+}
+
+#[test]
+fn queues_waiting_on_one_stockpile_pay_barracks_first_then_in_city_order() {
     let mut g = GameState::city_scenario();
     g.units.clear();
     g.cities.push(City::new(2, Team::Blue, Hex::new(-2, -3)));
     let other = g.cities.len() - 1;
-    // Nothing comes in, and enough wood for one Melee: city 0 pays first,
-    // its city queue before its Barracks', and the others wait.
+    // Nothing comes in, and enough metal for one Melee: the stockpile is
+    // the side's, so every Barracks pays before any city's queue, the
+    // second city's Barracks before the first city's queue.
     for c in [0, other] {
         g.cities[c].clusters.clear();
         g.cities[c].population = 1;
     }
     let melee = Build::Unit(BuildUnit::Melee);
-    g.cities[0].barracks = Some(Hex::new(-3, 1));
-    g.queue_barracks(0, BuildUnit::Melee);
+    g.cities[other].barracks = Some(Hex::new(-3, -2));
+    g.queue_barracks(other, BuildUnit::Melee);
     g.queue_build(0, melee);
     g.queue_build(other, melee);
     let income = g.side_income(Team::Blue);
@@ -566,8 +596,11 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
         metal: BuildUnit::Melee.price().metal - income.metal,
     };
     let forecast = g.forecast(Team::Blue);
-    assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, Some(0));
-    assert_eq!(forecast.lane(0, Lane::Barracks).unwrap().worked, None);
+    assert_eq!(
+        forecast.lane(other, Lane::Barracks).unwrap().worked,
+        Some(0)
+    );
+    assert_eq!(forecast.lane(0, Lane::City).unwrap().worked, None);
     assert_eq!(forecast.lane(other, Lane::City).unwrap().worked, None);
     let waits = |city, lane| {
         forecast
@@ -575,21 +608,32 @@ fn cities_waiting_on_one_stockpile_pay_in_city_order_then_queue_order() {
             .and_then(|lane| g.head_wait(lane))
             .is_some()
     };
-    assert!(waits(0, Lane::Barracks), "its Barracks waits");
-    assert!(!waits(0, Lane::City));
+    assert!(!waits(other, Lane::Barracks));
+    assert!(waits(0, Lane::City));
     assert!(waits(other, Lane::City));
+    // The panels still list them in city order.
+    let listed: Vec<_> = forecast.lanes.iter().map(|l| (l.city, l.lane)).collect();
+    assert_eq!(
+        listed,
+        [
+            (0, Lane::City),
+            (0, Lane::Barracks),
+            (other, Lane::City),
+            (other, Lane::Barracks)
+        ]
+    );
 
     g.resolve_economy();
-    assert!(g.cities[0].queue[0].paid);
-    assert!(!g.cities[0].barracks_queue[0].paid);
+    assert!(g.cities[other].barracks_queue[0].paid);
+    assert!(!g.cities[0].queue[0].paid);
     assert!(!g.cities[other].queue[0].paid);
-    // All spent; the city left waiting gathers.
-    assert_eq!(g.stock(Team::Blue).metal, GATHER_YIELD.metal);
+    // All spent; both cities, left waiting, gather.
+    assert_eq!(g.stock(Team::Blue).metal, GATHER_YIELD.metal * 2);
 
-    // With metal for one more, the Barracks, next in order, pays.
+    // With metal for one more, the first city's queue, next in order, pays.
     g.stockpiles[Team::Blue.index()].metal = BuildUnit::Melee.price().metal - income.metal;
     g.resolve_economy();
-    assert!(g.cities[0].barracks_queue[0].paid);
+    assert!(g.cities[0].queue[0].paid);
     assert!(!g.cities[other].queue[0].paid, "still waiting");
 }
 

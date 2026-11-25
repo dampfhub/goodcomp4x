@@ -387,7 +387,8 @@ impl GameState {
             *self.stock_mut(team) += goods;
         }
         self.feed_citizens();
-        // Research pays first, then each queue, in city order (`research.rs`).
+        // Research pays first (`research.rs`), then each queue, in
+        // `pay_order`: every Barracks, then every city's queue.
         self.work_research();
         // Each queue pays for what it starts and works it. A Barracks trains
         // whatever its managers do; with production speeding builds, each
