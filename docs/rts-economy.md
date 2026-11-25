@@ -1019,3 +1019,61 @@ to 0.18.
 
 `PROTOCOL_VERSION` 39. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
 simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
+
+## Ties between equal tiles go nearest the city (#401)
+
+The Round 11 report found delivery at 100% out to 4 hexes did worse than the 75% band it would
+replace, and guessed why: a citizen takes the open tile worth the most, and ties went to the
+lowest hex coordinates. With every tile in reach delivering alike, a plain 2-food tile at the
+city's west edge beat the same tile next door, so the manager went out 4 hexes and its workers
+with it. The 75% band hid this by making the far tiles worth less. A road does the same today:
+a tile 4 hexes out along one delivers 100%.
+
+**Confirmed.** With delivery at 100% to 4 hexes (a local edit, not kept), a side's worked tiles
+stood 3.7 hexes from its city on average at turn 20, against 1.8 as the rules are. Ties going
+nearest the city bring that to 1.2 under either rule, and 100% to 4 hexes then plays like the
+band, within a turn or 0.1 on every number below.
+
+**The rule now** (`tie_key`, `citizens.rs`): between tiles of equal value, the one nearest the
+city; then a number that looks random from the tile's hex, so no direction goes first
+everywhere; then its coordinates. Nothing else changed.
+
+### Measured
+
+`economy_report`, seeds 0-23, the default games, on `main` at 81de4d6 and this change; 60 turns
+for the second city, cities and wood, 100 for the rest (its rows stop at turn 80). The distance
+came from a local addition, not in the tree.
+
+```
+SIM_SEEDS=24 cargo test --release economy_report -- --ignored --nocapture
+SIM_SEEDS=24 REPORT_TURNS=100 cargo test --release economy_report -- --ignored --nocapture
+```
+
+World with 4 AI sides, per side:
+
+| | before | after | 100% to 4 hexes, before | 100% to 4 hexes, after |
+|---|---|---|---|---|
+| Worked tiles' distance from the city, turn 20 | 1.8 | 1.2 | 3.7 | 1.2 |
+| Population at turn 40 / 60 / 80 | 3.7 / 5.9 / 10.0 | 3.7 / 6.3 / 10.8 | 3.3 / 3.9 / 5.7 | 3.7 / 6.3 / 10.9 |
+| Food income at turn 40 / 60 | 12.5 / 19.2 | 13.0 / 20.6 | 8.9 / 10.9 | 13.1 / 20.7 |
+| Army at turn 40 / 60 / 80 | 5.0 / 5.7 / 9.1 | 5.2 / 6.0 / 10.4 | 4.5 / 4.7 / 6.6 | 5.2 / 6.0 / 10.4 |
+| Second city (never by 60) | 50 (20%) | 48 (18%) | 54 (70%) | 49 (16%) |
+| Cities at turn 60 | 1.9 | 1.9 | 1.2 | 2.0 |
+| Wood at turn 40 | 24 | 24 | 50 | 23 |
+
+The other games, before → after: army at turn 60 7.1 → 7.8 (World with 1 AI side), 5.6 → 6.0
+(5), 5.8 → 6.1 (6) and 8.0 → 8.5 (Cities), where a city reaches 7 citizens at turn 55 instead of
+59. The first troop stays at turn 8 everywhere.
+
+### What it shows
+
+- **The 100% band's loss was the tie-break,** not the band. Spread out to the edge of reach,
+  the cities fed themselves far less (10.9 food against 19.2 at turn 60); why the far tiles do
+  so much worse wasn't traced further. With ties nearest the city, the band no longer works as
+  a pull toward it, and choosing between 75% and 100% at 3-4 hexes is a plain question of reach.
+- **It helps a little as the rules are:** tiles within one band tie too (all those within 2
+  hexes, and all those at 3-4), and citizens now stay closer within each: a third of a citizen
+  and of a troop more at turn 60.
+
+`PROTOCOL_VERSION` 41. Checked with `cargo test`, `SIM_SEEDS=16 cargo test --release
+simulation` and `cargo test --release plans_the_ai_makes -- --ignored`.
