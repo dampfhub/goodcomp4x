@@ -157,12 +157,21 @@ clamps to the range. A new setting therefore needs no UI code: add it in
 `game/settings.rs` as its module comment describes (its name, tooltip and
 values are entries in `text/menus.ini`), and both presentations show it
 with its control.
-**The research view** (`ui/research.rs`, T) is a kind of selection (`SelectionKind::Research`,
-in the City / Building view): its tree (`research_tray`) fills the Selection slot and the
-research queue (`research_queue_panel`, rows of `QueueKind::Research`, dragged and removed as a
-city's are) the queue slot, in both presentations, so it needs no slot of its own. It shows
-only while nothing else is selected (`research_view`), and anything opened over it closes it
-(`close_research_behind`, each frame). It has no captured (boxed) form.
+**The research view** (`ui/research.rs`, T) takes the screen below the top bar (#422), in
+both presentations, and hides every other panel while it shows: its tree (`research_tray`) on
+the left and the research queue (`research_queue_panel`, rows of `QueueKind::Research`, dragged
+and removed as a city's are; one line when empty) at the right. It shows only while nothing
+else is selected and the settings menu is shut (`research_view`), and anything opened over it
+closes it (`close_research_behind`, each frame). Classic (`research_screen`) lays an opaque
+ground over the map, which takes the clicks, and docks the two panels at its top corners, as
+tall as the room (`PanelBuilder::min_size`); `layout()` places nothing else, the debug panel and
+turn strip included. ImGui (`draw_research_screen`, `imgui/tech_tree.rs`) draws one fixed,
+opaque window there (`RESEARCH_WINDOW`, static like the status bar, so no slot) with the two
+as panes that scroll on their own; the queue's is narrower (`RESEARCH_QUEUE_WIDTH`, down to
+`RESEARCH_QUEUE_LEAST` to leave the tree its columns). While it shows, `draw_imgui` draws the
+status bar (without the view's layout controls) and the game window's dockspace, which keeps
+the panels docked there in it, and nothing else: no slot, box or captured panel is drawn and
+the layout's state isn't touched, so the player's arrangement is as it was when it closes.
 The tree is one row, `Row::TechTree` (`ui/tech_tree.rs`, built by `GameState::tech_tree` from
 `TECHS`, so it grows with the table): a card per tech (its `ButtonSpec`, which decides
 availability as any button does, and a `TechCard`, what the card shows), each card's column (its
@@ -170,15 +179,15 @@ tier) and place down it (`arrange`: a card moves toward the middle of the cards 
 keeping a card's room from its neighbors), and the prerequisite lines (`Link`, drawn as elbows
 in the room between columns, the brightest last). `TechTree::place` lays it out in the width it
 has from a presentation's measurements (`metrics`): the columns side by side when they fit,
-else the tiers stacked under their headings, without lines, cards wrapping to the width.
+spread apart (up to a card's width between two) and centered in room to spare, else the tiers
+stacked under their headings, without lines, cards wrapping to the width.
 Classic places each card as a button that draws itself (`Button::card`,
 `tech_tree::draw_tech_card`) and the lines as `Shape::Fill`; its row is as wide as the
-columns, and `fit_height` drops the unlocks' names (keeping their icons in a row) when the tree
-is taller than the screen has room for. A queue that doesn't fit over the tree docks beside it.
-ImGui (`imgui/tech_tree.rs`) draws each card over an invisible button, which takes the click and
-shows the tooltip, and gives the Selection slot the tree's width (`tree_panel_width`) and the
-queue beside it a narrower one (`RESEARCH_QUEUE_WIDTH`). `--view research` opens the view
-as the game starts, for a screenshot.
+columns, or the room its panel gives it (`TechTree::room`), where the tiers stack, and
+`fit_height` drops the unlocks' names (keeping their icons in a row) when the tree is taller
+than the screen has room for. ImGui draws each card over an invisible button, which takes the
+click and shows the tooltip, and always keeps the columns side by side: a pane narrower than
+them scrolls across. `--view research` opens the view as the game starts, for a screenshot.
 **Text files.** The menus' words come from `text/menus.ini`, and the status and
 top bars', the Debug panel's and the window titles' from `text/ui.ini`, and the
 units' (trays, orders, abilities) from `text/units.ini`, through

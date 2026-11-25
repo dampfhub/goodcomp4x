@@ -32,8 +32,6 @@ pub(super) enum SelectionKind {
     Barracks,
     Unit,
     Group,
-    /// The research view (`ui/research.rs`).
-    Research,
 }
 
 impl SelectionKind {
@@ -46,7 +44,6 @@ impl SelectionKind {
             Self::Barracks => "barracks",
             Self::Unit => "unit",
             Self::Group => "group",
-            Self::Research => "research",
         }
     }
 
@@ -54,7 +51,7 @@ impl SelectionKind {
     /// its Debug docking.
     pub(super) fn view(self) -> ViewScope {
         match self {
-            Self::Interior | Self::City | Self::Barracks | Self::Research => ViewScope::City,
+            Self::Interior | Self::City | Self::Barracks => ViewScope::City,
             Self::Unit | Self::Group => ViewScope::Troop,
         }
     }
@@ -568,8 +565,6 @@ impl GameState {
             (SelectionKind::Unit, Some(self.units[unit].id as usize))
         } else if !self.group.is_empty() {
             (SelectionKind::Group, None)
-        } else if self.research_view() {
-            (SelectionKind::Research, None)
         } else {
             return None;
         };

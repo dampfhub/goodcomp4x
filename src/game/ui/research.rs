@@ -1,18 +1,22 @@
-//! The research view (T, or a city's Research button): the tech tree in
-//! the Selection panel (`research_tray`, `tech_tree`: what each card shows
-//! and where the lines go; `tech_tree.rs` lays it out), and the side's
-//! research queue in the queue panel (`research_queue_panel`); and the
-//! research the top bar shows (`research_spans`). The rules are
-//! `game/research.rs`.
+//! The research view (T, or a city's Research button), which takes the
+//! screen below the top bar, every other panel hidden: the tech tree
+//! (`research_tray`, `tech_tree`: what each card shows and where the lines
+//! go; `tech_tree.rs` lays it out) and, at its right, the side's research
+//! queue (`research_queue_panel`); classic places the two in
+//! `research_screen`, ImGui in `imgui/tech_tree.rs`. And the research the
+//! top bar shows (`research_spans`). The rules are `game/research.rs`.
 
-use super::builder::{ButtonSpec, PanelBuilder};
+use glam::Vec2;
+
+use super::builder::{ButtonSpec, PanelBuilder, Row};
+use super::queue::queue_items_that_fit;
 use super::tech_tree::{
     Link, LinkState, TechCard, TechState, TechTree, UnlockIcon, UnlockMark, arrange,
 };
 use super::text::{cost_hint, turns_text};
 use super::{
-    DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, Line, QueueItemSpec, QueueKind, REDUCED_TEXT, SMALL,
-    TEXT, TITLE, Target, WAITING_TEXT,
+    Color, DIM_TEXT, GAP, GOLD_TEXT, LABEL_TEXT, Layout, Line, MARGIN, PADDING, QueueItemSpec,
+    QueueKind, REDUCED_TEXT, SMALL, Shape, TEXT, TITLE, TOP_BAR_HEIGHT, Target, WAITING_TEXT, Zone,
 };
 use crate::game::GameState;
 use crate::game::city::{Build, stock_icons};
@@ -21,6 +25,12 @@ use crate::game::keys::Command;
 use crate::game::research::{ResearchForecast, Tech, Unlock, names};
 use crate::game::strings::text;
 use crate::game::unit_icons::UnitIcon;
+
+/// Classic: the research queue's width, at the screen's right.
+const QUEUE_COLUMN: f32 = 320.0;
+/// Classic: the research view's ground, under its two panels, which hides
+/// the map.
+const GROUND: Color = [0.006, 0.007, 0.01, 1.0];
 
 /// Its tier: 1 for a tech that needs none, else one past the highest tier
 /// among those it needs.
@@ -38,9 +48,11 @@ fn numeral(tier: usize) -> String {
 
 impl GameState {
     /// Whether the research view shows: opened, and nothing else selected
-    /// (opening anything else closes it, `close_research_behind`).
+    /// and the settings menu shut (opening anything else closes it,
+    /// `close_research_behind`).
     pub(in crate::game) fn research_view(&self) -> bool {
         self.research_open
+            && !self.settings_open
             && self.selected_city.is_none()
             && self.selected_barracks.is_none()
             && self.interior_view.is_none()
@@ -56,6 +68,7 @@ impl GameState {
             return;
         }
         self.leave_city_view();
+        self.close_settings();
         self.selected = None;
         self.group.clear();
         self.ui_click_mode = None;
@@ -100,8 +113,40 @@ impl GameState {
         vec![("   ".into(), LABEL_TEXT), value]
     }
 
-    /// The research view's Selection panel: what's researched now, then the
-    /// tree (`tech_tree`).
+    /// Classic: the research view over the screen below the top bar, on a
+    /// ground that hides the map: the tree's panel (`research_tray`) and,
+    /// at the right, the queue's (`research_queue_panel`), as tall as the
+    /// room. `layout()` places nothing else while it shows.
+    pub(super) fn research_screen(&self, screen: Vec2, layout: &mut Layout) {
+        let ground = Vec2::new(screen.x, screen.y - TOP_BAR_HEIGHT);
+        layout.shapes.push(Shape::Fill {
+            min: Vec2::ZERO,
+            max: ground,
+            color: GROUND,
+        });
+        let width = screen.x - 2.0 * MARGIN;
+        let height = layout.remaining_height(Zone::TopLeft, width);
+        let mut queue = PanelBuilder::default();
+        self.research_queue_panel(queue_items_that_fit(height), &mut queue);
+        queue.min_size = Vec2::new(QUEUE_COLUMN.min(width * 0.4).round(), height);
+        let tree_width = width - queue.size().x - GAP;
+        let mut tree = PanelBuilder::default();
+        self.research_tray(&mut tree);
+        for row in &mut tree.rows {
+            if let Row::TechTree(tree) = row {
+                tree.room = Some(tree_width - 2.0 * PADDING);
+            }
+        }
+        tree.min_size = Vec2::new(tree_width, height);
+        tree.fit_height(height);
+        layout.dock_panel(tree, Zone::TopLeft);
+        layout.dock_panel(queue, Zone::TopRight);
+        // The ground takes the clicks between them too, after the two, so a
+        // button's panel is found before it.
+        layout.panels.push((Vec2::ZERO, ground));
+    }
+
+    /// The research view's tree, under what's researched now.
     pub(super) fn research_tray(&self, panel: &mut PanelBuilder) {
         let team = self.local_team;
         panel.text(
@@ -173,6 +218,7 @@ impl GameState {
                 text!("research_card_waits").to_string(),
             ],
             names: true,
+            room: None,
         }
     }
 
@@ -269,11 +315,14 @@ impl GameState {
     }
 
     /// The research queue panel: its title with Clear, and a row for each
-    /// tech, the first marked while it's worked, red while it waits.
+    /// tech, the first marked while it's worked, red while it waits; a line
+    /// saying it's empty when it is.
     pub(super) fn research_queue_panel(&self, visible: usize, panel: &mut PanelBuilder) {
         let team = self.local_team;
         let queue = &self.research(team).queue;
         if queue.is_empty() {
+            let empty = text!("research_queue_empty").to_string();
+            panel.text(SMALL, vec![(empty, LABEL_TEXT)]);
             return;
         }
         let offset = self

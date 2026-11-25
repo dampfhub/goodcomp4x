@@ -983,15 +983,16 @@ only).
   tech off (its row's X) also takes off every queued tech that needs it, and refunds each that
   was paid, its work lost; Clear empties the queue the same way. A researched tech stays
   researched; taking a city doesn't give its owner's techs.
-- **The research view** (T, or a city's Research button): what is researched now, and the
-  tree, laid out from `TECHS`: a column per tier, with a line from each tech to each tech that
+- **The research view** (T, or a city's Research button) takes the screen below the top bar,
+  hiding the map and every other panel (all are back where they were when it closes): what
+  is researched now, and the tree, laid out from `TECHS`: a column per tier, with a line from each tech to each tech that
   needs it (green once it's researched, gold between two queued). Each tech's card shows its
   price and turns, what it unlocks (each unit's or building's icon and name) and where it
   stands: RESEARCHED (green); researched now (gold, its turns left and a progress bar); WAITS
   (red); QUEUED and its place (a gold rim); ready; or dimmed while a tech it needs isn't
   researched. A click queues it as above; its tooltip says what it unlocks and needs, its
-  price, and what queuing it queues first. The research queue shows in the queue panel. T again,
-  Escape or Space closes it, and opening a city, Barracks or unit closes it. The top bar shows
+  price, and what queuing it queues first. The research queue shows at its right. T again,
+  Escape or Space closes it, and opening a city, Barracks, unit or the settings menu closes it. The top bar shows
   the tech researched now and its turns left (red, WAITS, while it waits), or NO RESEARCH.
 - In a network game the research queue is part of a side's plan (`docs/multiplayer.md`).
 

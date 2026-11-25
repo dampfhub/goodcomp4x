@@ -59,6 +59,8 @@ pub(super) use native::forget_docking;
 #[cfg(test)]
 pub(super) use screen::ImGuiScreen;
 #[cfg(test)]
+pub(super) use tech_tree::RESEARCH_WINDOW;
+#[cfg(test)]
 pub(super) use test_hooks::{
     DRAWN_BUTTONS, DRAWN_MARKS, DrawnControl, DrawnMark, SHORT_BUTTONS, SHOWN_NOTICE,
     SHOWN_TOOLTIPS, STATUS_CONTROLS, dock_beside, native_geometry, one_context_at_a_time,
@@ -102,9 +104,6 @@ pub(super) const STATUS_HEIGHT: f32 = 52.0;
 const BAR_HEIGHT: f32 = 12.0;
 /// The settings menu's width, before a narrow screen takes some off.
 const SETTINGS_WIDTH: f32 = 460.0;
-/// The research queue's width beside the tech tree: its rows are a tech's
-/// name and its turns.
-const RESEARCH_QUEUE_WIDTH: f32 = 340.0;
 const COLLAPSED_HEIGHT: f32 = 30.0;
 const SLOT_COUNT: usize = 6;
 const SELECTION: usize = 0;
@@ -145,11 +144,29 @@ impl GameState {
     ) {
         let viewport = Vec2::from_array(ui.io().display_size);
         let arranging = ui.io().key_ctrl;
-        layout.begin_frame(ui, arranging);
+        let mut frame = ImGuiFrame {
+            ui,
+            viewport,
+            fonts,
+            arranging,
+            actions: Vec::new(),
+        };
         // Pins are by city and unit id, which every new game reuses.
         if layout.game_changed(self.generation) {
             layout.clear_captured_panels();
         }
+        if self.research_view() {
+            // It takes the screen under the status bar. No panel or box is
+            // drawn and the layout is left as it is, so all are back where
+            // they were as it closes. The dockspace is drawn as ever, or
+            // the panels docked in it would come out of it.
+            layout.game_dock_id = draw_game_dockspace(ui, viewport);
+            self.draw_status_bar(&mut frame, layout);
+            self.draw_research_screen(&mut frame);
+            self.carry_out(frame.actions, layout, viewport);
+            return;
+        }
+        layout.begin_frame(ui, arranging);
         // The game window docked as the view has it, before its dockspace
         // is drawn (#360).
         layout.update_game_dock(self.layout_view());
@@ -162,13 +179,6 @@ impl GameState {
         }
         layout.switch_layout_scope(self.layout_view());
         layout.apply_pending_view_reset();
-        let mut frame = ImGuiFrame {
-            ui,
-            viewport,
-            fonts,
-            arranging,
-            actions: Vec::new(),
-        };
         let valid_groups: Vec<_> = layout
             .pinned_groups
             .iter()
@@ -211,8 +221,6 @@ impl GameState {
             tray.action_toolbar(self.unit_buttons(idx));
         } else if !self.group.is_empty() {
             self.group_tray(&mut tray);
-        } else if self.research_view() {
-            self.research_tray(&mut tray);
         }
         // A pinned structure's own window has its controls, not Selection.
         let selection = self.selection_kind().filter(|_| !selection_is_pinned);
@@ -226,8 +234,6 @@ impl GameState {
             self.city_queue_panel(city, usize::MAX, &mut queue);
         } else if let Some(city) = self.selected_barracks {
             self.barracks_queue_panel(city, usize::MAX, &mut queue);
-        } else if self.research_view() {
-            self.research_queue_panel(usize::MAX, &mut queue);
         }
         let debug = self.debug_panel_content();
         let mut hover = PanelBuilder::default();
@@ -275,29 +281,19 @@ impl GameState {
         };
         let units = self.roster_panel();
         let settings = self.settings_open.then(|| self.settings_panel_content());
-        // The research view's tree wants its columns side by side, and its
-        // queue of short rows leaves the room beside it to the rest.
-        let tree_width = tree_panel_width(ui, fonts, &tray);
-        let tray_width =
-            tree_width.map_or(left_width, |width| width.max(left_width).min(max_width));
-        let queue_width = if tree_width.is_some() {
-            left_width.min(RESEARCH_QUEUE_WIDTH)
-        } else {
-            left_width
-        };
-        let queue_height = measure_panel(ui, &queue, fonts, queue_width).min(225.0);
-        let mut tray_height = measure_panel(ui, &tray, fonts, tray_width).min(available);
+        let queue_height = measure_panel(ui, &queue, fonts, left_width).min(225.0);
+        let mut tray_height = measure_panel(ui, &tray, fonts, left_width).min(available);
         // On a narrow screen the queue cannot wrap into a second column, so
         // reserve its space above the selection before docking either window.
         if !tray.rows.is_empty()
             && !queue.rows.is_empty()
-            && viewport.x < tray_width + queue_width + 3.0 * PANEL_MARGIN + PANEL_GAP
+            && viewport.x < 2.0 * left_width + 3.0 * PANEL_MARGIN + PANEL_GAP
         {
             tray_height = tray_height.min((available - queue_height - PANEL_GAP).max(120.0));
         }
         let measured = [
-            (!tray.rows.is_empty()).then_some(Vec2::new(tray_width, tray_height)),
-            (!queue.rows.is_empty()).then_some(Vec2::new(queue_width, queue_height)),
+            (!tray.rows.is_empty()).then_some(Vec2::new(left_width, tray_height)),
+            (!queue.rows.is_empty()).then_some(Vec2::new(left_width, queue_height)),
             Some(Vec2::new(
                 debug_width,
                 measure_panel(ui, &debug, fonts, debug_width).min(available),
@@ -386,7 +382,13 @@ impl GameState {
             layout.capture_panel(pin, box_id, slot_titles()[QUEUE]);
         }
         layout.last_queue_outer_box = queue_box;
-        for action in frame.actions {
+        self.carry_out(frame.actions, layout, viewport);
+    }
+
+    /// Carries out what the frame's buttons asked for, once every window
+    /// is drawn.
+    fn carry_out(&mut self, actions: Vec<Action>, layout: &mut ImGuiLayoutState, viewport: Vec2) {
+        for action in actions {
             match action {
                 Action::Button(Some(pin), target) => {
                     self.activate_pinned(pin, &layout.pinned_groups, target)

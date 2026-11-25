@@ -299,6 +299,8 @@ pub(super) struct PanelBuilder {
     /// See-through, for the debug panel.
     pub(super) faded: bool,
     pub(super) scrollbar: Option<(QueueKind, usize, usize, usize)>,
+    /// Classic: the least size it takes, padding included.
+    pub(super) min_size: Vec2,
 }
 
 impl PanelBuilder {
@@ -466,10 +468,7 @@ impl PanelBuilder {
                 visible as f32 * 30.0 + (visible + 1) as f32 * 4.0
             }
             Row::ScrollList(list) => list.window(),
-            Row::TechTree(tree) => {
-                let metrics = tree.classic_metrics();
-                tree.place(tree.width(&metrics), &metrics).size.y
-            }
+            Row::TechTree(tree) => tree.classic_height(),
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
@@ -517,24 +516,22 @@ impl PanelBuilder {
                 chips.len() as f32 * ROSTER_CHIP
                     + chips.len().saturating_sub(1) as f32 * ROSTER_CHIP_GAP
             }
-            Row::TechTree(tree) => tree.width(&tree.classic_metrics()),
+            Row::TechTree(tree) => tree.classic_width(),
             Row::Heading(_) | Row::Setting(..) | Row::Field(..) => {
                 unreachable!("expanded by classic_rows")
             }
         }
     }
 
-    /// The panel's size, padding included.
+    /// The panel's size, padding included, at least `min_size`.
     pub(super) fn size(&self) -> Vec2 {
         let rows = classic_rows(self.rows.clone());
         let width = rows.iter().map(Self::row_width).fold(0.0, f32::max);
         let height: f32 = rows.iter().map(Self::row_height).sum();
-        let scroll_extra = if self.scrollbar.is_some() {
-            GAP + SCROLLBAR_WIDTH
-        } else {
-            0.0
-        };
-        (Vec2::new(width + scroll_extra, height) + 2.0 * PADDING).round()
+        let scroll_extra = self.scrollbar.map_or(0.0, |_| GAP + SCROLLBAR_WIDTH);
+        (Vec2::new(width + scroll_extra, height) + 2.0 * PADDING)
+            .round()
+            .max(self.min_size)
     }
 
     pub(super) fn place_bottom_left(self, min: Vec2, layout: &mut Layout) {

@@ -32,7 +32,8 @@ file holds.
   panels and to the game window's edges, where each view keeps its own docking:
   `update_game_dock`) and boxable (Ctrl) like Selection, Debug or the turn
   strip (`UNITS`). Only static chrome, such as the status bar, may be a fixed `ui.window` with
-  its own flags. The game window's dockspace must keep passing the mouse through to the map
+  its own flags; so is the full-screen research view, drawn in place of every panel
+  (`draw_research_screen`), which must leave the layout's state alone. The game window's dockspace must keep passing the mouse through to the map
   (`draw_game_dockspace`; `imgui_a_panel_docks_to_the_window_edge_and_the_map_keeps_the_mouse`).
 - **Classic placement.** Place persistent panels with `Layout::dock_panel(panel, Zone::..)`
   (zones in `dock.rs`); never position one by hand or compute offsets from another panel's

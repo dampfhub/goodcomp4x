@@ -1,7 +1,9 @@
-//! The research view's tech tree in ImGui (`Row::TechTree`): laid out by
-//! `ui/tech_tree.rs` in ImGui's fonts, each card an invisible button with
-//! the card drawn over it, so it clicks, says why it's off and shows its
-//! tooltip as any panel button does.
+//! The research view in ImGui: a fixed window over the screen below the
+//! status bar (`draw_research_screen`), drawn in place of every panel, with
+//! the tech tree and the research queue side by side. The tree
+//! (`Row::TechTree`) is laid out by `ui/tech_tree.rs` in ImGui's fonts,
+//! each card an invisible button with the card drawn over it, so it clicks,
+//! says why it's off and shows its tooltip as any panel button does.
 
 use super::*;
 use crate::game::ui::tech_tree::{
@@ -10,10 +12,23 @@ use crate::game::ui::tech_tree::{
 };
 use crate::game::unit_icons;
 
-/// The room `measure_panel` and the window leave around a panel's rows,
-/// with a vertical scrollbar's: what the Selection window needs besides
-/// the tree for the tree to fit (`tree_panel_width`).
-const PANEL_ROOM: f32 = 45.0 + 16.0;
+/// The research view's window: static, like the status bar, so it's no
+/// slot, and ImGui keeps nothing of it between sessions.
+pub(in crate::game::ui) const RESEARCH_WINDOW: &str = "Research view";
+/// The research queue's width beside the tree, before a narrow screen
+/// takes some off: its rows are a tech's name and its turns.
+const RESEARCH_QUEUE_WIDTH: f32 = 340.0;
+/// The least it takes while the screen has room, before the tree's
+/// columns do: its title then wraps.
+const RESEARCH_QUEUE_LEAST: f32 = 210.0;
+const RESEARCH_FLAGS: WindowFlags = WindowFlags::NO_TITLE_BAR
+    .union(WindowFlags::NO_RESIZE)
+    .union(WindowFlags::NO_MOVE)
+    .union(WindowFlags::NO_COLLAPSE)
+    .union(WindowFlags::NO_DOCKING)
+    .union(WindowFlags::NO_SAVED_SETTINGS)
+    .union(WindowFlags::NO_SCROLLBAR)
+    .union(WindowFlags::NO_SCROLL_WITH_MOUSE);
 
 /// The tree's sizes in ImGui's fonts (`fonts`: small, body, title).
 pub(super) fn tree_metrics(ui: &Ui, fonts: &[FontId; 3], tree: &TechTree) -> TreeMetrics {
@@ -40,21 +55,73 @@ pub(super) fn tree_metrics(ui: &Ui, fonts: &[FontId; 3], tree: &TechTree) -> Tre
 /// The tree's height in `width`, as `render_tech_tree` lays it out.
 pub(super) fn tree_height(ui: &Ui, fonts: &[FontId; 3], tree: &TechTree, width: f32) -> f32 {
     let metrics = tree_metrics(ui, fonts, tree);
-    tree.place(width, &metrics).size.y
-}
-
-/// How wide a panel holding a tech tree wants to be: room for the tree's
-/// columns side by side.
-pub(super) fn tree_panel_width(ui: &Ui, fonts: &[FontId; 3], panel: &PanelBuilder) -> Option<f32> {
-    panel.rows.iter().find_map(|row| match row {
-        Row::TechTree(tree) => Some(tree.width(&tree_metrics(ui, fonts, tree)) + PANEL_ROOM),
-        _ => None,
-    })
+    tree.place(width.max(tree.width(&metrics)), &metrics).size.y
 }
 
 impl GameState {
-    /// Draws `tree` in the width the window has: its headings, its lines,
-    /// and its cards, each a button.
+    /// The research view: one opaque window over everything below the
+    /// status bar, the tree (`research_tray`) in a pane that scrolls on
+    /// its own, and the research queue (`research_queue_panel`) in a
+    /// narrower one at the right, which leaves the tree's columns their
+    /// room while it can.
+    pub(super) fn draw_research_screen(&self, frame: &mut ImGuiFrame) {
+        let mut tree = PanelBuilder::default();
+        self.research_tray(&mut tree);
+        let mut queue = PanelBuilder::default();
+        self.research_queue_panel(usize::MAX, &mut queue);
+        let scope = PanelScope {
+            pin: None,
+            subject: self.selection_subject(),
+        };
+        let (ui, viewport, fonts) = (frame.ui, frame.viewport, frame.fonts);
+        let style = ui.clone_style();
+        let columns = tree.rows.iter().find_map(|row| match row {
+            Row::TechTree(tree) => Some(tree.width(&tree_metrics(ui, fonts, tree))),
+            _ => None,
+        });
+        // The tree pane's room besides the tree: its padding and scrollbar.
+        let tree_room =
+            columns.unwrap_or(0.0) + 2.0 * style.window_padding[0] + style.scrollbar_size;
+        ui.window(RESEARCH_WINDOW)
+            .flags(RESEARCH_FLAGS)
+            .bg_alpha(1.0)
+            .position([0.0, STATUS_HEIGHT], Condition::Always)
+            .size(
+                [viewport.x, (viewport.y - STATUS_HEIGHT).max(1.0)],
+                Condition::Always,
+            )
+            .build(|| {
+                let [width, height] = ui.content_region_avail();
+                let queue_width = (width - PANEL_GAP - tree_room)
+                    .clamp(RESEARCH_QUEUE_LEAST, RESEARCH_QUEUE_WIDTH)
+                    .min(width * 0.4)
+                    .floor();
+                let panes = [
+                    ("##research-tree", &tree, width - queue_width - PANEL_GAP),
+                    ("##research-queue", &queue, queue_width),
+                ];
+                for (index, (id, panel, pane_width)) in panes.into_iter().enumerate() {
+                    if index > 0 {
+                        ui.same_line_with_spacing(0.0, PANEL_GAP);
+                    }
+                    ui.child_window(id)
+                        .size([pane_width.max(1.0), height.max(1.0)])
+                        .border(true)
+                        // The tree's columns may be wider than its pane.
+                        .horizontal_scrollbar(index == 0)
+                        .build(|| {
+                            if ui.is_window_appearing() {
+                                ui.set_scroll_y(0.0);
+                            }
+                            self.render_imgui_panel(frame, panel, scope);
+                        });
+                }
+            });
+    }
+
+    /// Draws `tree` in the width the window has, its columns side by side,
+    /// wider than the window if they must (its pane then scrolls across):
+    /// its headings, its lines, and its cards, each a button.
     pub(super) fn render_tech_tree(
         &self,
         frame: &mut ImGuiFrame,
@@ -63,7 +130,8 @@ impl GameState {
     ) {
         let (ui, fonts) = (frame.ui, frame.fonts);
         let metrics = tree_metrics(ui, fonts, tree);
-        let placed = tree.place(ui.content_region_avail()[0], &metrics);
+        let width = ui.content_region_avail()[0].max(tree.width(&metrics));
+        let placed = tree.place(width, &metrics);
         let origin = ui.cursor_screen_pos();
         let at = |p: Vec2| [origin[0] + p.x, origin[1] + p.y];
         {

@@ -4839,15 +4839,7 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         game.activate_target(Target::OpenMultiplayer);
         game
     };
-    let research = || {
-        let mut game = city_view();
-        game.research[0] = Default::default();
-        game.toggle_research();
-        let last = crate::game::research::Tech::all().last().unwrap();
-        game.activate_target(Target::Research(last));
-        game
-    };
-    let panels: [(&str, &str, &dyn Fn() -> GameState); 11] = [
+    let panels: [(&str, &str, &dyn Fn() -> GameState); 9] = [
         ("city", "Selection", &city),
         ("city queue", "Production Queue", &city),
         ("barracks", "Selection", &barracks),
@@ -4857,8 +4849,6 @@ fn imgui_panels_keep_their_text_and_icons_apart_at_every_width() {
         ("debug", "Debug", &unit),
         ("settings", "Settings", &settings),
         ("multiplayer", "Settings", &multiplayer),
-        ("research", "Selection", &research),
-        ("research queue", "Production Queue", &research),
     ];
     let mut screen = ImGuiScreen::styled(size);
     for (name, window, make) in panels {
