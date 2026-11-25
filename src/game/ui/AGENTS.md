@@ -1,7 +1,7 @@
 # src/game/ui/
 
 The screen-space UI: shared panel content and its two presentations, ImGui (the default,
-`imgui.rs`) and classic (F11, drawn by `paint.rs`). Read `docs/ui-system.md` before editing;
+`imgui/`) and classic (F11, drawn by `paint.rs`). Read `docs/ui-system.md` before editing;
 this file is the short list of rules. The module table in `src/game/AGENTS.md` says what each
 file holds.
 
@@ -10,8 +10,11 @@ file holds.
 - **Both presentations.** Build panel content once with `PanelBuilder` (`builder.rs`) and route
   every action through a `Target` and `GameState::activate_target` (`mod.rs`), so the ImGui and
   classic views show the same thing and do the same thing. A new kind of row is a `Row` variant
-  that `builder.rs` places (classic) and `imgui.rs` measures (`measure_panel`) and renders
-  (`render_imgui_panel`).
+  that `builder.rs` places (classic) and ImGui measures (`measure_panel`, `imgui/measure.rs`)
+  and renders (`render_imgui_panel`, `imgui/render.rs`).
+- **ImGui's C API** (`imgui::sys`) is called only from `imgui/native.rs`, which holds all of
+  the presentation's `unsafe` behind safe functions (`native_state`, `queue_dock`, `undock`).
+  Need another call? Add a function there; nothing else touches a raw window or dock node.
 - **A button that changes the plan** (an order, a build, a citizen, a worker) stays on while a
   network game waits for the others' plans: the method it calls refuses only while
   `is_playing_out`, and the change takes the turn back (`take_back_on_new_orders`,
@@ -22,8 +25,9 @@ file holds.
   never decide a button's availability anywhere else (not in `tooltips.rs`).
   `every_disabled_button_says_why_in_every_scenario` (`tests.rs`) walks every view.
 - **Every new ImGui panel is draggable and dockable.** Give it a slot: a constant and an entry in
-  `SLOT_TITLES` (`imgui.rs`), a zone in `ImGuiLayoutState::plan`, a measured size in
-  `draw_imgui`, and a `render_imgui_window` call. That makes it movable, resizable (a
+  `slot_titles()` (`imgui/mod.rs`), a zone in `ImGuiLayoutState::plan`
+  (`imgui/layout_state.rs`), and in `draw_imgui` a measured size and its panel, whose window
+  it then draws (`render_imgui_window`). That makes it movable, resizable (a
   double-click on its title bar or grip resets its place or size), dockable (to the other
   panels and to the game window's edges, where each view keeps its own docking:
   `update_game_dock`) and boxable (Ctrl) like Selection, Debug or the turn
@@ -43,7 +47,7 @@ file holds.
 - Cursor-following tooltips and the selection box are overlays with their own anchors. The
   settings menu is the one panel placed outside the dock: centered, in both presentations.
 - Colors are linear and the swapchain is sRGB: dark panels need values around 0.01-0.05. ImGui
-  style colors (`style_imgui`, `imgui.rs`) and draw-list colors are linear too.
+  style colors (`style_imgui`, `imgui/style.rs`) and draw-list colors are linear too.
 - Map geometry drawn in a panel (the turn strip's chips) comes from the world drawing code
   (`draw::push_unit_token`, `draw::push_city_tower`, via `paint::push_chip_icon`), built Y-up;
   ImGui's draw list is Y-down, so flip it.
@@ -55,7 +59,7 @@ file holds.
   sweeps the panels' widths.
 - **Icons in text.** Prices, stockpiles and turns use the icon characters of `map_icons.rs`
   (`stock_icons`, `turns_icon`, `cost_hint` in `text.rs`); both presentations draw them as the
-  map's icons: classic in `font::Face`, ImGui through `rich_text` / `rich_button` (`imgui.rs`).
+  map's icons: classic in `font::Face`, ImGui through `rich_text` / `rich_button` (`imgui/widgets.rs`).
   Render game text in ImGui with those, never `ui.text`, or an icon shows as `?`. A count of
   turns is always the clock and the number (`turns_icon`, or `turns_text` in the UI), never
   "N TURNS" or "NT"; world text (`font::push_text`) draws the icons too.
@@ -82,7 +86,7 @@ file holds.
 
 - **New piece of ImGui layout state** worth keeping between sessions (where the player put
   something): a line in `ImGuiLayoutState::to_text` and its reading in `from_text`
-  (`imgui.rs`), with the round-trip test. Save only what the player chose; what the layout
+  (`imgui/persist.rs`), with the round-trip test (`imgui/tests/layout.rs`). Save only what the player chose; what the layout
   computes is computed again.
 
 - **New unit button:** a `UnitAction` variant (`mod.rs`), a `ButtonSpec` in the tray's button
@@ -94,23 +98,24 @@ file holds.
 - **New panel:** shared content in a `GameState` method returning a `PanelBuilder`; dock it in
   `layout()` for classic and give it an ImGui slot (above). Add a layout test (no overlap,
   buttons inside their panel) in `tests.rs`, and for ImGui extend the `plan` tests in
-  `imgui.rs` (their size arrays have one entry per slot). A slot's place in `PLAN_ORDER` is
+  `imgui/tests/layout.rs` (their size arrays have one entry per slot). A slot's place in `PLAN_ORDER` is
   its priority within its zone.
 - **New player setting:** no UI change. `settings_menu.rs` builds a `Row::Setting` for every
   entry of `Setting::ALL`, under its `group`'s heading, and its `control` (checkbox, slider or
   choice) picks the widget in both presentations, so add the setting in `game/settings.rs`
   (its module comment lists the steps; its words are entries in `text/menus.ini`). The settings menu tests in `tests.rs` walk
   `Setting::ALL` too. A new kind of control (text entry, say) is a `Control` variant, drawn by
-  `render_setting` (`imgui.rs`) and laid out as buttons by `classic_setting_rows`.
+  `render_setting` (`imgui/render.rs`) and laid out as buttons by `classic_setting_rows`.
 
 ## Verifying
 
 `tests.rs` covers layout and hit-testing without a window, in both presentations: classic through
 `layout()` and `handle_click`, ImGui through `ImGuiScreen`, a headless ImGui context that draws
 the real panels and clicks a button where ImGui drew it (`imgui::DRAWN_BUTTONS`, filled by
-`note_drawn_button` for panel buttons and catalogue cards). `imgui` allows one context per process,
-so any test that makes one holds `imgui::one_context_at_a_time()`. `imgui.rs` has the dock-plan
-tests. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
+`note_drawn_button` for panel buttons and catalogue cards; the notes are in
+`imgui/test_hooks.rs`). `imgui` allows one context per process, so any test that makes one holds
+`imgui::one_context_at_a_time()`. `imgui/tests.rs` has the views', boxes' and captured panels'
+tests, and `imgui/tests/layout.rs` the saved layout's and the dock plan's. `ImGuiScreen::styled` uses the game's fonts and style, for tests of where text goes;
 `imgui::DRAWN_MARKS` holds each piece of text and icon drawn, with what clips it.
 After UI changes run `cargo build --release` and look at a screenshot
 (`cargo run -- --screenshot out.png --scenario cities`); screenshot mode shows ImGui, and the

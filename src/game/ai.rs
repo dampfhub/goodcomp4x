@@ -18,8 +18,9 @@ use super::fog::{Fog, Sighting};
 use super::hex::Hex;
 use super::research::{Tech, Unlock};
 use super::settings::ANIMALS_MANY;
+use super::terrain::Resource;
 use super::unit::{Team, Unit, UnitType};
-use super::workers::{FARM_FOOD, JobKind, PASTURE_FOOD, WorkerJob};
+use super::workers::{FARM_FOOD, JobKind, PASTURE_FOOD, WORKER_REACH, WorkerJob};
 
 /// What an AI side knows as it plans its units: its fog, and what's worth
 /// going for in it. Sets, not lists, as searches ask of every hex they
@@ -318,6 +319,37 @@ const AI_RESEARCH: [BuildUnit; 4] = [
     BuildUnit::Pikeman,
     BuildUnit::Armored,
 ];
+/// What an AI side keeps in its stockpile before it spends on buildings
+/// (`place_ai_building`), the techs that unlock them, improvements ahead
+/// of its citizens (`plan_ai_workers`), or Ranged over Melee: about a
+/// Settler's and a Ranged's wood.
+pub(super) const AI_RESERVE: Stock = Stock::whole(0, 20, 0);
+/// The metal an AI side keeps back, past `AI_RESERVE`, when it spends
+/// metal on a building, and twice that for a Siege: troops' metal, as
+/// metal is what most often holds its army back.
+const AI_METAL_RESERVE: Stock = Stock::whole(0, 0, 10);
+/// What an AI side researches once it has its troops' techs
+/// (`AI_RESEARCH`), and only from what it has past `AI_RESERVE`: the
+/// Cannery's tech, then the Siege's.
+const AI_SURPLUS_RESEARCH: [Unlock; 2] = [
+    Unlock::Building(Building::Cannery),
+    Unlock::Unit(BuildUnit::Siege),
+];
+/// The buildings an AI side spends past `AI_RESERVE` on, in order: the
+/// first it has a site for (`ai_building_gain`) is placed. No Smelter:
+/// the sides with mines to spare bank metal already.
+const AI_BUILDINGS: [Building; 4] = [
+    Building::Forge,
+    Building::Stable,
+    Building::Cannery,
+    Building::Mill,
+];
+/// The least a Cannery must collect for the AI to build it, in quarters a
+/// turn (3 food), and a Mill add (1 food).
+const AI_CANNERY_MIN_GAIN: i32 = 12;
+const AI_MILL_MIN_GAIN: i32 = 4;
+/// At most one troop in this many is a Siege (`plan_ai_cities`).
+const AI_SIEGE_SHARE: usize = 3;
 
 impl GameState {
     /// The teams the AI plays: every team but the player's that still has a
@@ -335,8 +367,9 @@ impl GameState {
 
     /// What `team` researches: with a city and nothing queued, the tech for
     /// the next troop of `AI_RESEARCH` it lacks (and what that needs first).
-    /// It researches nothing else: it builds nothing else that a tech
-    /// unlocks, and research costs food its cities would grow on. A tech that waits for
+    /// With those, the next of `AI_SURPLUS_RESEARCH`, but only once its
+    /// stockpile holds the price past `AI_RESERVE`: research costs food its
+    /// cities would grow on. A tech that waits for
     /// the stockpile stays queued: research pays first, so the cities spend
     /// only what it leaves once the stockpile can pay for it.
     fn plan_ai_research(&mut self, team: Team) {
@@ -354,7 +387,18 @@ impl GameState {
         let wanted = AI_RESEARCH
             .into_iter()
             .filter_map(|unit| Tech::unlocking(Unlock::Unit(unit)))
-            .find(|&tech| !self.researched(team, tech));
+            .find(|&tech| !self.researched(team, tech))
+            .or_else(|| {
+                let tech = AI_SURPLUS_RESEARCH
+                    .into_iter()
+                    .filter_map(Tech::unlocking)
+                    .find(|&tech| !self.researched(team, tech))?;
+                let price = self
+                    .research_path(team, tech)
+                    .into_iter()
+                    .fold(AI_RESERVE, |sum, t| sum + t.price());
+                self.stock(team).covers(price).then_some(tech)
+            });
         if let Some(tech) = wanted {
             self.queue_research(team, tech);
         }
@@ -454,16 +498,32 @@ impl GameState {
                             .count()
                 })
                 .sum::<usize>();
+        let siege = BuildUnit::Siege;
+        let mut sieges = soldiers(self, Some(UnitType::Siege))
+            + cities
+                .iter()
+                .map(|&c| {
+                    let c = &self.cities[c];
+                    c.barracks_queue.iter().filter(|q| q.build == siege).count()
+                })
+                .sum::<usize>();
         for &city in &cities {
             let stock = self.stock(team);
             self.place_ai_barracks(city, fog);
             // A job is paid when placed.
             spare -= stock - self.stock(team);
             if self.cities[city].barracks.is_some() && self.cities[city].barracks_queue.is_empty() {
-                // Melee, or Ranged for one in three; they're paid in
-                // different goods (food or wood, and metal), so when the
-                // side can pay for only one, that one.
-                let basics = if soldiers(self, Some(UnitType::Ranged)) * 2
+                // Melee, or Ranged for one in three (one in two with wood
+                // past its reserve, which a Ranged pays in where a Melee
+                // pays food); they're paid in different goods (food or
+                // wood, and metal), so when the side can pay for only one,
+                // that one.
+                let ranged_share = if spare.covers(BuildUnit::Ranged.price() + AI_RESERVE) {
+                    1
+                } else {
+                    2
+                };
+                let basics = if soldiers(self, Some(UnitType::Ranged)) * ranged_share
                     < soldiers(self, Some(UnitType::Melee))
                 {
                     [BuildUnit::Ranged, BuildUnit::Melee]
@@ -471,15 +531,25 @@ impl GameState {
                     [BuildUnit::Melee, BuildUnit::Ranged]
                 };
                 let against_mounted = (pikes < mounted).then_some(pike);
+                // A Siege, for the enemy cities it knows of, from what it
+                // has past its reserve, and one troop in `AI_SIEGE_SHARE`
+                // at most.
+                let siege_reserve = AI_RESERVE + AI_METAL_RESERVE + AI_METAL_RESERVE;
+                let against_cities = (!known.cities.is_empty()
+                    && (sieges + 1) * AI_SIEGE_SHARE <= army + 1
+                    && spare.covers(siege.price() + siege_reserve))
+                .then_some(siege);
                 let builds = against_mounted
                     .into_iter()
-                    .chain([BuildUnit::Cavalry, BuildUnit::Armored]);
+                    .chain([BuildUnit::Cavalry, BuildUnit::Armored])
+                    .chain(against_cities);
                 for build in builds.chain(basics) {
                     if self.barracks_lock(city, build).is_none() && spare.covers(build.price()) {
                         self.queue_barracks(city, build);
                         spare -= build.price();
                         army += 1;
                         pikes += usize::from(build == pike);
+                        sieges += usize::from(build == siege);
                         break;
                     }
                 }
@@ -536,6 +606,190 @@ impl GameState {
                 }
             }
         }
+        self.place_ai_building(team, known, spare);
+    }
+
+    /// With more spare this turn than `AI_RESERVE` (and `AI_METAL_RESERVE`
+    /// for one paid in metal) and a building's price,
+    /// `team` places one building for its workers to build, the first of
+    /// `AI_BUILDINGS` it has researched that one of its cities with
+    /// workers, and without one built or going up, has a site for
+    /// (`ai_building_gain`), on the site that gains most (ties by city,
+    /// then hex coordinates). A site is a tile its side has seen within its
+    /// workers' reach, that no city works, unimproved, out of the dens'
+    /// reach, with no enemy in sight on it and no other job.
+    fn place_ai_building(&mut self, team: Team, known: &Knowledge, spare: Stock) {
+        let seen = &self.side_memory[team.index()];
+        let unsafe_tile = |hex: Hex| known.in_den_territory(hex) || known.in_danger(hex);
+        for building in AI_BUILDINGS {
+            let price = building.price();
+            let reserve = if price.metal > 0 {
+                AI_RESERVE + AI_METAL_RESERVE
+            } else {
+                AI_RESERVE
+            };
+            if !self.unlocked(team, Unlock::Building(building)) || !spare.covers(price + reserve) {
+                continue;
+            }
+            let job = |hex| WorkerJob::on_tile(hex, JobKind::Build(building));
+            let mut best: Option<(i32, usize, Hex)> = None;
+            for city in 0..self.cities.len() {
+                let c = &self.cities[city];
+                if c.team != team
+                    || !self.has_workers(city)
+                    || c.built.contains(&building)
+                    || self.building_job_queued(city, building)
+                {
+                    continue;
+                }
+                let sites = within(c.pos, WORKER_REACH).filter(|&hex| {
+                    self.grid.contains(hex)
+                        && seen.contains_key(&hex)
+                        && !unsafe_tile(hex)
+                        && !self.sites.contains_key(&hex)
+                        && !self.cities.iter().any(|o| o.works(hex))
+                        && (!known.fog.sees(hex) || self.enemy_of_team_at(hex, team).is_none())
+                        && self.tile_job_at(team, hex).is_none()
+                        && self.job_problem(city, job(hex)).is_none()
+                });
+                for site in sites {
+                    let gain = self.ai_building_gain(city, building, site, &unsafe_tile);
+                    if gain > 0 && best.is_none_or(|(most, _, _)| gain > most) {
+                        best = Some((gain, city, site));
+                    }
+                }
+            }
+            if let Some((_, city, site)) = best {
+                let _ = self.try_queue_job(city, job(site));
+                return;
+            }
+        }
+    }
+
+    /// What `building` on `site` gains city `city` of the AI, or 0 if
+    /// it's not worth building there:
+    /// - a Forge or Stable beside its Barracks, the deposits it adds that
+    ///   its side's Barracks don't draw on yet (`barracks_deposits`), if its
+    ///   side can train the troop they're for;
+    /// - a Mill, the food its worked tiles beside the site would deliver
+    ///   past their share (in quarters), if at least `AI_MILL_MIN_GAIN`;
+    /// - a Cannery, the food it would collect (`ai_cannery_tiles`), if at
+    ///   least `AI_CANNERY_MIN_GAIN`.
+    fn ai_building_gain(
+        &self,
+        city: usize,
+        building: Building,
+        site: Hex,
+        unsafe_tile: &impl Fn(Hex) -> bool,
+    ) -> i32 {
+        let c = &self.cities[city];
+        let team = c.team;
+        match building {
+            Building::Forge | Building::Stable => {
+                let (resource, troop) = if building == Building::Forge {
+                    (Resource::Iron, BuildUnit::Armored)
+                } else {
+                    (Resource::Horses, BuildUnit::Cavalry)
+                };
+                if c.barracks.is_none_or(|b| b.distance(site) != 1)
+                    || !self.unlocked(team, Unlock::Unit(troop))
+                {
+                    return 0;
+                }
+                let held = self.side_deposits(team, resource);
+                std::iter::once(site)
+                    .chain(site.neighbors())
+                    .filter(|&hex| {
+                        self.grid.contains(hex)
+                            && self.grid.resource(hex) == Some(resource)
+                            && !held.contains(&hex)
+                    })
+                    .count() as i32
+            }
+            Building::Mill => {
+                let routes = self.routes(city);
+                let gain = c
+                    .worked()
+                    .filter(|hex| hex.distance(site) == 1)
+                    .filter_map(|hex| {
+                        let cost = *routes.costs.get(&hex)?;
+                        let (food, _) = self.tile_yield(hex);
+                        Some(food * (4 - self.mill_food_share(city, hex, cost)))
+                    })
+                    .sum();
+                if gain >= AI_MILL_MIN_GAIN { gain } else { 0 }
+            }
+            Building::Cannery => {
+                let gain = self
+                    .ai_cannery_tiles(city, site, unsafe_tile)
+                    .into_iter()
+                    .take(3)
+                    .map(|(value, _, _)| value)
+                    .sum();
+                if gain >= AI_CANNERY_MIN_GAIN { gain } else { 0 }
+            }
+            _ => 0,
+        }
+    }
+
+    /// What a Cannery of city `city` of the AI on `site` would collect
+    /// from, best first (ties by hex coordinates): each tile within 3 hexes
+    /// that no city works, out of the dens' reach and not within 3 of
+    /// another of its side's Canneries, with its food times its share by
+    /// distance (`cannery_income`), in quarters. A tile its side has
+    /// improved counts as it is, and one its workers could make a farm or
+    /// pasture as it would be, flagged `true`.
+    pub(super) fn ai_cannery_tiles(
+        &self,
+        city: usize,
+        site: Hex,
+        unsafe_tile: &impl Fn(Hex) -> bool,
+    ) -> Vec<(i32, Hex, bool)> {
+        let team = self.cities[city].team;
+        let seen = &self.side_memory[team.index()];
+        let others: Vec<Hex> = self
+            .cities
+            .iter()
+            .enumerate()
+            .filter(|&(i, c)| i != city && c.team == team)
+            .filter_map(|(_, c)| c.placed_site(Building::Cannery))
+            .collect();
+        let mut collected: Vec<(i32, Hex, bool)> = within(site, 3)
+            .filter(|&hex| {
+                hex != site
+                    && self.grid.contains(hex)
+                    && self.grid.is_passable(hex)
+                    && seen.contains_key(&hex)
+                    && !unsafe_tile(hex)
+                    && !self.cities.iter().any(|c| c.pos == hex || c.works(hex))
+                    && !others.iter().any(|o| o.distance(hex) <= 3)
+            })
+            .filter_map(|hex| {
+                let (food, improvable) = match self.sites.get(&hex) {
+                    Some(owned) if owned.team == team => (self.tile_yield(hex).0, false),
+                    Some(_) => return None,
+                    None => {
+                        let improve = WorkerJob::on_tile(hex, JobKind::Improve);
+                        let (food, _, label) = self.improvement(hex).ok()?;
+                        if !matches!(label, "FARM" | "PASTURE")
+                            || self.job_problem(city, improve).is_some()
+                            || self.tile_job_at(team, hex).is_some()
+                        {
+                            return None;
+                        }
+                        (food, true)
+                    }
+                };
+                let share = match hex.distance(site) {
+                    1 => 4,
+                    2 => 3,
+                    _ => 2,
+                };
+                (food > 0).then_some((food * share, hex, improvable))
+            })
+            .collect();
+        collected.sort_by_key(|&(value, hex, _)| (Reverse(value), hex.q, hex.r));
+        collected
     }
 
     /// City `city` of the AI, with a worker and no Barracks built or placed,
@@ -2509,5 +2763,120 @@ mod expansion_tests {
         game.plan_ai_turn(Team::Red);
         assert!(game.cities.iter().all(|c| c.team != Team::Red));
         assert!(game.settlers.contains(&id));
+    }
+
+    /// A Red Melee, so its side has a troop.
+    fn add_red_troop(game: &mut GameState, id: u32, pos: Hex) {
+        game.units
+            .push(Unit::new(id, pos, Team::Red, UnitType::Melee));
+    }
+
+    /// A Red unit at `at` looks around for a moment, and leaves.
+    fn red_glances_from(game: &mut GameState, at: Hex) {
+        game.units
+            .push(Unit::new(99, at, Team::Red, UnitType::Melee));
+        game.side_fog(Team::Red);
+        game.units.pop();
+    }
+
+    /// The Cannery's tech comes only from what Red has past its reserve,
+    /// once it has its troops' techs.
+    #[test]
+    fn a_rich_side_researches_the_cannery() {
+        let cannery_tech = Tech::unlocking(Unlock::Building(Building::Cannery)).unwrap();
+        for (wood, wanted) in [(999, Some(cannery_tech)), (AI_RESERVE.wood / 4, None)] {
+            let mut game = red_ready_to_expand();
+            add_red_troop(&mut game, 2, Hex::new(-4, 0));
+            let red = Team::Red.index();
+            game.research[red].done.clear();
+            for unit in AI_RESEARCH {
+                let tech = Tech::unlocking(Unlock::Unit(unit)).unwrap();
+                for t in game.research_path(Team::Red, tech) {
+                    game.research[red].done.insert(t);
+                }
+            }
+            game.stock_mut(Team::Red).wood = wood * 4;
+            game.plan_ai_research(Team::Red);
+            let queued = game.research(Team::Red).queue.first().map(|q| q.build);
+            assert_eq!(queued, wanted, "with {wood} wood");
+        }
+    }
+
+    /// Rich, a city places a Cannery where its workers can improve tiles
+    /// no citizen works for it; at its reserve, it places none.
+    #[test]
+    fn a_rich_side_places_a_cannery_where_it_can_improve_for_it() {
+        let mut game = red_ready_to_expand();
+        game.plan_ai_turn(Team::Red);
+        let site = game.cities[0]
+            .worker_jobs
+            .iter()
+            .find(|job| job.kind == JobKind::Build(Building::Cannery))
+            .map(|job| job.hex)
+            .expect("a Cannery placed");
+        assert!(!game.cities[0].works(site));
+        let collected = game.ai_cannery_tiles(0, site, &|_| false);
+        let gain: i32 = collected.iter().take(3).map(|&(value, _, _)| value).sum();
+        assert!(gain >= AI_CANNERY_MIN_GAIN, "collects {gain}");
+
+        let mut game = red_ready_to_expand();
+        game.stock_mut(Team::Red).wood = AI_RESERVE.wood;
+        game.plan_ai_turn(Team::Red);
+        assert!(
+            game.cities[0]
+                .worker_jobs
+                .iter()
+                .all(|job| !matches!(job.kind, JobKind::Build(_))),
+            "no building at its reserve"
+        );
+    }
+
+    /// With a Cannery built and its worked tiles improved and on roads, a
+    /// rich city's worker improves a tile beside the Cannery, for it.
+    #[test]
+    fn a_rich_sides_workers_improve_for_its_cannery() {
+        use crate::game::city::Site;
+
+        let mut game = red_ready_to_expand();
+        let cannery = Hex::new(-2, 0);
+        game.cities[0]
+            .extra_buildings
+            .insert(Building::Cannery, cannery);
+        game.cities[0].built.push(Building::Cannery);
+        let worked: Vec<Hex> = game.cities[0].worked().collect();
+        for hex in worked {
+            game.sites.insert(
+                hex,
+                Site {
+                    team: Team::Red,
+                    food: 3,
+                    production: 0,
+                    label: "PASTURE",
+                },
+            );
+            game.roads.insert(hex);
+        }
+        game.plan_ai_workers(Team::Red, |_| false);
+        let job = game.cities[0].worker_jobs.first().expect("a job");
+        assert_eq!(job.kind, JobKind::Improve);
+        assert_eq!(job.hex.distance(cannery), 1);
+    }
+
+    /// Rich and knowing of an enemy city, a Barracks trains a Siege, one
+    /// troop in `AI_SIEGE_SHARE` at most; knowing of none, it doesn't.
+    #[test]
+    fn a_rich_side_that_knows_an_enemy_city_trains_a_siege() {
+        for knows in [true, false] {
+            let mut game = red_ready_to_expand();
+            add_red_troop(&mut game, 2, Hex::new(-4, 0));
+            add_red_troop(&mut game, 3, Hex::new(-6, 0));
+            game.cities.push(City::new(1, Team::Blue, Hex::new(5, 0)));
+            if knows {
+                red_glances_from(&mut game, Hex::new(3, 0));
+            }
+            game.plan_ai_turn(Team::Red);
+            let trained = game.cities[0].barracks_queue.first().map(|q| q.build);
+            assert_eq!(trained == Some(BuildUnit::Siege), knows, "knows: {knows}");
+        }
     }
 }

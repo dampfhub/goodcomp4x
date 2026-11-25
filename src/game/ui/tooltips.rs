@@ -33,7 +33,7 @@ pub(super) type TooltipLines = Vec<(u32, Line)>;
 /// member) and the city (or Barracks) of the panel the button is in. The
 /// selection's for the classic tray and ImGui's Selection panel
 /// (`selection_subject`); a captured ImGui panel's own unit or city
-/// (`imgui.rs`), whatever is selected.
+/// (`imgui/pins.rs`), whatever is selected.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Subject {
     pub unit: Option<usize>,

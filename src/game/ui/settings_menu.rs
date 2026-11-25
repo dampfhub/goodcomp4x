@@ -5,7 +5,7 @@
 //! and how to add one, are in `game/settings.rs`; this file needs no change
 //! for a new setting.
 //!
-//! ImGui draws each control as a widget (`imgui.rs`): a checkbox, a slider,
+//! ImGui draws each control as a widget (`imgui/render.rs`): a checkbox, a slider,
 //! or a button per choice (a drop-down list past `Control::MAX_BUTTONS`).
 //! Classic has no such widgets, so `classic_setting_rows` lays a setting out
 //! as its name and buttons on one row: OFF / ON for a switch, one per choice

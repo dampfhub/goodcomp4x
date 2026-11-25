@@ -3,9 +3,13 @@
 The shared UI content lives in `src/game/ui/`. The module is split into
 `mod.rs` (shared types and entry points), `builder.rs` (panel content),
 `trays.rs`, `panels.rs`, `queue.rs`, `roster.rs`, `settings_menu.rs`, `network_menu.rs`, `tooltips.rs`, and `tests.rs`. The game starts with the
-experimental ImGui presentation (`src/game/ui/imgui.rs`), and F11 switches
+experimental ImGui presentation (`src/game/ui/imgui/`), and F11 switches
 between it and the classic layout. `src/game/AGENTS.md` points contributors
-here. Add new controls to the shared `PanelBuilder` content and route their
+here, and its module table says what each of `imgui/`'s files holds: a frame
+(`mod.rs`, `draw_imgui`), the layout's state and plan, the views, boxes and
+captured panels, saving the layout, measuring and drawing a panel's rows, and
+`native.rs`, where every call into ImGui's C API is, and so all of its
+`unsafe`. Add new controls to the shared `PanelBuilder` content and route their
 `Target` actions through `GameState::activate_target`, so both views work.
 The city interior draws a separate 19-hex world map with the normal renderer.
 Map clicks use the interior camera and issue orders to copies. Its small status
@@ -94,9 +98,9 @@ are clamped below the status bar. Docking uses a transparent drag payload so
 the chosen split target stays visible, and floating sizes are preserved across
 dock and undock. Inspect stays transient unless docked into an outer box, where
 it keeps the most recent hover summary visible.
-**Every new panel is a full ImGui panel:** it gets a slot (`SLOT_TITLES` and
-the slot constants in `imgui.rs`, a zone in `plan`, a measured size and a
-`render_imgui_window` call), so it can be dragged, resized, docked and put in
+**Every new panel is a full ImGui panel:** it gets a slot (`slot_titles()` and
+the slot constants in `imgui/mod.rs`, a zone in `plan`, and a measured size and
+its panel in `draw_imgui`, which draws it with `render_imgui_window`), so it can be dragged, resized, docked and put in
 a box like Selection or Debug. Only static chrome, such as the status bar, is
 a fixed window. The turn strip (`roster.rs`, `Row::Roster` rows of chips,
 slot `UNITS`, starting at the bottom center) is an example; its chips are
@@ -177,7 +181,7 @@ relation if ImGui removes an inactive split before they reappear. A lost dock
 position is never reused as a floating position over another panel.
 Debug can also be docked beside a contextual Selection group. City, barracks,
 unit, and group menus and an open city interior each remember their own Debug
-docking relation, by `SelectionKind` (`imgui.rs`). When a
+docking relation, by `SelectionKind` (`imgui/views.rs`). When a
 menu closes or changes kind, Debug returns to its previous standalone position
 or persistent panel group; reopening that kind of menu restores its split.
 The last standalone position is frozen while dragging and is not overwritten
@@ -195,17 +199,17 @@ that fits, ending in "…" (`fit_text`, `text.rs`), and ImGui shows all of it
 when the notice is hovered. Past ASCII, game text uses only the punctuation in
 `font::UI_PUNCTUATION` (`font.rs`: the middle dot, em dash, times sign and
 ellipsis), which the classic font has and ImGui's fonts are given
-(`IMGUI_GLYPHS`, `imgui.rs`, built from it), and the map's icon characters
+(`IMGUI_GLYPHS`, `imgui/style.rs`, built from it), and the map's icon characters
 (below); `ui_text_uses_only_the_shared_glyphs` reads every string literal in
 `src/` to hold to that, and checks ImGui's fonts have each glyph.
-`style_imgui` (`imgui.rs`) gives a context the game's fonts and style, for
+`style_imgui` (`imgui/style.rs`) gives a context the game's fonts and style, for
 `App` and for the tests (`ImGuiScreen::styled`): Segoe UI where the system
 has it, or else the classic font's IBM Plex Mono, which has the punctuation
 (ImGui's own font doesn't).
 Resources and turns appear in text as icons: a UI string may hold the icon
 characters of `map_icons.rs` (`FOOD_ICON`, `WOOD_ICON`, `METAL_ICON`,
 `TIME_ICON`), which the classic font (`font::Face::width` and `push`) and
-ImGui (`rich_text`, `rich_width`, `rich_button` in `imgui.rs`, drawing the
+ImGui (`rich_text`, `rich_width`, `rich_button` in `imgui/widgets.rs`, drawing the
 icon's triangles into the window draw list) both draw as the map's own
 icons. ImGui buttons with icons are drawn blank with the lines laid over
 them; a dimmed button dims its icons too.
@@ -352,7 +356,7 @@ hover, and debug panels belong in a `Zone`.
 Both presentations show the same tooltip text, from `subject_tooltip_lines`
 (`tooltips.rs`): on every panel button, a queue row and its X, a turn strip
 chip (`roster_tooltip`), End Turn and Menu. ImGui shows it on the hovered item
-(`show_tooltip`, `imgui.rs`); classic picks what's under the cursor, a button
+(`show_tooltip`, `imgui/widgets.rs`); classic picks what's under the cursor, a button
 before a chip before a queue row (`classic_tooltip_at`), and shows no row's
 tooltip while a row is dragged. A new kind of hoverable thing gets its text
 there and a call in each presentation.
