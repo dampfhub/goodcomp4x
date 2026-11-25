@@ -107,9 +107,10 @@ behavior.
 - Builds are paid when work on them starts: add to a city or Barracks queue through
   `queue_build` / `queue_barracks` (an unpaid item with no work), take items out through
   `take_queue_item` / `take_barracks_item`, which refund only a paid item, and pay only in
-  `work_queues`, as the turn's economy starts an item (`city/economy.rs`). Payment is in city
-  order, then each city's queue before its Barracks', so it's the same on every machine;
-  `forecast` plays the same choices out without changing anything, for the UI and the AI. A
+  `work_queues`, as the turn's economy starts an item (`city/economy.rs`). Payment is in
+  `pay_order` (every Barracks in city order, then every city's queue), so it's the same on every
+  machine; `forecast` plays the same choices out without changing anything, for the UI and the
+  AI, and lists its queues in city order. A
   paid item (`Queued::prepaid`) pushed directly is for tests and scenario setup; it skips the
   price. `simulation.rs` checks that no stockpile goes negative, that an unpaid item has no
   work, and that no item has more work than it needs. In a network game planning can't pay:
