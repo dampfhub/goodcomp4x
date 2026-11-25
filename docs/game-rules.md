@@ -734,8 +734,8 @@ only).
 - **Citizens:** click tiles to assign or release; A auto-assigns by the city's **priority
   order** of food, wood and metal (Food, Wood, Metal to start; the AI's cities keep it). Citizens are placed one at a
   time, the first manager first, each on the open tile worth the most: its delivered food, wood and
-  metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the lower
-  hex coordinates. The **food floor** holds whatever the order: until the food the city center,
+  metal, the first good in the order ×9, the second ×3 and the third ×1, ties going to the tile
+  nearest the city (then a fixed order that favors no direction). The **food floor** holds whatever the order: until the food the city center,
   its Cannery and the tiles already taken deliver covers the citizens' upkeep plus 1, food counts
   as first and the other two keep their order. So the first manager, placed while the city is
   unfed, goes by food first unless its Cannery already feeds it. A citizen becomes a worker, beside a manager whose cluster has room (the
